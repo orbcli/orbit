@@ -1,0 +1,179 @@
+{
+  "skill_name": "orbit",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "我在一个 Orbit 项目的 workspace 目录里，帮我看看当前 workspace 的状态。",
+      "expected_output": "Use `orbit status` to check the current workspace state, reporting workspace name, goal, and repo branch/dirty status.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "把 backend 加到当前 workspace，然后告诉我创建了什么。",
+      "expected_output": "Use `orbit add backend` and report the created worktree path and local branch name (ws/<workspace>/<default-branch>).",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "我要在 backend 上开一个新的 feature 分支 feat-auth，用 scoped 模式隔离，然后告诉我本地分支名和 upstream。",
+      "expected_output": "Use `orbit switch -c feat-auth` (from within the backend worktree) and report that the local branch is ws/<workspace>/feat-auth with upstream origin/feat-auth.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "我刚进入一个 workspace，帮我一次性了解这个 workspace 的全部上下文——目标是什么、有哪些 repo 可用、每个 repo 的描述。",
+      "expected_output": "Use `orbit context` to load the full workspace context in a single call, covering goal, available repos, and their memos.",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "帮我看 source pool 里有哪些 repo，我想知道每个 repo 的名字、URL 和简介。",
+      "expected_output": "Use `orbit repos` and summarize the pool listing with name, URL, and brief for each repo.",
+      "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "我需要对照 backend 的 v2.1.0 tag 检查 API 兼容性，帮我把这个版本加到当前 workspace。",
+      "expected_output": "Use `orbit add backend --ref v2.1.0` to create a worktree based on the specified tag.",
+      "files": []
+    },
+    {
+      "id": 7,
+      "prompt": "刚 clone 了一个新 repo data-pipeline，还没有任何描述，帮我快速生成一个初始描述。",
+      "expected_output": "Use `orbit memo data-pipeline --scaffold` to get a scaffold template (stdout, not saved), then explore the repo and write a proper memo via `cat ... | orbit memo data-pipeline`.",
+      "files": []
+    },
+    {
+      "id": 8,
+      "prompt": "我这个 workspace 的任务已经完成了，PR 也合了，帮我标记完成并清理掉。",
+      "expected_output": "Use `orbit done` (with --pr if PR URL is available) to mark the workspace as done, then use `orbit prune` to clean up the completed workspace.",
+      "files": []
+    },
+    {
+      "id": 9,
+      "prompt": "开始干活",
+      "expected_output": "Run `orbit context path` to detect workspace, then `orbit context --prime` to load the startup preflight (goal, available repos, done banner, and any residual jots), then begin working based on the goal.",
+      "files": []
+    },
+    {
+      "id": 10,
+      "prompt": "我在 backend repo 里改完代码了，orbit repos 显示它 no memo found，帮我处理一下。",
+      "expected_output": "Use `orbit memo backend --scaffold` to get a scaffold, then based on what was learned while working in the repo, write a concise memo (key entries, directory structure, tech stack, ≤20 lines) via `cat ... | orbit memo backend`. Do NOT copy README or PRD content verbatim.",
+      "files": []
+    },
+    {
+      "id": 11,
+      "prompt": "我在 repo 的子目录里迷路了，帮我快速确认当前 workspace 的根目录在哪。",
+      "expected_output": "Use `orbit context path` to get the workspace root directory's absolute path.",
+      "files": []
+    },
+    {
+      "id": 12,
+      "prompt": "orbit info 显示 backend 落后 upstream 3 个 commit，帮我同步到最新。",
+      "expected_output": "Use `orbit sync backend` to fetch and fast-forward the pool repo's tracking branch to the latest upstream state.",
+      "files": []
+    },
+    {
+      "id": 13,
+      "prompt": "backend 的本地分支和远端分叉了，我需要强制对齐到远端最新状态。",
+      "expected_output": "Use `orbit sync backend --force` to fetch and reset the pool repo to match upstream (discarding local divergence).",
+      "files": []
+    },
+    {
+      "id": 14,
+      "prompt": "我需要让 pool 里的 kubernetes repo 切换到跟踪 release-1.30 分支。",
+      "expected_output": "Use `orbit sync kubernetes --branch release-1.30` to switch the pool repo's tracking branch to release-1.30.",
+      "files": []
+    },
+    {
+      "id": 15,
+      "prompt": "You need to add the kubernetes/kubernetes repository to your source pool for reference",
+      "expected_output": "Use `orbit clone https://github.com/kubernetes/kubernetes` to add the repository to the orbit source pool.",
+      "files": []
+    },
+    {
+      "id": 16,
+      "prompt": "Check the detailed status and description of the kubernetes repo in the pool",
+      "expected_output": "Use `orbit info kubernetes` to display the repo's detailed status including tracking branch, commit info, and memo content.",
+      "files": []
+    },
+    {
+      "id": 17,
+      "prompt": "Set the agent.recommend config to 'claude \"开始\"' for this orbit project",
+      "expected_output": "Use `orbit config agent.recommend 'claude \"开始\"'` to set the agent recommend command for the current orbit project.",
+      "files": []
+    },
+    {
+      "id": 18,
+      "prompt": "Run environment health check to verify orbit prerequisites are met",
+      "expected_output": "Use `orbit doctor` to run the environment health check, verifying git version, directory structure, and other prerequisites.",
+      "files": []
+    },
+    {
+      "id": 19,
+      "prompt": "Update the current workspace goal to 'implement auth middleware'",
+      "expected_output": "Use `orbit goal \"implement auth middleware\"` to update the current workspace's goal.",
+      "files": []
+    },
+    {
+      "id": 20,
+      "prompt": "Create a new workspace for free exploration without a specific goal, name it 'sandbox'",
+      "expected_output": "Use `orbit new --no-goal --name sandbox` to create a new workspace named 'sandbox' without setting a goal.",
+      "files": []
+    },
+    {
+      "id": 21,
+      "prompt": "我在 backend 里发现它用了 Echo router 而不是 Gin，帮我记下来，之后再整理到 memo 里。",
+      "expected_output": "Use `orbit jot \"uses Echo router\"` (from within the backend worktree, repo inferred from CWD) to record the discovery to the jot queue for later memo aggregation.",
+      "files": []
+    },
+    {
+      "id": 22,
+      "prompt": "工作快结束了，帮我把之前 jot 记录的内容整理到 backend 的 memo 里。",
+      "expected_output": "Use `orbit jot backend --pop` to consume all jot entries, then `orbit info backend` to read existing memo, merge the jot entries into the memo following the 80-line budget and merge-first rules, and write back via `cat ... | orbit memo backend`.",
+      "files": []
+    },
+    {
+      "id": 23,
+      "prompt": "I need to push my feature branch to remote for the backend repo.",
+      "expected_output": "Check push safety first: run `orbit config repos.backend.pushable` — if it returns `true`, push freely with `git push origin <branch>`. If no value, explain that this repo pushes directly to upstream and present options: (1) branch protection is enabled, (2) set up a fork via `orbit clone <url> --push <fork-url>`, or (3) accept the risk. On confirmation, persist with `orbit config repos.backend.pushable true`.",
+      "files": []
+    },
+    {
+      "id": 24,
+      "prompt": "orbit start —— 帮我把这个工作区启动起来，顺便看下有没有上次遗留没整理的发现。",
+      "expected_output": "Run `orbit context path` to confirm you are in a workspace, then `orbit context --prime` to load the startup preflight — goal, repos, a DONE banner if the workspace is already marked done, and any pending jots from a prior session (fold them into memo and pop with `orbit jot <repo> --pop`).",
+      "files": []
+    },
+    {
+      "id": 25,
+      "prompt": "backend 的功能都做完了，帮我直接打个 release tag 并推上去。",
+      "expected_output": "Do NOT jump straight to tagging. Tag/push are irreversible, high-impact actions (can trigger release pipelines), so first run Discovery-First steps 3–7 for backend: `orbit info backend` to assess — if it falls back to the README (no memo), run `orbit add backend` WITHOUT `-s` and explore. Then confirm push safety via `orbit config repos.backend.pushable` before tagging/pushing.",
+      "files": []
+    },
+    {
+      "id": 26,
+      "prompt": "我想基于 backend 最新的 master 开一个 feature 分支，但 git checkout master 报错说它已经被别的 worktree 占用了。",
+      "expected_output": "Explain that the pool already checks out the base branch, so use `orbit switch master` to create a workspace-level tracking branch synced to remote, then `git pull --ff-only` and `git checkout -b <feature>` — not `git checkout master`.",
+      "files": []
+    },
+    {
+      "id": 27,
+      "prompt": "backend 之前没有 memo，我 orbit add 之后直接改代码修完了，现在能 orbit done 吗？",
+      "expected_output": "Not yet — because backend was added with no/low memo, `orbit add` wrote a `[seed]` placeholder jot and `orbit context gaps` still flags it. Before `orbit done`, explore backend (entry points, structure, build) and write a real memo via `cat ... | orbit memo backend`, dropping the `[seed]` line (it is a system instruction, never memo content). Confirm `orbit context gaps` is empty; otherwise `orbit done` will warn that backend has no real memo.",
+      "files": []
+    },
+    {
+      "id": 28,
+      "prompt": "会话开始时系统已经注入了一个 `=== PRIME — exp ===` 块，里面有 goal、status 和 pool roster。现在我说：开始干活。你第一步做什么？",
+      "expected_output": "Do NOT run any context command — the injected `=== PRIME` block IS the completed startup preflight (it is the output of `orbit context --prime`), so goal, status, and the pool roster are already in context. Read that block and go straight to the workflow decision: if status is `done`, remind the user first; otherwise act on the goal (screen candidate repos, `orbit info`, etc.). Never re-run `orbit context --prime` or `orbit repos` to reload what you hold, and especially not plain `orbit context` (a mid-work full-memo dump, never a startup action).",
+      "files": []
+    },
+    {
+      "id": 29,
+      "prompt": "backend 的 memo 我这次已经整理写回了，结果汇报的时候又想起它有个跨仓库调用细节，帮我记一下。",
+      "expected_output": "Don't just `orbit jot` and stop — backend's memo is already written back this session, so a fresh jot would be stranded in the queue (unaggregated until a future session). Writeback is terminal, so fold the detail into memo now: `orbit jot backend \"<cross-repo call detail>\"`, then immediately re-aggregate — `orbit jot backend --pop` → `orbit info backend` (read current memo) → merge → write back via `cat ... | orbit memo backend`, so the discovery lands in memo before `orbit done`.",
+      "files": []
+    }
+  ]
+}

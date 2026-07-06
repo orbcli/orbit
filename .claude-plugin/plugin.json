@@ -1,0 +1,12 @@
+{
+  "name": "orbit",
+  "version": "0.1.0",
+  "description": "Multi-repo Git workspaces for any AI coding agent — one agent across many repos.",
+  "author": { "name": "orbcli contributors" },
+  "homepage": "https://github.com/orbcli/orbit",
+  "repository": "https://github.com/orbcli/orbit",
+  "license": "MIT",
+  "keywords": ["worktree", "multi-repo", "polyrepo", "workspace", "coding-agent"],
+  "skills": ["./skills/orbit"],
+  "hooks": "./hooks/claude/hooks.json"
+}

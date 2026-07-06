@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Usage Guide
+    url: https://github.com/orbcli/orbit/blob/main/USAGE.md
+    about: Check the usage guide before opening a "how to" issue

@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install bats
+        run: sudo npm install -g bats
+
+      - name: Install shellcheck and parallel (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y shellcheck parallel
+
+      - name: Install shellcheck and parallel (macOS)
+        if: runner.os == 'macOS'
+        run: brew install shellcheck parallel
+
+      - name: Lint
+        run: make lint
+
+      - name: Test
+        run: make test

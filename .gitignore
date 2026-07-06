@@ -1,0 +1,16 @@
+.tmp*/
+.claude
+.qoder
+tests/.sandbox/
+
+# macOS
+.DS_Store
+
+# Editors / IDEs
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Logs
+*.log
