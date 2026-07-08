@@ -136,7 +136,7 @@
     {
       "id": 23,
       "prompt": "I need to push my feature branch to remote for the backend repo.",
-      "expected_output": "Check push safety first: run `orbit config repos.backend.pushable` — if it returns `true`, push freely with `git push origin <branch>`. If no value, explain that this repo pushes directly to upstream and present options: (1) branch protection is enabled, (2) set up a fork via `orbit clone <url> --push <fork-url>`, or (3) accept the risk. On confirmation, persist with `orbit config repos.backend.pushable true`.",
+      "expected_output": "Push with native git — orbit takes no stance on push workflow. In raw mode use `git push origin <branch>` (explicit branch). In scoped mode (after `orbit switch -c`), `git push` works directly (upstream is auto-configured). No push-safety flag or confirmation dialog.",
       "files": []
     },
     {
@@ -148,7 +148,7 @@
     {
       "id": 25,
       "prompt": "backend 的功能都做完了，帮我直接打个 release tag 并推上去。",
-      "expected_output": "Do NOT jump straight to tagging. Tag/push are irreversible, high-impact actions (can trigger release pipelines), so first run Discovery-First steps 3–7 for backend: `orbit info backend` to assess — if it falls back to the README (no memo), run `orbit add backend` WITHOUT `-s` and explore. Then confirm push safety via `orbit config repos.backend.pushable` before tagging/pushing.",
+      "expected_output": "Do NOT jump straight to tagging. Tag/push are high-impact actions (can trigger release pipelines), so first run Discovery-First steps 3–7 for backend: `orbit info backend` to assess — if it falls back to the README (no memo), run `orbit add backend` WITHOUT `-s` and explore. Once you understand the repo, tag and push with native git (`git tag ...` / `git push --tags`).",
       "files": []
     },
     {
@@ -173,6 +173,12 @@
       "id": 29,
       "prompt": "backend 的 memo 我这次已经整理写回了，结果汇报的时候又想起它有个跨仓库调用细节，帮我记一下。",
       "expected_output": "Don't just `orbit jot` and stop — backend's memo is already written back this session, so a fresh jot would be stranded in the queue (unaggregated until a future session). Writeback is terminal, so fold the detail into memo now: `orbit jot backend \"<cross-repo call detail>\"`, then immediately re-aggregate — `orbit jot backend --pop` → `orbit info backend` (read current memo) → merge → write back via `cat ... | orbit memo backend`, so the discovery lands in memo before `orbit done`.",
+      "files": []
+    },
+    {
+      "id": 30,
+      "prompt": "我要切到 backend 上一个已有的共享分支 release-1.30 继续改，但 git checkout release-1.30 报错说它已经被别的 worktree 占用了。",
+      "expected_output": "Use `orbit switch release-1.30` as the fallback — for an existing/shared branch, or when plain `git checkout <branch>` fails with a worktree conflict (`already used by worktree`), `orbit switch` fetches the remote branch and creates a workspace-scoped tracking branch instead of fighting the collision. Raw `git checkout -b` is only for fresh, workspace-local names.",
       "files": []
     }
   ]

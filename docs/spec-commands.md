@@ -92,7 +92,7 @@ goal → repos → info → add → work → jot → memo → done
 
 This explains several design choices:
 - `orbit clone` only writes index base fields (url + head) and does not auto-generate memos — the agent writes them via `orbit memo` after understanding the code, rather than mechanical summarization
-- `orbit add` sets upstream tracking (`origin/<default-branch>`) for status/ahead-behind visibility — push safety is handled by skill conventions, not git config
+- `orbit add` sets upstream tracking (`origin/<default-branch>`) for status/ahead-behind visibility — pushing itself is native git, and orbit takes no stance on push workflow
 - `orbit done` does not trigger cleanup — reclamation is controlled by humans via `orbit prune`
 
 Keeping commands simple relies on the skill layer taking orchestration responsibility. If orchestration logic were embedded in commands (e.g., clone auto-generating memos, add auto-creating branches), commands would bloat and be hard to adapt to different agents' behavior patterns.

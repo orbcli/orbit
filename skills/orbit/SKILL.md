@@ -165,6 +165,11 @@ orbit doctor
 
 > **Don't `git checkout master`/`main` inside a worktree.** The pool already has the base branch checked out, so git aborts with `fatal: '<branch>' is already used by worktree at '.repos/<repo>'`. To branch off the latest baseline, sync through orbit first: `orbit switch master` (creates a workspace-level tracking branch, fetching remote) → `git pull --ff-only` → `git checkout -b feature/x`. This starts the new branch from the synced remote HEAD, not stale local code.
 
+**Which mode?**
+- **Default = raw** (`git checkout -b <name>`) for a fresh, workspace-local branch name.
+- **Reach for scoped** (`orbit switch` / `orbit switch -c`) when checking out an **existing/shared** branch, or when the name could **easily conflict** across workspaces (multiple workspaces touching the same repo) — scoped branches are namespaced per workspace.
+- **Fallback:** if plain `git checkout <existing-branch>` fails with a worktree conflict (`already used by worktree`), don't fight it — use `orbit switch <branch>` to get a workspace-scoped tracking branch.
+
 ### Raw mode (default)
 
 After `orbit add`, use git directly. Orbit does not manage branches:
@@ -272,9 +277,15 @@ Rules:
 - **Never access `.repos/` directly.** All repos operations go through orbit commands.
 - **Don't run `orbit new` if already in a workspace.** It creates at project root level.
 - **Default scope is the current workspace** inferred from CWD. Don't target other workspaces unless explicitly asked.
-- **Verify push safety before first push.** Run `orbit config repos.<name>.pushable` — if it returns `true`, push to feature branches freely. If no value, explain to the user that this repo pushes directly to upstream and present three options: (1) branch protection is enabled, (2) set up a fork via `orbit clone <url> --push <fork-url>`, or (3) accept the risk. On confirmation, run `orbit config repos.<name>.pushable true` to persist the decision. If the user declines all options, output the exact push command for manual execution and do not re-ask for this repo in the current session.
-- **Understand before irreversible or high-impact actions.** Tag, push, and publish can trigger release pipelines and rewrite shared state — before any such action, complete Workflow steps 3–7 for the affected repo(s), then confirm before executing. Task type is no exception: a "just tag a release" task still requires discovery first.
-- **Show changes before committing.** After writing or editing files, present the diff and let the user review — don't chain write → `git add` → `git commit`. Commit only when asked, and treat commit and push as separate confirmations (a commit approval is not a push approval).
+- **Discover before irreversible or high-impact actions.** Tag, push, and publish can trigger release pipelines — before any such action, complete Workflow steps 3–7 (info → add → explore) for the affected repo(s). Task type is no exception: a "just tag a release" task still requires discovery first. (Orbit takes no stance on *whether* you push or commit — that's your call, gated by your permission mode, not by orbit.)
+
+## Safe to run freely
+
+These orbit subcommands are read-only or idempotent workspace-writes — run them without asking:
+- **Read-only:** `repos` `info` `status` `context` `goal` (read) `jot --pop` `version` `doctor`
+- **Idempotent workspace-write:** `add` `switch` `sync` `memo` `jot` `goal` (write)
+
+`done` `prune` `clone` `config` `new` are destructive or reach outside the workspace — confirm before running these.
 
 ## Communication
 

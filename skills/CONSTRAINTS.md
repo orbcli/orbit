@@ -143,10 +143,6 @@ The skill must guide the agent to:
 - **Report facts before structural opinions** — organizational judgments ("this repo shouldn't be in the pool") are offered only when the user asks, and as suggestions, not asserted as facts
 - **Keep hard-boundary explanations to one line** — state the limit plus one alternative, don't over-explain
 
-### Commit and Push Discipline (Required)
-
-The skill must guide the agent to show changes for review before committing (no write → `git add` → `git commit` chaining), commit only when asked, and treat commit approval as separate from push approval. Push safety is governed by the Push Safety Model below.
-
 ### Discovery-First Workflow (Required)
 
 Every skill must guide the agent to discover before acting:
@@ -329,29 +325,16 @@ Sync (`orbit sync`) advances pool HEAD, causing memoBehind to increase — there
 
 **Not a trigger**: pausing, switching topics, or intermediate work stages do not trigger done.
 
-## Push Safety and Behavior Guidance
+## Push Behavior
 
-### Push Safety Model
+Orbit takes no stance on git push workflow — that is the developer's (or automation system's) call, and the permission mode governs whether any command prompts. The skill documents *mechanics*, not policy: it must not gate pushes behind a push-safety flag or a confirmation dialog. (Discovery-first before high-impact actions like tag/push is already covered by the Discovery gate in the Discovery-First Workflow, on knowledge grounds, not as a push-approval policy.)
 
-Push is a normal part of the agent workflow — but the agent must verify the repo is **push-safe** before the first push. Push safety is persisted via `orbit config repos.<name>.pushable` so the confirmation survives across sessions.
+### Branch Mode Choice (Must Be Documented)
 
-**A repo becomes push-safe through either path:**
-1. **Automatic** — `orbit clone --push <fork-url>` sets a different push URL and auto-writes `repos.<name>.pushable = true`
-2. **Manual confirmation** — user confirms one of the conditions below, agent writes `orbit config repos.<name>.pushable true`
-
-**Agent push decision flow** (triggered only when the agent decides to push — read-only reference repos never trigger this):
-1. Run `orbit config repos.<name>.pushable` → returns `true` → push to feature branch
-2. No value → present three options to the user:
-   - **Branch protection** — "Is branch protection enabled on this repo's main/release branches? If so, push to feature branches is safe."
-   - **Fork isolation** — "You can set up a fork as push target: `orbit clone <url> --push <fork-url>`. Push will go to your fork instead of upstream."
-   - **Accept risk** — "You can proceed without protection. Push will go directly to upstream."
-3. User confirms any option → agent runs `orbit config repos.<name>.pushable true` → push freely to feature branches (persisted for future sessions)
-4. User declines all → repo is not marked pushable → agent outputs the exact push command for the user to run manually (e.g., `git push origin feature/api-refactor`). **Do not re-ask for this repo in the current session** — output manual commands on every subsequent push
-
-**Rules:**
-- Always push to feature branches, never to the default branch directly
-- Recommend `orbit clone <url> --push <fork-url>` when setting up repos that need push isolation
-- **Understand before irreversible/high-impact actions.** Tag, push, and publish can trigger release pipelines and rewrite shared state — before any such action the agent must complete Discovery-First steps 3–7 for the affected repo(s), then confirm before executing. Task type is no exception (a "just tag a release" task still requires discovery first)
+The skill must give the agent a basic rule for picking a branch mode:
+- **Default = raw** (`git checkout -b <name>`) for a fresh, workspace-local branch name.
+- **Reach for scoped** (`orbit switch` / `orbit switch -c`) when the branch is an **existing/shared** branch, or when the name could **easily conflict** across workspaces (multiple workspaces touching the same repo) — scoped branches are namespaced per workspace.
+- **Fallback:** if plain `git checkout <existing-branch>` fails with a worktree conflict (e.g. `already used by worktree`), use `orbit switch <branch>` as the fallback to get a workspace-scoped tracking branch rather than fighting the collision.
 
 ### Push Behavior by Mode (Must Be Documented)
 
@@ -380,8 +363,7 @@ Skill does not need to explain internal mechanics (prefix stripping, push.defaul
 6. **Writing memo for repos you haven't touched** — memo writeback is on-demand; only manage repos you added and worked in
 7. **Copying README/PRD content into memo** — memo is operational cache (key entry points, directory structure, tech stack), not a documentation copy
 8. **`git checkout master`/`main` inside a worktree** — the pool holds the base branch, so this aborts with `already used by worktree`; use `orbit switch master` to sync the baseline, then branch
-9. **Auto-committing or auto-pushing without review** — show the diff and wait for confirmation; commit and push are separate approvals
-10. **Merging a `[seed]` line into a memo** — `[seed]` jots are system placeholders/instructions written by `orbit add` for no/low-memo repos; act on them, then drop them, never paste them into memo content
+9. **Merging a `[seed]` line into a memo** — `[seed]` jots are system placeholders/instructions written by `orbit add` for no/low-memo repos; act on them, then drop them, never paste them into memo content
 
 ## Skill Document Structure Requirements
 

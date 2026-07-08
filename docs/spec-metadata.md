@@ -54,7 +54,6 @@ Field descriptions:
 - `url`: origin remote URL (written from `git remote get-url origin` during `orbit memo`)
 - `brief`: one-line description (extracted from `.md` first line during `orbit memo`; always derived, cannot be set independently)
 - `head`: HEAD commit hash of repo at time of metadata write (full hash, used for staleness detection)
-- `pushable` (optional): `true` when the repo was cloned with a fork push-URL (`orbit clone --push <fork-url>`), signalling that pushing is safe. Consumed by the agent's push-safety model (see `skills/CONSTRAINTS.md#push-safety-model`), not by the CLI itself. Absent unless a fork push-URL was set; an agent may also set it explicitly via `orbit config repos.<repo>.pushable true`.
 
 Read/write methods:
 ```bash

@@ -132,10 +132,10 @@ Operations fall into categories by data recoverability and blast radius, each wi
 | Reversible pool change | clone (add repo to pool — can be deleted and recovered) | Autonomous | No — report back (pool-level) |
 | Git state (no dependency risk) | cold-start sync (agent hasn't started depending on code yet) | Autonomous | No — report back (pool-level) |
 | Git state (with dependency risk) | in-progress sync | Not recommended — sync updates pool, not the active worktree; upstream changes are resolved at PR time | No |
-| Remote write (push) | push to feature branch | Autonomous once repo is confirmed push-safe (fork / branch protection / user approval) | No — report back |
+| Remote write (push) | push | Autonomous (native git; orbit takes no stance — gated by permission mode) | No — report back (externally-visible remote write; owner converges) |
 | Irreversible structural changes | prune | Propose → human confirms | No |
 
-The delegation boundary follows operation **nature**, not "who loaded the skill": a worker may do read/assess, worktree creation (add), branch work inside worktrees, and append-only knowledge capture (jot), but `push` is not delegable — it commits locally, then reports back so the owner confirms push-safety before the remote write. The full push-safety flow, and the auto-approve tiers that decide which operations run without a prompt, are specified in [`skills/CONSTRAINTS.md`](skills/CONSTRAINTS.md#push-safety-model) — this principle fixes *who* may act; that document fixes *how* each operation is gated.
+The delegation boundary follows operation **nature**, not "who loaded the skill": a worker may do read/assess, worktree creation (add), branch work inside worktrees, and append-only knowledge capture (jot), but `push` is not delegable — it is an externally-visible remote write, so the worker commits locally and reports back, letting the owner converge the remote writes. The auto-approve tiers that decide which operations run without a prompt are specified in [`skills/CONSTRAINTS.md`](skills/CONSTRAINTS.md#permission-and-auto-execution-policy) — this principle fixes *who* may act; that document fixes *how* each operation is gated.
 
 Concurrency is the owner's responsibility: serial delegation has no contention; when fanning out parallel workers, the owner partitions work by repo so mutations stay disjoint, then converges aggregation (memo) serially afterward.
 
