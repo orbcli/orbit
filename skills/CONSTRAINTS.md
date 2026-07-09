@@ -334,7 +334,7 @@ Orbit takes no stance on git push workflow — that is the developer's (or autom
 The skill must give the agent a basic rule for picking a branch mode:
 - **Default = raw** (`git checkout -b <name>`) for a fresh, workspace-local branch name.
 - **Reach for scoped** (`orbit switch` / `orbit switch -c`) when the branch is an **existing/shared** branch, or when the name could **easily conflict** across workspaces (multiple workspaces touching the same repo) — scoped branches are namespaced per workspace.
-- **Fallback:** if plain `git checkout <existing-branch>` fails with a worktree conflict (e.g. `already used by worktree`), use `orbit switch <branch>` as the fallback to get a workspace-scoped tracking branch rather than fighting the collision.
+- **Fallback (the "already used by worktree" trap):** git refuses to check out a branch already checked out in another worktree — the pool holds each repo's base branch, and other workspaces may hold shared branches. When `git checkout <name>` or `git switch <name>` aborts with `already used by worktree`, the skill must direct the agent to run `orbit switch <name>` instead: it creates a per-workspace `ws/<workspace>/<name>` branch tracking `origin/<name>` (a distinct local name that never collides), and `git push` still targets `origin/<name>`.
 
 ### Push Behavior by Mode (Must Be Documented)
 

@@ -67,6 +67,7 @@ Not pursued in the current phase:
 - Multi-agent coordination *platform* — peer agents scheduling and distributing tasks among themselves. Note: a single **owner** agent delegating to subordinate **worker** sub-agents *is* supported (see Principle 7); what stays out of scope is peer-to-peer agent orchestration
 - Central database or registry
 - Automatic PR orchestration
+- Prescribing git workflow — whether and how to commit, branch, or push is native git, governed by the agent's permission mode, not by orbit or its skill
 - Complex team permission controls
 - Unified abstraction layer for all AI tools
 
@@ -132,10 +133,11 @@ Operations fall into categories by data recoverability and blast radius, each wi
 | Reversible pool change | clone (add repo to pool — can be deleted and recovered) | Autonomous | No — report back (pool-level) |
 | Git state (no dependency risk) | cold-start sync (agent hasn't started depending on code yet) | Autonomous | No — report back (pool-level) |
 | Git state (with dependency risk) | in-progress sync | Not recommended — sync updates pool, not the active worktree; upstream changes are resolved at PR time | No |
-| Remote write (push) | push | Autonomous (native git; orbit takes no stance — gated by permission mode) | No — report back (externally-visible remote write; owner converges) |
 | Irreversible structural changes | prune | Propose → human confirms | No |
 
-The delegation boundary follows operation **nature**, not "who loaded the skill": a worker may do read/assess, worktree creation (add), branch work inside worktrees, and append-only knowledge capture (jot), but `push` is not delegable — it is an externally-visible remote write, so the worker commits locally and reports back, letting the owner converge the remote writes. The auto-approve tiers that decide which operations run without a prompt are specified in [`skills/CONSTRAINTS.md`](skills/CONSTRAINTS.md#permission-and-auto-execution-policy) — this principle fixes *who* may act; that document fixes *how* each operation is gated.
+The delegation boundary follows operation **nature**, not "who loaded the skill": a worker may read/assess, create worktrees (`add`), do git work inside them, and capture findings (`jot`); the owner reserves the shared-state mutations — lifecycle (`new`/`done`/`goal`), knowledge aggregation (`memo` write-back), and pool / cross-workspace changes (`clone`/`sync`/`config`).
+
+The skill's remit is *how and when to use orbit commands* and the workspace conventions around them — never the developer's git workflow. Commit, branch, and push are native git inside a worktree, gated by the agent's permission mode, not by orbit. The auto-approve tiers that decide which orbit commands run without a prompt are specified in [`skills/CONSTRAINTS.md`](skills/CONSTRAINTS.md#permission-and-auto-execution-policy) — this principle fixes *who* may act; that document fixes *how* each command is gated.
 
 Concurrency is the owner's responsibility: serial delegation has no contention; when fanning out parallel workers, the owner partitions work by repo so mutations stay disjoint, then converges aggregation (memo) serially afterward.
 

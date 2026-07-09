@@ -127,7 +127,6 @@ Recording knowledge (the moment you find it, before it's lost):
 - If you cannot run orbit, put the same items under a "## Discoveries" heading in your report.
 
 Do NOT run: orbit memo / sync / done / new / goal / clone / config — report those needs to me.
-Do NOT push unless I told you to; report push needs instead.
 
 Report back: findings, any repos you added, and your Discoveries list.
 ```
@@ -168,7 +167,7 @@ orbit doctor
 **Which mode?**
 - **Default = raw** (`git checkout -b <name>`) for a fresh, workspace-local branch name.
 - **Reach for scoped** (`orbit switch` / `orbit switch -c`) when checking out an **existing/shared** branch, or when the name could **easily conflict** across workspaces (multiple workspaces touching the same repo) — scoped branches are namespaced per workspace.
-- **Fallback:** if plain `git checkout <existing-branch>` fails with a worktree conflict (`already used by worktree`), don't fight it — use `orbit switch <branch>` to get a workspace-scoped tracking branch.
+- **Fallback — the "already used by worktree" trap.** Git refuses to check out a branch that is already checked out in another worktree: the pool holds each repo's base branch, and other workspaces may hold shared branches. So `git checkout <name>` / `git switch <name>` can abort with `fatal: '<name>' is already used by worktree at ...`. Don't fight it — run **`orbit switch <name>`**. It creates a per-workspace branch `ws/<workspace>/<name>` tracking `origin/<name>` — a distinct local name that never collides — and `git push` still targets `origin/<name>`.
 
 ### Raw mode (default)
 
