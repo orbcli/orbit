@@ -1946,6 +1946,8 @@ orbit_doctor() {
   fi
 
   if command -v git >/dev/null 2>&1 && ! orbit_git_supports_autosetupremote; then
+    # backticks are literal text in the user-facing warning
+    # shellcheck disable=SC2016
     printf '[WARN] git < 2.37: a bare `git push` on a fresh raw-mode branch will error instead of creating origin/<branch> + tracking (recommend git >= 2.42)\n'
   fi
 
