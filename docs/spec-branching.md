@@ -66,7 +66,7 @@ orbit add backend
 
 `orbit add` sets upstream tracking so that `git status` and `orbit status` can show accurate ahead/behind information. This lets agents and humans assess whether code is current before working or writing memos.
 
-Push safety is not handled at the git config level — it is enforced by the skill convention layer (Principle 7: push requires human confirmation), remote branch protection rules, and optionally `--push` fork isolation.
+Orbit maintains no push metadata and takes no stance on push workflow — pushing is native git, gated by the agent's permission mode. Fork isolation via `orbit clone --push <fork-url>` remains available for those who want it (it sets git's `pushurl`).
 
 ## `orbit switch` Command
 

@@ -494,9 +494,6 @@ orbit_clone() {
 
   local index="$root/.repos/.orbit"
 
-  if [ -n "$push_url" ]; then
-    git config --file "$index" "repos.$repo_name.pushable" "true"
-  fi
   local url head
   url=$(git -C "$dst" remote get-url origin)
   head=$(git -C "$dst" rev-parse HEAD 2>/dev/null) || head="-"

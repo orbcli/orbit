@@ -1,12 +1,12 @@
 ---
 name: orbit
-description: "Operate Orbit — the user's Git-native multi-repo workspace manager. Primary trigger: an orbit workspace is detected at session start (a SessionStart block 'Detected an orbit workspace' / '=== PRIME — … ==='), OR the user opens a session by saying 'orbit启动' or 'orbit start' — in either case invoke this skill before your first reply. Also use when the user asks to clone a repo, create or manage a workspace, add a repo, switch branches, view status, set or clear a goal, jot a discovery, aggregate memos, or finish / complete / mark work done ('done' / 'finish' / '完成') — or when the message mentions workspaces, source pools, `.repos/`, or cross-repo tasks."
+description: "Operate Orbit — the user’s Git-native multi-repo workspace manager. Primary trigger: an orbit workspace is detected at session start (a SessionStart block “Detected an orbit workspace” / “=== PRIME — … ===”), OR the user opens a session by saying “orbit启动” or “orbit start” — in either case invoke this skill before your first reply. Also use when the user asks to clone a repo, create or manage a workspace, add a repo, switch branches, view status, set or clear a goal, jot a discovery, aggregate memos, or finish / complete / mark work done (“done” / “finish” / “完成”) — or when the message mentions workspaces, source pools, `.repos/`, or cross-repo tasks."
 ---
 
-<!-- MAINTAINERS: This SKILL.md is governed by ../../CONSTRAINTS.md (skills/CONSTRAINTS.md) —
+<!-- MAINTAINERS: This SKILL.md is governed by skills/CONSTRAINTS.md (path relative to repo root) —
      the canonical, cross-agent constraints for orbit skills. Before editing this file:
      (1) comply with those constraints, (2) mirror the same body change to the sibling
-     variant skills/orbit/SKILL.md (the two bodies must stay identical), and
+     variant — skills/orbit/SKILL.md and skills/qoder/orbit/SKILL.md must stay byte-identical, and
      (3) update evals/evals.json per the doc's Eval Maintenance Requirements. -->
 
 Use this skill to operate the user's Git-native multi-repo workspace manager (Orbit).
@@ -127,7 +127,6 @@ Recording knowledge (the moment you find it, before it's lost):
 - If you cannot run orbit, put the same items under a "## Discoveries" heading in your report.
 
 Do NOT run: orbit memo / sync / done / new / goal / clone / config — report those needs to me.
-Do NOT push unless I told you to; report push needs instead.
 
 Report back: findings, any repos you added, and your Discoveries list.
 ```
@@ -164,6 +163,11 @@ orbit doctor
 ## Branch modes
 
 > **Don't `git checkout master`/`main` inside a worktree.** The pool already has the base branch checked out, so git aborts with `fatal: '<branch>' is already used by worktree at '.repos/<repo>'`. To branch off the latest baseline, sync through orbit first: `orbit switch master` (creates a workspace-level tracking branch, fetching remote) → `git pull --ff-only` → `git checkout -b feature/x`. This starts the new branch from the synced remote HEAD, not stale local code.
+
+**Which mode?**
+- **Default = raw** (`git checkout -b <name>`) for a fresh, workspace-local branch name.
+- **Reach for scoped** (`orbit switch` / `orbit switch -c`) when checking out an **existing/shared** branch, or when the name could **easily conflict** across workspaces (multiple workspaces touching the same repo) — scoped branches are namespaced per workspace.
+- **Fallback — the "already used by worktree" trap.** Git refuses to check out a branch that is already checked out in another worktree: the pool holds each repo's base branch, and other workspaces may hold shared branches. So `git checkout <name>` / `git switch <name>` can abort with `fatal: '<name>' is already used by worktree at ...`. Don't fight it — run **`orbit switch <name>`**. It creates a per-workspace branch `ws/<workspace>/<name>` tracking `origin/<name>` — a distinct local name that never collides — and `git push` still targets `origin/<name>`.
 
 ### Raw mode (default)
 
@@ -272,9 +276,15 @@ Rules:
 - **Never access `.repos/` directly.** All repos operations go through orbit commands.
 - **Don't run `orbit new` if already in a workspace.** It creates at project root level.
 - **Default scope is the current workspace** inferred from CWD. Don't target other workspaces unless explicitly asked.
-- **Verify push safety before first push.** Run `orbit config repos.<name>.pushable` — if it returns `true`, push to feature branches freely. If no value, explain to the user that this repo pushes directly to upstream and present three options: (1) branch protection is enabled, (2) set up a fork via `orbit clone <url> --push <fork-url>`, or (3) accept the risk. On confirmation, run `orbit config repos.<name>.pushable true` to persist the decision. If the user declines all options, output the exact push command for manual execution and do not re-ask for this repo in the current session.
-- **Understand before irreversible or high-impact actions.** Tag, push, and publish can trigger release pipelines and rewrite shared state — before any such action, complete Workflow steps 3–7 for the affected repo(s), then confirm before executing. Task type is no exception: a "just tag a release" task still requires discovery first.
-- **Show changes before committing.** After writing or editing files, present the diff and let the user review — don't chain write → `git add` → `git commit`. Commit only when asked, and treat commit and push as separate confirmations (a commit approval is not a push approval).
+- **Understand before your first target action on an added repo.** A *knowledge* gate, not an approval gate: before your first edit / branch / push / tag / release on a repo, complete Workflow steps 3–7 (info → memo → explore). `add` only creates a worktree — it is not understanding and never clears the gate. Normal work clears it at edit time; the trap is jumping straight from `add` to a high-impact action ("just tag a release", publish) on a repo you never read. (Gates on *understanding*, not permission — orbit takes no stance on *whether* you push or commit.)
+
+## Safe to run freely
+
+These orbit subcommands are read-only or idempotent workspace-writes — run them without asking:
+- **Read-only:** `repos` `info` `status` `context` `goal` (read) `jot --pop` `version` `doctor`
+- **Idempotent workspace-write:** `add` `switch` `sync` `memo` `jot` `goal` (write)
+
+`done` `prune` `clone` `config` `new` are destructive or reach outside the workspace — confirm before running these.
 
 ## Communication
 
