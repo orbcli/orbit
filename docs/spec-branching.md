@@ -45,15 +45,18 @@ git fetch origin                       # Fetch from upstream
 
 ## Repo-Level Push Configuration
 
-`orbit clone` sets `push.default=upstream` in `.repos/<repo>`:
+`orbit clone` sets two keys in `.repos/<repo>`:
 
 ```bash
 git -C .repos/<repo> config push.default upstream
+git -C .repos/<repo> config push.autoSetupRemote true   # git >= 2.37
 ```
 
-Effect: All worktrees inherit this configuration; `git push` automatically pushes to the remote branch pointed to by upstream (regardless of differences between local branch name and remote branch name). This allows `ws/<workspace>/<name>` local branches to directly `git push` to `origin/<name>`.
+Effect of `push.default=upstream`: All worktrees inherit this configuration; `git push` automatically pushes to the remote branch pointed to by upstream (regardless of differences between local branch name and remote branch name). This allows `ws/<workspace>/<name>` local branches to directly `git push` to `origin/<name>`.
 
-For existing repos (not set at clone time), `orbit switch` / `orbit switch -c` checks and applies this setting before execution.
+Why `push.autoSetupRemote=true`: `push.default=upstream` on its own makes a bare `git push` **error** on a raw-mode branch (`git checkout -b <name>`) that has no upstream. With `autoSetupRemote`, a bare `git push` on such a branch instead creates `origin/<name>` and sets tracking — the same result as `git push -u origin <name>`. Scoped-mode branches already have an upstream configured at `orbit switch -c` time, so `autoSetupRemote` never fires for them (no regression). Requires git ≥ 2.37; older git silently ignores the key (the bare-push pitfall remains, so `orbit doctor` warns and recommends git ≥ 2.42).
+
+For existing repos (not set at clone time), `orbit switch` / `orbit switch -c` checks and applies both settings before execution.
 
 ## `orbit add` Branch Behavior
 
@@ -131,6 +134,16 @@ Characteristics:
 - The ws/ base branch tracks upstream for status visibility; feature branches do not
 - Branch names have no prefix (no conflict risk when pushing to fork)
 - Push target determined by origin's pushurl
+
+### Tracking-display limitation
+
+The pool is a single-branch clone (`--single-branch`), so its fetch refspec only materializes the default branch's remote-tracking ref. A raw-mode branch created with `git checkout -b <name>` and pushed does **not** materialize `refs/remotes/origin/<name>` — `git status` / `@{upstream}` show no ahead/behind for it. The branch and its push are unaffected; only the tracking display is blank.
+
+Remedies (agent's choice — orbit takes no stance):
+- Run `git fetch origin <name>` once after the first push to materialize the ref.
+- Use scoped mode (`orbit switch -c`), which pre-registers the branch's fetch refspec so the first push materializes tracking automatically.
+
+`orbit add` emits a stderr note describing this so both agents and humans perceive it. `push.autoSetupRemote=true` (git ≥ 2.37, recommend git ≥ 2.42) still sets the *local* tracking config on first bare push; the limitation is only the remote-tracking ref under the single-branch refspec.
 
 ## Scoped Mode (orbit switch, Prefix Isolation)
 

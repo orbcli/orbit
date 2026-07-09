@@ -144,6 +144,84 @@ teardown() {
   [ "$push_default" = "upstream" ]
 }
 
+@test "switch: ensures push.autoSetupRemote=true on repo" {
+  local proj="$SANDBOX/switch-autosetup"
+  clone_project "$proj" "$SHARED_PROJECT_WITH_BRANCH"
+  cd "$proj" && orbit new "switch test" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+  git -C "$proj/.repos/myrepo" config --unset push.autoSetupRemote 2>/dev/null || true
+
+  cd "$proj/dev/myrepo" && orbit switch -c feat-new >/dev/null 2>&1
+  local v
+  v=$(git -C "$proj/.repos/myrepo" config --get push.autoSetupRemote)
+  [ "$v" = "true" ]
+}
+
+@test "raw mode: bare git push on checkout -b branch creates remote + tracking" {
+  local gv
+  gv=$(git --version | awk '{print $3}')
+  [ "$(printf '%s\n' "2.37" "$gv" | sort -V | head -n1)" = "2.37" ] || skip "git < 2.37"
+  local proj="$SANDBOX/raw-push"
+  local remote="$REMOTES/raw-push.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+
+  cd "$proj" && orbit new "raw push" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+
+  cd "$proj/dev/myrepo"
+  git checkout -b feature/raw >/dev/null 2>&1
+  echo "raw" > raw.txt
+  git add raw.txt >/dev/null 2>&1
+  git commit -m "raw commit" >/dev/null 2>&1
+
+  run git push
+  [ "$status" -eq 0 ]
+
+  # remote branch created by the bare push (no -u needed)
+  git ls-remote --heads "$remote" feature/raw | grep -q feature/raw
+  # tracking config set by autoSetupRemote (remote-tracking ref itself is not
+  # materialized under the pool's --single-branch fetch refspec)
+  [ "$(git config --get branch.feature/raw.remote)" = "origin" ]
+  [ "$(git config --get branch.feature/raw.merge)" = "refs/heads/feature/raw" ]
+}
+
+@test "switch: -c pre-registers fetch refspec for the new branch" {
+  local proj="$SANDBOX/switch-refspec"
+  clone_project "$proj" "$SHARED_PROJECT_WITH_BRANCH"
+  cd "$proj" && orbit new "switch test" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+
+  cd "$proj/dev/myrepo" && orbit switch -c feat-new >/dev/null 2>&1
+  git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch \
+    | grep -Fqx "+refs/heads/feat-new:refs/remotes/origin/feat-new"
+}
+
+@test "scoped mode: git push after switch -c materializes remote-tracking ref" {
+  local proj="$SANDBOX/scoped-push"
+  local remote="$REMOTES/scoped-push.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+
+  cd "$proj" && orbit new "scoped push" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+  cd "$proj/dev/myrepo" && orbit switch -c feat-scoped >/dev/null 2>&1
+
+  echo "s" > s.txt
+  git add s.txt >/dev/null 2>&1
+  git commit -m "scoped commit" >/dev/null 2>&1
+  run git push
+  [ "$status" -eq 0 ]
+
+  # remote-tracking ref now exists and @{upstream} resolves
+  git rev-parse --verify --quiet origin/feat-scoped >/dev/null
+  local up
+  up=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}')
+  [ "$up" = "origin/feat-scoped" ]
+}
+
 @test "switch: switches to existing remote branch with tracking" {
   local proj="$SANDBOX/switch-test5"
   clone_project "$proj" "$SHARED_PROJECT_WITH_BRANCH"

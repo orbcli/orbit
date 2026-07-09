@@ -208,6 +208,72 @@ teardown() {
   [ "$new_head2" = "$old_head2" ]
 }
 
+_push_update_to() {
+  # push a new commit to the given remote so sync can fast-forward
+  local remote="$1"
+  local tmp
+  tmp=$(mktemp -d "$SANDBOX/_tmp_sync_XXXXXX")
+  git clone "$remote" "$tmp" >/dev/null 2>&1
+  (
+    cd "$tmp"
+    echo "update" > update.txt
+    git add update.txt >/dev/null 2>&1
+    git commit -m "update" >/dev/null 2>&1
+    git push origin main >/dev/null 2>&1
+  )
+  rm -rf "$tmp"
+}
+
+@test "sync: hints pull when worktree tracks the branch sync advanced" {
+  local proj="$SANDBOX/sync-hint-ws"
+  local remote="$REMOTES/sync-hint-ws.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+
+  cd "$proj" && orbit new "hint test" --name ws1 >/dev/null 2>&1
+  cd "$proj/ws1" && orbit add myrepo >/dev/null 2>&1
+
+  _push_update_to "$remote"
+
+  run bash -c "cd '$proj/ws1' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "is now behind"
+}
+
+@test "sync: no hint when worktree is on a non-matching branch" {
+  local proj="$SANDBOX/sync-hint-feat"
+  local remote="$REMOTES/sync-hint-feat.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+
+  cd "$proj" && orbit new "hint test" --name ws1 >/dev/null 2>&1
+  cd "$proj/ws1" && orbit add myrepo >/dev/null 2>&1
+  # raw-mode feature branch: no upstream, does not track origin/main
+  git -C "$proj/ws1/myrepo" checkout -b feature/x >/dev/null 2>&1
+
+  _push_update_to "$remote"
+
+  run bash -c "cd '$proj/ws1' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo 2>&1"
+  [ "$status" -eq 0 ]
+  ! assert_contains "$output" "is now behind"
+}
+
+@test "sync: no worktree hint at project root" {
+  local proj="$SANDBOX/sync-hint-root"
+  local remote="$REMOTES/sync-hint-root.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+
+  _push_update_to "$remote"
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo 2>&1"
+  [ "$status" -eq 0 ]
+  ! assert_contains "$output" "is now behind"
+}
+
 # --- info fetch behavior ---
 
 @test "info: shows upstream behind warning after fetch" {

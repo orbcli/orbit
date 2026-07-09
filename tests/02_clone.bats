@@ -26,6 +26,18 @@ teardown() {
   [ "$push_default" = "upstream" ]
 }
 
+@test "clone: sets push.autoSetupRemote=true on cloned repo" {
+  local proj="$SANDBOX/clone-autosetup"
+  mkdir -p "$proj/.repos"
+  touch "$proj/.repos/.orbit"
+  TEST_PROJECT="$proj"
+
+  cd "$proj" && orbit clone "$SHARED_REMOTE" --name backend >/dev/null 2>&1
+  local v
+  v=$(git -C "$proj/.repos/backend" config --get push.autoSetupRemote)
+  [ "$v" = "true" ]
+}
+
 @test "clone: writes url to .repos/.orbit index" {
   local proj="$SANDBOX/clone-test2"
   mkdir -p "$proj/.repos"
