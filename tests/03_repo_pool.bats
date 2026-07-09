@@ -38,7 +38,7 @@ teardown() {
 
   local stderr_output
   stderr_output=$(cd "$proj" && orbit repos 2>&1 >/dev/null || true)
-  assert_contains "$stderr_output" "no memo found"
+  assert_contains "$stderr_output" "has no memo, using README"
 }
 
 @test "repos: shows brief from index after memo is written" {

@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Workspace lifecycle: `new`, `add`, `switch`, `done`, `prune`
 - Workspace reactivation: setting a goal on a done workspace clears its completion record and PR history; `orbit add` on a done workspace warns it is prune-eligible
 - Status and context: `status`, `goal`, `context`
-- Configuration: `config`, `doctor`, `completion`
+- Configuration and diagnostics: `config`, `doctor`, `completion`, `version`
 - Knowledge system: `memo` (read/write), `jot` (quick notes)
 - Claude Code and Qoder skill definitions
 - `install.sh` with `--claude` / `--qoder` (alias `--qodercli`) / `--zsh` / `--bash` support

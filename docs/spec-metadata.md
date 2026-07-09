@@ -78,13 +78,13 @@ Output by `orbit info backend`, pure markdown, agent reads and writes freely:
 
 Go REST API, sqlc-generated DB layer.
 
-## Key Entry Points
-- `cmd/server/main.go` — service startup
-- `api/` — OpenAPI definitions
-- `internal/service/` — business logic
+## When to add (roles)
+- Owns the public `/orders` and `/auth` HTTP API — add for any endpoint or auth change.
+- Source of the OpenAPI contract other services generate clients from.
 
-## Tech Stack
-Go 1.22, sqlc, PostgreSQL
+## How to use
+- `api/` — OpenAPI definitions; edit here first, handlers follow.
+- `cmd/server/main.go` — service startup + route mounting; start here to trace a request.
 ```
 
 ### Brief Extraction Rules
@@ -99,7 +99,7 @@ Example:
 
 Go REST API, sqlc-generated DB layer, Echo router.
 
-## Key Entry Points
+## When to add (roles)
 ...
 ```
 
@@ -150,24 +150,32 @@ All commands that write to workspace `.orbit` (`orbit add`, `orbit done`, `orbit
 
 ```ini
 [jot]
-	backend = [seed] no/low memo — explore entry points, structure, build; jot findings; write memo before done
-	backend = entry point is cmd/main.go
-	backend = uses Echo router
-	frontend = state managed via Redux
+	backend = [seed] no/low memo — explore <explore.paths> and write a pull-decision card (roles + how to use) before done
+	backend = entry point: cmd/server/main.go — start here to trace startup
+	backend = role: owns the public /auth API — add for any login/accounts task
+	frontend = entry point: src/main.tsx — app bootstrap
 ```
+
+Entries are card-scoped: a role or an MVP/VIP entry point the card needs (jot only feeds the card). Deep structure (framework choice, module internals) is out of card scope and is not jotted.
 
 `orbit jot <repo> --pop` outputs all values for the specified repo key, then removes them via `git config --unset-all`. Pop is consume-on-read — entries are deleted after retrieval.
 
-**`[seed]` sentinel**: an entry prefixed with `[seed] ` is a system-generated placeholder that `orbit add` writes for a thin/missing-memo repo (once per repo). It is an instruction to explore and write a memo, not a discovery — the gap model (`orbit context gaps`) counts only non-`[seed]` entries as real capture, and it must be dropped (never merged) at aggregation. See [spec-knowledge](./spec-knowledge.md).
+**`[seed]` sentinel**: an entry prefixed with `[seed] ` is a system-generated instruction, not a discovery. Two commands write one:
+- `orbit add` writes `[seed] no/low memo ...` for a thin/missing-memo repo (once per repo) — explore and write a card.
+- `orbit memo` writeback writes `[seed] memo over budget ...` when the card it just wrote exceeds `memo.maxLines + memo.minLines` — pop and curate the card back under budget (best-effort). This reuses the reliable jot machinery (done / overflow / session-start) to force a curation pass; it is *surplus*, not a gap.
 
-The `Stop` hook records a per-repo throttle marker so it nudges about each gap at most once:
+Either way the entry must be dropped (never merged) at aggregation, and the gap model (`orbit context gaps`) counts only non-`[seed]` entries as real capture. Note the two are distinct conditions: a thin memo is a **gap** (absence, flagged by `orbit context gaps`); an over-budget memo is **surplus** (present but un-curated) and is *not* a gap — its `[seed]` never marks the repo a gap because the memo is well above `memo.minLines`. See [spec-knowledge](./spec-knowledge.md).
+
+Two per-repo throttle markers keep the seeds from re-firing:
 
 ```ini
 [nudge "backend"]
 	seen = 1
+[overlong "backend"]
+	seen = 1
 ```
 
-The repo name is a case-sensitive subsection (so names with dots or mixed case key correctly). This is hook-local bookkeeping (not read by the CLI); it persists until the gap is closed.
+`[nudge]` is hook-local (the `Stop` hook nudges about each gap at most once; not read by the CLI; persists until the gap closes). `[overlong]` is CLI-local: `orbit memo` sets it when it seeds an over-budget card and clears it once the card drops back under the buffer, so best-effort curation that lands slightly over the ceiling is not re-seeded forever. `orbit goal` reactivation clears both so a new work cycle re-forces any still-open gap or still-bloated memo. The repo name is a case-sensitive subsection (so names with dots or mixed case key correctly).
 
 After `orbit done` writes:
 
@@ -192,11 +200,11 @@ After `orbit done` writes:
 Source priority:
 1. Global index `repos.<name>.brief` field (cached)
 2. Per-repo `.md` first effective text paragraph after heading (real-time extraction, repair path when index and .md are out of sync)
-   -> stderr: `orbit: <repo>: index out of sync, run 'orbit memo <repo> --refresh'`
+   -> stderr: `orbit: <repo> index out of sync: refresh it with memo <repo> --refresh`
 3. README fallback: extract using the same rules from repo's README (**not written to meta**, display only for current invocation)
-   -> stderr: `orbit: <repo>: no memo found, using README fallback`
+   -> stderr: `orbit: <repo> has no memo, using README instead`
 4. None available -> brief column displays `-`
-   -> stderr: `orbit: <repo>: no memo or README available`
+   -> stderr: `orbit: <repo> has no memo or README`
 
 Case 2 prompts index repair (.md exists meaning memo was previously executed, but index lost brief due to concurrent write or corruption).
 Cases 3 and 4 do not write back to index cache; stderr guides the agent to generate a proper .md file via `orbit memo <repo>`.
@@ -238,8 +246,9 @@ Field descriptions:
 
 Source priority:
 1. Per-repo `.repos/.<repo>.md` file (outputs full text directly)
-2. No `.md` file -> outputs the repo's README (**not written to meta**, display only for current invocation)
-   -> stderr: `orbit: <repo>: no memo found, showing README`
+2. No `.md` file -> outputs the repo's README, truncated to `memo.maxLines` (default 16) lines (**not written to meta**, display only for current invocation)
+   -> stderr: `orbit: <repo> has no memo, showing README`
+   -> if truncated, stderr also: `orbit: <repo> README truncated to <N> lines, no memo yet`
 3. No README -> outputs hint message ("no memo available")
    -> stderr: `orbit: <repo>: use 'orbit memo <repo>' to add`
 
@@ -259,7 +268,7 @@ orbit memo <repo> --refresh       # refresh only a single repo's index entry (do
 
 ### `orbit memo --scaffold` Output Format
 
-`--scaffold` outputs a pure template to stdout, listing the recommended memo section structure (Key Entry Points, Key Directories, Module Boundaries, Internal Dependencies, Depended By, Build & Test, Configuration, Key Conventions), with all content as TODO placeholders. The agent uses this as reference, explores the repo, then writes the formal memo via `cat ... | orbit memo <repo>`.
+`--scaffold` outputs a pure template to stdout: the pull-decision card structure — title + brief, `## When to add (roles)` (unbounded), `## How to use` (MVP/VIP entry points, unbounded) — with content as TODO placeholders. The agent uses this as reference, explores the repo (within `explore.paths`), then writes the formal card via `cat ... | orbit memo <repo>`.
 
 Rules:
 - Output to stdout only, does not write to `.md` file, does not update index

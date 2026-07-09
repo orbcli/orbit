@@ -85,31 +85,28 @@ Specific agent behavior rules (cold-start sync before add, no mid-work sync prom
 
 ## Memo Lifecycle
 
-Memo is a finite-capacity knowledge cache, not an ever-growing document. Each session incrementally maintains what previous sessions built rather than rewriting.
+Memo is a **pull-decision card**, not a code survey. It answers exactly two questions so the next agent can decide whether to pull the repo into a workspace and where to start:
+
+1. **When/why add this repo?** — its roles. Plural and unbounded: a repo may fill many roles; list every one.
+2. **How do I use it in the simplest way?** — the MVP/VIP file-or-dir paths to start from, each with why it matters and when to reach for it. Also plural — a CLI entry and a core package can both belong here; no cap.
+
+Deep code-structure documentation (module boundaries, data layer, conventions, pitfalls, API enumeration, dependency graphs) is **out of orbit's scope** — that is a code-doc's job. If such a doc exists, add its path to `explore.paths` or bring it into the pool as a workspace member; orbit stays agnostic about its format.
 
 ### Capacity Budget
 
-~80 lines. Cold start writes ~40 lines (half capacity), reserving space for knowledge accumulated by subsequent sessions.
+Hard upper bound ~16 lines (`memo.maxLines`). The ceiling is a **compress trigger**, not a target: when the card passes it, curate instead of appending, so the jot → incremental-memo pipeline keeps the card tight rather than letting it re-bloat into a survey. Cold start writes well under it (roles + how-to-use). The soft lower bound `memo.minLines` (~4) is the gap/thin floor: below it, the repo counts as having no real card yet.
 
 ### Creation (Cold Start)
 
-Written when the memo is missing or low quality. The goal is just enough for the next agent to avoid starting from scratch — not completeness. Write only the most relevant 3–4 sections (brief + entry points + module boundaries + build commands).
+Written when the memo is missing or below the floor. The goal is a decision card, not completeness: the roles and the MVP/VIP entry points, nothing more. Cold-start exploration is bounded to `explore.paths` (a `path:depth` list, default root at depth 1; the user can extend it) — enough to name the roles and entry points without surveying the whole tree.
 
 ### Incremental Update
 
-When the agent discovers new knowledge: read existing memo -> minimal edit -> write back. Correct errors, append new knowledge, do not rewrite content that is still accurate. `orbit memo` at the CLI level is still a full stdin write; incremental logic is enforced at the agent skill layer.
+When the agent discovers new knowledge: read existing card -> minimal edit -> write back. Correct errors, add a role or entry point, do not rewrite content that is still accurate. `orbit memo` at the CLI level is still a full stdin write; incremental logic is enforced at the agent skill layer.
 
 ### Compression
 
-When memo exceeds budget, the agent evaluates each section's value to future sessions, judging whether to retain, compress, or discard based on three dimensions:
-
-| Dimension | High Value (Retain) | Low Value (Compress or Discard) |
-|-----------|--------------------|---------------------------------|
-| **Inferrability** | Requires deep exploration to discover (hidden conventions, cross-repo call chains, pitfalls) | Can be directly inferred from file names/directory structure/code |
-| **Cross-session universality** | Useful for any task (entry points, build commands, module boundaries) | Details specific to the current task only |
-| **Reconstruction cost** | Rediscovery requires significant time (multi-file tracing, trial and error) | Can be recovered with a single grep or ls |
-
-Low-value sections can be deleted entirely; medium-value sections compressed to 1-2 line summaries; high-value sections retain details. Brief (first paragraph) is never compressed.
+When the card passes the `memo.maxLines` ceiling, curate — don't append. Keep what is costly to rediscover (why a role exists, a non-obvious entry point) and drop what a quick `ls`/grep would reveal anyway. Brief (first line) is never compressed.
 
 Specific behavior rules are in `skills/CONSTRAINTS.md` Memo Write-back Rules.
 
@@ -119,23 +116,40 @@ Metadata generation is not a side effect of orbit commands, but a natural output
 
 - `orbit clone` only records url + head (machine-determinable facts)
 - The agent discovers via `orbit repos` → understands via `orbit info` → adds via `orbit add` → gains understanding through actual work
-- During work, the agent records discoveries via `orbit jot "one-liner"` — lightweight queue (~20 tokens per entry vs ~500 for full memo read-merge-write)
+- During work, the agent records card-relevant discoveries (a role or entry point the card needs) via `orbit jot "one-liner"` — lightweight queue (~20 tokens per entry vs ~500 for full memo read-merge-write)
 - At natural breakpoints (wrap-up before done, or jot overflow warning at >10 entries), the agent aggregates: `orbit jot <repo> --pop` → `orbit info <repo>` → merge entries into memo → `orbit memo <repo>`
-- **Memo describes the pool repo's stable (main) branch state, not feature branch state.** The agent does not update memo while on a feature branch; after PR merge + `orbit sync`, it evaluates whether memo needs updating based on structural changes
+- **Memo describes the pool repo's stable (main) branch state, not feature branch state.** The agent does not update memo while on a feature branch; after PR merge + `orbit sync`, it evaluates whether the card needs updating — i.e. whether roles or entry points changed
 
 This is why orbit does not auto-generate memos at clone time: machine-generated summaries without code understanding have low value — better to let the agent produce them naturally during work. Similarly, staleness hints only report distance numbers without auto-triggering updates — the timing and quality of updates are determined by the agent based on actual work. The jot queue further reduces the cost of knowledge capture: recording a discovery is cheap enough to do immediately, while the expensive memo merge is deferred to a natural breakpoint.
 
+### The jot → memo reliable-trigger path
+
+Memo value depends on discoveries actually reaching the memo. The path from a discovery to a curated card is designed so that **no single missed step loses the knowledge** — every stage persists to disk (`.orbit`), so context loss (compaction, session end, delegation) cannot silently drop it.
+
+1. **Capture (jot, during work).** jot feeds the card, so its payload is scoped to what the card needs and lacks — a **role** or an **MVP/VIP entry point** the card is missing or gets wrong (deep code structure is out of card scope and is not jotted). The moment such a discovery surfaces, `orbit jot <repo> "…"` appends it to the workspace `.orbit`. Append-only + concurrency-safe → any agent or worker can capture without reading/locking the memo. Cheap enough (~20 tokens) to do immediately, so capture is never deferred "until wrap-up" (where compaction would have erased it).
+2. **Trigger (reliable, not memory-based).** Three independent triggers resurface pending captures so aggregation is not left to the agent remembering:
+   - *Overflow* — `orbit jot` warns past its threshold (10) entries, naming the `<min>~<max>`-line card budget as the aggregation target.
+   - *Wrap-up / done* — `orbit done` warns if any repo still has un-popped jot entries, also printing the `card budget is <min>~<max> lines` reminder.
+   - *Gap backstop* — the seed jot + gap model (next subsection) guarantees a no-memo repo keeps a non-empty queue, so the above triggers always fire for it.
+3. **Aggregate (memo, at checkpoint, owner-only).** `orbit jot <repo> --pop` drains the queue; the owner folds entries into the card (read-modify-write) and writes back via `orbit memo <repo>`. Curation stays serial and owner-scoped (concurrent writers lose updates); `[seed]` lines are dropped, never folded. When the card passes the ceiling, curate rather than append.
+
+Because each stage lands in `.orbit` before the next, a deferred fold loses nothing: popped entries not yet merged, or captures not yet popped, all persist until a future session drains them. This is why the card can be a deliberately thin cold-start artifact and still converge on real knowledge — the pipeline keeps topping it up during coding.
+
 ### Memo gap guarantee (seed jot + gap model)
 
-The weakest link in agent-driven knowledge generation is the no/low-memo repo: an agent adds it, does the work, never jots, and finishes — leaving the pool repo with no reusable context, and compaction erases any in-context "write the memo later" intent. Orbit closes this with a durable seed plus a layered guarantee that survives context loss:
+This closes the weakest link in the path above: the no/low-memo repo an agent adds, works in, never jots, and finishes — leaving the pool repo with no reusable context, and compaction erasing any in-context "write the memo later" intent. Orbit closes it with a durable seed plus a layered guarantee that survives context loss:
 
-- **Seed (CLI).** When `orbit add` sees a thin/missing memo (missing, or fewer than `ORBIT_MEMO_THIN_LINES` ≈ 12 non-blank lines), it appends one `[seed] ...` jot entry (once per repo). The seed lives in `.orbit`, not agent context, so it survives compaction.
+- **Seed (CLI).** When `orbit add` sees a thin/missing memo (missing, or fewer than `memo.minLines` non-blank lines, default 4), it appends one `[seed] ...` jot entry (once per repo). The seed lives in `.orbit`, not agent context, so it survives compaction.
 - **Gap definition.** A repo in the workspace is a **gap** when its memo is thin **and** it has no non-`[seed]` jot entry. The `[seed]` prefix is essential: a seed keeps the jot queue non-empty (so wrap-up `--pop` always resurfaces the instruction) without falsely counting as real capture that would close the gap. A single real jot closes the gap. `orbit context gaps` reports the current gap set (`--json` for tooling).
 - **Layered response (detection lives only in the CLI; response is redundant).**
   - *Skill* — instructs the agent to explore + jot + write a memo, and to drop `[seed]` lines at aggregation (model-driven; may be ignored).
   - *Hooks* — `Stop` nudges once per gap repo before the agent finishes; `SessionStart:compact` re-surfaces gaps after context loss (work even if the model ignores the skill).
   - *CLI gate* — `orbit done` warns for any remaining gap (the backstop when no hooks and no skill compliance).
 - **`[seed]` is never memo content.** It is a system instruction; aggregation drops it rather than folding it into the memo.
+
+**Over-budget is the mirror case (surplus, not a gap).** A gap is *absence* — nothing to inherit. The opposite failure is *surplus* — a card that grew past the ceiling and now costs too much to read. Orbit reuses the same seed machinery for it: when `orbit memo` writeback (run inside a workspace) leaves a card longer than `memo.maxLines + memo.minLines`, it appends one `[seed] memo over budget ...` jot and prints an immediate curate-down warning, so the reliable triggers (done jot-remain, overflow, session-start) force a curation pass. The `+ minLines` buffer means best-effort curation that lands slightly over `maxLines` is left alone. A per-repo `[overlong "<repo>"]` throttle stops re-seeding while the card stays over budget (curation is best-effort — orbit forces one pass per episode, not an unbounded loop); it clears when the card drops back under the buffer, or on `orbit goal` reactivation. The over-budget `[seed]` never marks the repo a gap: the memo is well above `memo.minLines`, so `orbit context gaps` ignores it. Gap = explore-and-write; surplus = curate-and-cut — opposite fixes, one shared trigger path.
+
+The gap guarantee is one instance of a broader mechanism: **warnings are orbit's guidance layer** (PRINCIPLES.md Principle 8). Orbit has no enforcement runtime, so it steers the agent through stderr hints — card budget, gap, jot overflow, staleness/sync-behind, tracking notes — that the agent is expected to act on. Warnings *guide*; they do not block (the sole exceptions are explicit gates like `orbit done`'s), and they never pollute stdout, which stays machine-readable data. The complete catalogue and message-format contract live in [spec-warnings.md](spec-warnings.md).
 
 ### Capture vs. aggregate under delegation
 

@@ -127,7 +127,7 @@ setup_workspace_with_repo() {
   done
   local stderr_output
   stderr_output=$(orbit jot myrepo "note 11" 2>&1 >/dev/null)
-  assert_contains "$stderr_output" "jot entries accumulated"
+  assert_contains "$stderr_output" "jot entries: run jot --pop"
 }
 
 # --- error cases ---
@@ -169,6 +169,59 @@ setup_workspace_with_repo() {
   { for i in $(seq 1 15); do printf 'line %s content here\n' "$i"; done; } | (cd "$proj" && orbit memo myrepo) >/dev/null 2>&1
   cd "$proj" && orbit new --name ws1 --no-goal >/dev/null 2>&1
   cd "$proj/ws1" && orbit add myrepo >/dev/null 2>&1
+  local entries
+  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null || true)
+  [ -z "$entries" ]
+}
+
+# --- over-length seed (memo past the max+min curate buffer) ---
+
+@test "memo: seeds a curate-down jot when the card is over budget" {
+  local proj="$SANDBOX/jot-overlong1"
+  setup_workspace_with_repo "$proj"
+  git config --file "$proj/.repos/.orbit" memo.minLines 2
+  git config --file "$proj/.repos/.orbit" memo.maxLines 3
+  cd "$proj/ws1"
+  # 7 non-blank lines > threshold (max 3 + min 2 = 5)
+  printf '# myrepo\n\nBrief.\n- a\n- b\n- c\n- d\n' | orbit memo myrepo >/dev/null 2>&1
+  local entries
+  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null)
+  assert_contains "$entries" "[seed]"
+  assert_contains "$entries" "over budget"
+}
+
+@test "memo: over-budget throttle prevents a second seed" {
+  local proj="$SANDBOX/jot-overlong2"
+  setup_workspace_with_repo "$proj"
+  git config --file "$proj/.repos/.orbit" memo.minLines 2
+  git config --file "$proj/.repos/.orbit" memo.maxLines 3
+  cd "$proj/ws1"
+  printf '# myrepo\n\nBrief.\n- a\n- b\n- c\n- d\n' | orbit memo myrepo >/dev/null 2>&1
+  printf '# myrepo\n\nBrief.\n- a\n- b\n- c\n- d\n- e\n' | orbit memo myrepo >/dev/null 2>&1
+  local count
+  count=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null | grep -c "over budget")
+  [ "$count" -eq 1 ]
+}
+
+@test "memo: dropping back under budget clears the over-length throttle" {
+  local proj="$SANDBOX/jot-overlong3"
+  setup_workspace_with_repo "$proj"
+  git config --file "$proj/.repos/.orbit" memo.minLines 2
+  git config --file "$proj/.repos/.orbit" memo.maxLines 3
+  cd "$proj/ws1"
+  printf '# myrepo\n\nBrief.\n- a\n- b\n- c\n- d\n' | orbit memo myrepo >/dev/null 2>&1
+  printf '# myrepo\n\nBrief.\n' | orbit memo myrepo >/dev/null 2>&1
+  run git config --file "$proj/ws1/.orbit" --get overlong.myrepo.seen
+  [ "$status" -ne 0 ]
+}
+
+@test "memo: no over-budget seed when run from project root" {
+  local proj="$SANDBOX/jot-overlong4"
+  setup_workspace_with_repo "$proj"
+  git config --file "$proj/.repos/.orbit" memo.minLines 2
+  git config --file "$proj/.repos/.orbit" memo.maxLines 3
+  cd "$proj"
+  printf '# myrepo\n\nBrief.\n- a\n- b\n- c\n- d\n' | orbit memo myrepo >/dev/null 2>&1
   local entries
   entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null || true)
   [ -z "$entries" ]

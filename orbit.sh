@@ -128,6 +128,13 @@ Usage:
 
   Options: --json for machine-readable output (repos, status, info, done, context, jot --pop)
 
+Config keys (project-level, via '$ORBIT_CMD config <key> <value>'):
+  agent.recommend       Launch command recommended after 'new' (e.g. 'claude "orbit start"')
+  memo.minLines         Memo card soft lower bound / gap floor (default: 4)
+  memo.maxLines         Memo card hard upper bound / compress + README-fallback cap (default: 16)
+  explore.paths         Cold-start memo exploration scope: comma-delimited <path>:<depth>
+                        list, e.g. '.:1,src:1,docs:2' (default: .:1)
+
 Environment:
   ORBIT_ROOT             Explicit project root (default: discover from CWD)
   ORBIT_BRANCH_PREFIX    Tracking branch prefix (default: ws)
@@ -332,16 +339,70 @@ orbit_ensure_workspace_orbit() {
   fi
 }
 
+# Memo card line bounds (project config on .repos/.orbit; not shell env — memo
+# is project-level state). minLines = soft lower bound (gap/thin floor): below
+# it a card isn't real yet. maxLines = hard upper bound (compress/curate ceiling
+# + README-fallback cap): above it, curate instead of appending.
+orbit_memo_min() {
+  local root="$1" v
+  v=$(git config --file "$root/.repos/.orbit" --get memo.minLines 2>/dev/null || true)
+  case "$v" in ''|*[!0-9]*) v=4 ;; esac
+  printf '%s' "$v"
+}
+orbit_memo_max() {
+  local root="$1" v
+  v=$(git config --file "$root/.repos/.orbit" --get memo.maxLines 2>/dev/null || true)
+  case "$v" in ''|*[!0-9]*) v=16 ;; esac
+  printf '%s' "$v"
+}
+
+# Over-length seed threshold = maxLines + minLines. A card past the hard ceiling
+# by more than the min-floor buffer is genuinely bloated; best-effort curation
+# that lands slightly over the ceiling stays under this line and is left alone.
+orbit_memo_overlong_threshold() {
+  local root="$1"
+  printf '%s' "$(( $(orbit_memo_max "$root") + $(orbit_memo_min "$root") ))"
+}
+
 # A memo is "thin" (missing or low-quality) if the file is absent or has fewer
-# than ORBIT_MEMO_THIN_LINES non-blank lines. Conservative on purpose: the
-# cold-start target is ~40 lines, so this only flags genuinely empty/stub memos.
-ORBIT_MEMO_THIN_LINES=12
+# than memo.minLines non-blank lines. Conservative on purpose: only flags
+# genuinely empty/stub cards that still need a real pull-decision card written.
 orbit_memo_is_thin() {
-  local md_file="$1"
+  local md_file="$1" root="$2"
   [ -f "$md_file" ] || return 0
-  local n
+  local n min
   n=$(grep -c '[^[:space:]]' "$md_file" 2>/dev/null || echo 0)
-  [ "$n" -lt "$ORBIT_MEMO_THIN_LINES" ]
+  min=$(orbit_memo_min "$root")
+  [ "$n" -lt "$min" ]
+}
+
+# Cold-start exploration scope for writing a memo card: a comma-delimited list
+# of <path>:<depth> entries (project config; default the repo root at depth 1).
+# One global knob, consumed only at first `orbit add` of a repo; afterward the
+# jot -> incremental-memo pipeline maintains the card. Doc-format agnostic —
+# orbit attaches no meaning to what lives at the paths.
+orbit_explore_paths() {
+  local root="$1" v
+  v=$(git config --file "$root/.repos/.orbit" --get explore.paths 2>/dev/null || true)
+  [ -n "$v" ] || v=".:1"
+  printf '%s' "$v"
+}
+
+# Render the stored path:depth list as human text so a reader need not know the
+# convention: ".:1,src:2" -> ". (depth 1), src (depth 2)".
+orbit_explore_paths_human() {
+  local raw out="" entry path depth
+  raw=$(orbit_explore_paths "$1")
+  local oldifs="$IFS"; IFS=,
+  for entry in $raw; do
+    IFS="$oldifs"
+    path="${entry%%:*}"; depth="${entry##*:}"
+    [ -n "$out" ] && out="$out, "
+    out="$out$path (depth $depth)"
+    IFS=,
+  done
+  IFS="$oldifs"
+  printf '%s' "$out"
 }
 
 # A jot entry is a system-generated seed placeholder (not a real discovery) when
@@ -368,7 +429,7 @@ orbit_list_gaps() {
     [ -d "$d" ] || continue
     [ -d "$d/.git" ] || [ -f "$d/.git" ] || continue
     name=$(basename "$d")
-    orbit_memo_is_thin "$root/.repos/.$name.md" || continue
+    orbit_memo_is_thin "$root/.repos/.$name.md" "$root" || continue
     orbit_repo_has_real_jot "$orbit_file" "$name" && continue
     printf '%s\n' "$name"
   done
@@ -418,7 +479,8 @@ orbit_staleness_check() {
   if [ "$stored" != "$current" ]; then
     local distance
     distance=$(git -C "$repo_dir" rev-list "$stored".."$current" --count 2>/dev/null || echo "?")
-    printf 'orbit: %s: memo is %s commits behind HEAD\n' "$repo_name" "$distance" >&2
+    printf 'orbit: %s memo is %s commits behind HEAD: skim the changes, then update memo %s, or run memo %s --refresh if structure is unchanged\n' \
+      "$repo_name" "$distance" "$repo_name" "$repo_name" >&2
   fi
 }
 
@@ -433,7 +495,8 @@ orbit_upstream_check() {
   if [ "$local_head" != "$remote_head" ]; then
     local distance
     distance=$(git -C "$repo_dir" rev-list "$local_head".."$remote_head" --count 2>/dev/null || echo "?")
-    printf 'orbit: %s: %s new commits on origin/%s\n' "$repo_name" "$distance" "$branch" >&2
+    printf 'orbit: %s has %s new commits on origin/%s: run sync %s before you add or rely on it\n' \
+      "$repo_name" "$distance" "$branch" "$repo_name" >&2
   fi
 }
 
@@ -539,7 +602,6 @@ orbit_new() {
 
   if [ "$no_goal" = true ]; then
     [ -z "$goal" ] || orbit_fail "--no-goal cannot be combined with a goal argument"
-    [ -n "$name" ] || orbit_fail "--no-goal requires --name (cannot derive name from empty goal)"
   elif [ -z "$goal" ]; then
     local use_editor=false
     if [ -n "${ORBIT_EDITOR:-}" ]; then
@@ -651,9 +713,7 @@ orbit_add() {
   local ws_status
   ws_status=$(git config --file "$root/$ws/.orbit" --get workspace.status 2>/dev/null || true)
   if [ "$ws_status" = "done" ]; then
-    # backticks are literal text in the user-facing hint
-    # shellcheck disable=SC2016
-    printf 'orbit: warning: workspace %s is marked done and is prune-eligible; run `orbit goal "<text>"` to reactivate before resuming work\n' "$ws" >&2
+    printf 'orbit: workspace %s is marked done and prune-eligible: reactivate it with goal "<text>" before resuming work\n' "$ws" >&2
   fi
 
   local repo_dir="$root/.repos/$repo_name"
@@ -716,10 +776,12 @@ orbit_add() {
   # keeps the jot queue non-empty so wrap-up/done still force a memo even if the
   # agent never jots. The [seed] sentinel keeps it from closing the gap (it is not
   # a real capture) and marks it as an instruction to drop, not merge, into memo.
-  if orbit_memo_is_thin "$root/.repos/.$repo_name.md" \
+  local explore_paths
+  explore_paths=$(orbit_explore_paths_human "$root")
+  if orbit_memo_is_thin "$root/.repos/.$repo_name.md" "$root" \
      && ! orbit_repo_has_seed "$ws_dir/.orbit" "$repo_name"; then
     git config --file "$ws_dir/.orbit" --add "jot.$repo_name" \
-      "$(orbit_jot_seed_prefix)no/low memo — explore entry points, structure, build; jot findings; write memo before done"
+      "$(orbit_jot_seed_prefix)no/low memo: explore $explore_paths and write a pull-decision card (roles + how to use) before done"
   fi
 
   # Surface the memo so agents that skipped `orbit info` still get repo context.
@@ -729,14 +791,13 @@ orbit_add() {
     # you create with `git checkout -b <name>` and push won't show remote tracking
     # in `git status` / `@{upstream}` until `git fetch origin <name>` materializes
     # the ref. `orbit switch -c <name>` (scoped) wires tracking up front.
-    # shellcheck disable=SC2016
-    printf 'orbit: note: raw-mode branches (git checkout -b) won'\''t show remote tracking under the single-branch pool until `git fetch origin <branch>`; `orbit switch -c <name>` sets tracking up front\n' >&2
+    printf 'orbit: raw-mode branches (git checkout -b) stay untracked under the single-branch pool: run git fetch origin <branch> after pushing, or use switch -c <name> to wire tracking up front\n' >&2
     local md_file="$root/.repos/.$repo_name.md"
     if [ -f "$md_file" ]; then
       printf -- '--- memo: %s (pass -s to suppress) ---\n' "$repo_name" >&2
       cat "$md_file" >&2
     else
-      printf -- '--- no memo for %s: explore the repo and run '\''orbit memo %s'\'' (pass -s to suppress) ---\n' "$repo_name" "$repo_name" >&2
+      printf 'orbit: no memo for %s: explore %s and write a pull-decision card (roles + how to use), then write it with memo %s (pass -s to suppress)\n' "$repo_name" "$explore_paths" "$repo_name" >&2
     fi
   fi
 }
@@ -875,7 +936,7 @@ orbit_sync_one() {
       local wt_up
       wt_up=$(git -C "$wt" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
       if [ "$wt_up" = "origin/$branch" ]; then
-        printf "orbit: %s: pool advanced; your worktree (tracking origin/%s) is now behind and untouched by sync — update it with native git if you want\n" "$repo_name" "$branch" >&2
+        printf 'orbit: %s pool advanced but your worktree (tracking origin/%s) is untouched by sync: pull it with git if you want the new commits\n' "$repo_name" "$branch" >&2
       fi
     fi
   fi
@@ -1107,6 +1168,20 @@ orbit_goal() {
     git config --file "$orbit_file" --unset workspace.done-at 2>/dev/null || true
     git config --file "$orbit_file" --unset workspace.done-date 2>/dev/null || true
     git config --file "$orbit_file" --remove-section pr 2>/dev/null || true
+    # Reset per-repo Stop-hook nudge throttles so a new work cycle re-nudges
+    # any repo still in the gap set, and over-length throttles so a still-bloated
+    # memo gets re-seeded for curation this cycle.
+    local nkey nsub
+    while IFS= read -r nkey; do
+      [ -n "$nkey" ] || continue
+      nsub="${nkey#nudge.}"; nsub="${nsub%.seen}"
+      git config --file "$orbit_file" --remove-section "nudge.$nsub" 2>/dev/null || true
+    done < <(git config --file "$orbit_file" --name-only --get-regexp '^nudge\.' 2>/dev/null || true)
+    while IFS= read -r nkey; do
+      [ -n "$nkey" ] || continue
+      nsub="${nkey#overlong.}"; nsub="${nsub%.seen}"
+      git config --file "$orbit_file" --remove-section "overlong.$nsub" 2>/dev/null || true
+    done < <(git config --file "$orbit_file" --name-only --get-regexp '^overlong\.' 2>/dev/null || true)
   fi
 
   git config --file "$orbit_file" workspace.goal "$goal"
@@ -1210,7 +1285,8 @@ orbit_jot() {
   local count
   count=$(git config --file "$orbit_file" --get-all "jot.$repo_name" 2>/dev/null | wc -l | tr -d ' ')
   if [ "$count" -gt "$JOT_WARN_THRESHOLD" ]; then
-    printf 'orbit: %s: %s jot entries accumulated, consider merging into memo\n' "$repo_name" "$count" >&2
+    printf 'orbit: %s has %s jot entries: run jot --pop, read info, then rewrite the memo card in %s~%s lines\n' \
+      "$repo_name" "$count" "$(orbit_memo_min "$root")" "$(orbit_memo_max "$root")" >&2
   fi
 }
 
@@ -1241,14 +1317,19 @@ orbit_done() {
     jot_repos+=("$rname")
   done < <(git config --file "$orbit_file" --get-regexp '^jot\.' 2>/dev/null | awk '{print $1}' | sort -u)
   if [ "${#jot_repos[@]}" -gt 0 ]; then
-    printf 'orbit: warning: jot entries remain for: %s — consider aggregating into memo before done\n' "${jot_repos[*]}" >&2
+    printf 'orbit: jot entries remain for %s: run jot --pop, read info, then merge into the memo before done\n' "${jot_repos[*]}" >&2
   fi
 
   # Sharper gate: repos still lacking a real memo (thin + no real capture).
   local gap_repos=()
   while IFS= read -r g; do [ -n "$g" ] && gap_repos+=("$g"); done < <(orbit_list_gaps "$root" "$ws_dir")
   if [ "${#gap_repos[@]}" -gt 0 ]; then
-    printf 'orbit: warning: no memo yet for: %s — explore and write a memo before done (next session inherits nothing)\n' "${gap_repos[*]}" >&2
+    printf 'orbit: no memo yet for %s: explore and write a memo before done or the next session inherits nothing\n' "${gap_repos[*]}" >&2
+  fi
+
+  if [ "${#jot_repos[@]}" -gt 0 ] || [ "${#gap_repos[@]}" -gt 0 ]; then
+    printf 'orbit: card budget is %s~%s lines: curate the memo to roles + how to use, don'\''t just append\n' \
+      "$(orbit_memo_min "$root")" "$(orbit_memo_max "$root")" >&2
   fi
 
   local now now_date
@@ -1334,7 +1415,7 @@ orbit_repos() {
       if [ -f "$md_file" ]; then
         brief=$(orbit_brief_extract "$md_file" || true)
         if [ -n "$brief" ] && [ "$json_mode" -eq 0 ]; then
-          printf 'orbit: %s: index out of sync, run '\''orbit memo %s --refresh'\''\n' "$name" "$name" >&2
+          printf 'orbit: %s index out of sync: refresh it with memo %s --refresh\n' "$name" "$name" >&2
         fi
       fi
     fi
@@ -1347,7 +1428,7 @@ orbit_repos() {
       if [ -n "$readme" ]; then
         brief=$(orbit_brief_extract "$readme" || true)
         if [ -n "$brief" ] && [ "$json_mode" -eq 0 ]; then
-          printf 'orbit: %s: no memo found, using README fallback\n' "$name" >&2
+          printf 'orbit: %s has no memo, using README instead\n' "$name" >&2
         fi
       fi
     fi
@@ -1357,7 +1438,7 @@ orbit_repos() {
         brief=""
       else
         brief="-"
-        printf 'orbit: %s: no memo or README available\n' "$name" >&2
+        printf 'orbit: %s has no memo or README\n' "$name" >&2
       fi
     fi
 
@@ -1470,10 +1551,16 @@ orbit_info() {
     done
 
     if [ -n "$readme" ]; then
-      printf 'orbit: %s: no memo found, showing README\n' "$repo_name" >&2
-      content=$(cat "$readme")
+      printf 'orbit: %s has no memo, showing README\n' "$repo_name" >&2
+      local max total
+      max=$(orbit_memo_max "$root")
+      total=$(grep -c '' "$readme" 2>/dev/null || echo 0)
+      content=$(head -n "$max" "$readme")
+      if [ "$total" -gt "$max" ]; then
+        printf 'orbit: %s README truncated to %s lines, no memo yet\n' "$repo_name" "$max" >&2
+      fi
     else
-      printf 'orbit: %s: use '\''orbit memo %s'\'' to add\n' "$repo_name" "$repo_name" >&2
+      printf 'orbit: %s has no memo\n' "$repo_name" >&2
       content="(no memo available)"
     fi
   fi
@@ -1522,44 +1609,11 @@ orbit_memo_scaffold() {
 
 TODO — one sentence, ≤ 120 chars, what this repo is
 
-## Key Entry Points
-- \`TODO\` — main binary / request handler / CLI entry
+## When to add (roles)
+- TODO — a reason a workspace would pull this repo in (list every role; a repo may fill many)
 
-## Key Directories
-- \`TODO/\` — purpose
-
-## Module Boundaries
-- \`TODO/\` — public API surface (other repos import this)
-- \`TODO/\` — internal implementation
-
-## Internal Dependencies
-- TODO — pool repos this repo imports
-
-## Depended By
-- TODO — pool repos that import this repo
-
-## API / Interfaces
-- TODO — REST endpoints, gRPC services, CLI subcommands, exported packages
-
-## Data Layer
-- TODO — database, cache, message queue, storage
-
-## Build & Test
-- \`TODO\` — build command
-- \`TODO\` — test command
-- \`TODO\` — lint / CI config
-
-## Deploy
-- TODO — deploy method, environments, helm/k8s manifests
-
-## Configuration
-- \`TODO\` — config files, env vars, feature flags
-
-## Key Conventions
-- TODO — naming, error handling, codegen, patterns worth noting
-
-## Known Pitfalls
-- TODO — gotchas, workarounds, things that would surprise a new contributor
+## How to use
+- \`TODO\` — MVP/VIP file or dir path + why it matters + when to reach for it (list as many as needed; e.g. CLI entry, core package)
 EOF
 }
 
@@ -1612,6 +1666,32 @@ orbit_memo() {
   git config --file "$index" "repos.$repo_name.url" "$url"
   git config --file "$index" "repos.$repo_name.brief" "$brief"
   git config --file "$index" "repos.$repo_name.head" "$head"
+
+  # Over-length surplus (not a gap): if this write left the card well past the
+  # ceiling, seed the queue once so the reliable jot machinery (done / overflow /
+  # session-start) forces a curation pass. Consume-on-pop plus a per-repo throttle
+  # keep it from re-nagging when best-effort curation lands slightly over budget;
+  # the throttle re-arms once the card drops back under the buffer. Only when run
+  # from inside a workspace (there is a jot queue to seed).
+  local ws
+  if ws=$(orbit_infer_workspace "$root" 2>/dev/null) && [ -n "$ws" ]; then
+    local ws_dir="$root/$ws" orbit_file="$root/$ws/.orbit"
+    orbit_ensure_workspace_orbit "$ws_dir"
+    local n threshold
+    n=$(grep -c '[^[:space:]]' "$md_file" 2>/dev/null || echo 0)
+    threshold=$(orbit_memo_overlong_threshold "$root")
+    if [ "$n" -gt "$threshold" ]; then
+      if ! git config --file "$orbit_file" --get "overlong.$repo_name.seen" >/dev/null 2>&1; then
+        git config --file "$orbit_file" --add "jot.$repo_name" \
+          "$(orbit_jot_seed_prefix)memo over budget ($n lines): pop, curate the card to $(orbit_memo_min "$root")~$(orbit_memo_max "$root") lines, don't just append"
+        git config --file "$orbit_file" "overlong.$repo_name.seen" 1
+        printf 'orbit: %s memo is over budget (%s lines): curate the card back to %s~%s lines, don'\''t just append\n' \
+          "$repo_name" "$n" "$(orbit_memo_min "$root")" "$(orbit_memo_max "$root")" >&2
+      fi
+    else
+      git config --file "$orbit_file" --remove-section "overlong.$repo_name" 2>/dev/null || true
+    fi
+  fi
 
   printf 'wrote %s (brief: %s)\n' ".$repo_name.md" "$brief"
 }
@@ -1707,7 +1787,7 @@ orbit_collect_workspace_branches() {
     done < <(git -C "$main_repo" for-each-ref --format='%(refname:short)' "refs/heads/$prefix/$ws_name/")
   fi
   # deduplicate and output
-  printf '%s\n' "${branches[@]}" | sort -u
+  printf '%s\n' "${branches[@]+${branches[@]}}" | sort -u
 }
 
 orbit_branch_protection_delete() {
@@ -2025,7 +2105,7 @@ orbit_config() {
   local orbit_file="$root/.repos/.orbit"
 
   if [ "$#" -eq 0 ]; then
-    git config --file "$orbit_file" --list 2>/dev/null | grep -v '^\(repos\.\|index\.\)' || true
+    git config --file "$orbit_file" --list 2>/dev/null | grep -v '^repos\.' || true
     return 0
   fi
 
@@ -2446,7 +2526,7 @@ _orbit() {
           ;;
         config)
           _arguments \
-            '1:key:' \
+            '1:key:(agent.recommend memo.minLines memo.maxLines explore.paths)' \
             '2:value:'
           ;;
         completion)
@@ -2626,6 +2706,8 @@ _orbit_completions() {
     config)
       if [[ "$cur" == --* ]]; then
         COMPREPLY=($(compgen -W "--unset" -- "$cur"))
+      else
+        COMPREPLY=($(compgen -W "agent.recommend memo.minLines memo.maxLines explore.paths" -- "$cur"))
       fi
       ;;
     completion)

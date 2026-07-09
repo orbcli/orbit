@@ -40,7 +40,7 @@
     {
       "id": 7,
       "prompt": "I just cloned a new repo data-pipeline that has no description yet. Help me generate an initial description quickly.",
-      "expected_output": "Use `orbit memo data-pipeline --scaffold` to get a scaffold template (stdout, not saved), then explore the repo and write a proper memo via `cat ... | orbit memo data-pipeline`.",
+      "expected_output": "Use `orbit memo data-pipeline --scaffold` to get the card template (stdout, not saved) — title + brief, `## When to add (roles)`, `## How to use`. Explore the repo within the `explore.paths` scope orbit gives you (it carries the scope in the seed jot it wrote at add — don't survey the whole tree), then write a pull-decision card answering both questions (roles + MVP/VIP entry points) via `cat ... | orbit memo data-pipeline`. Not a code survey.",
       "files": []
     },
     {
@@ -57,8 +57,8 @@
     },
     {
       "id": 10,
-      "prompt": "I've finished editing code in the backend repo, and `orbit repos` shows it has no memo found. Help me handle that.",
-      "expected_output": "Use `orbit memo backend --scaffold` to get a scaffold, then based on what was learned while working in the repo, write a concise memo (key entries, directory structure, tech stack, ~40 lines — the cold-start target, about half the ~80-line budget) via `cat ... | orbit memo backend`. Do NOT copy README or PRD content verbatim.",
+      "prompt": "I've finished editing code in the backend repo, and `orbit repos` shows it has no memo. Help me handle that.",
+      "expected_output": "Use `orbit memo backend --scaffold` to get the card template, then based on what was learned while working in the repo, write a pull-decision card that answers both questions — when/why to add backend (its roles) and how to use it (the MVP/VIP entry points) — via `cat ... | orbit memo backend`. Keep it tight — heed the `card budget` orbit prints (curate rather than pad) instead of assuming a line count; do NOT copy README or PRD content verbatim, and don't pad with deep code structure.",
       "files": []
     },
     {
@@ -123,14 +123,14 @@
     },
     {
       "id": 21,
-      "prompt": "While working in backend I discovered it uses the Echo router instead of Gin. Jot that down for me, to aggregate into the memo later.",
-      "expected_output": "Use `orbit jot \"uses Echo router\"` (from within the backend worktree, repo inferred from CWD) to record the discovery to the jot queue for later memo aggregation.",
+      "prompt": "While working in backend I found it also exposes an admin CLI at cmd/admin/main.go — a separate entry point. Jot that for me, to aggregate into the card later.",
+      "expected_output": "Use `orbit jot \"admin CLI entry: cmd/admin/main.go\"` (from within the backend worktree, repo inferred from CWD) to record the entry point to the jot queue for later card aggregation. This is a valid jot: an MVP/VIP entry point is exactly what the card's \"how to use\" needs — jot captures roles and entry points the card lacks, not deep structure like framework choice.",
       "files": []
     },
     {
       "id": 22,
       "prompt": "I'm about to wrap up. Aggregate the previously jotted entries into backend's memo.",
-      "expected_output": "Use `orbit jot backend --pop` to consume all jot entries, then `orbit info backend` to read existing memo, merge the jot entries into the memo following the 80-line budget and merge-first rules, and write back via `cat ... | orbit memo backend`.",
+      "expected_output": "Use `orbit jot backend --pop` to consume all jot entries, then `orbit info backend` to read the existing card, merge the jot entries in — staying within the card budget orbit reports (curate, don't append) and following merge-first rules — and write back via `cat ... | orbit memo backend`.",
       "files": []
     },
     {
@@ -160,7 +160,7 @@
     {
       "id": 27,
       "prompt": "backend had no memo before; after `orbit add` I went straight to editing and finished the fix. Can I run `orbit done` now?",
-      "expected_output": "Not yet — because backend was added with no/low memo, `orbit add` wrote a `[seed]` placeholder jot and `orbit context gaps` still flags it. Before `orbit done`, explore backend (entry points, structure, build) and write a real memo via `cat ... | orbit memo backend`, dropping the `[seed]` line (it is a system instruction, never memo content). Confirm `orbit context gaps` is empty; otherwise `orbit done` will warn that backend has no real memo.",
+      "expected_output": "Not yet — because backend was added with no/low memo, `orbit add` wrote a `[seed]` placeholder jot and `orbit context gaps` still flags it. Before `orbit done`, explore backend (within `explore.paths`) and write a real pull-decision card (roles + how to use) via `cat ... | orbit memo backend`, dropping the `[seed]` line (it is a system instruction, never memo content). Confirm `orbit context gaps` is empty; otherwise `orbit done` will warn that backend has no real memo.",
       "files": []
     },
     {
@@ -171,8 +171,8 @@
     },
     {
       "id": 29,
-      "prompt": "I already aggregated and wrote back backend's memo this session, but while reporting I remembered a cross-repo call detail. Help me record it.",
-      "expected_output": "Don't just `orbit jot` and stop — backend's memo is already written back this session, so a fresh jot would be stranded in the queue (unaggregated until a future session). Writeback is terminal, so fold the detail into memo now: `orbit jot backend \"<cross-repo call detail>\"`, then immediately re-aggregate — `orbit jot backend --pop` → `orbit info backend` (read current memo) → merge → write back via `cat ... | orbit memo backend`, so the discovery lands in memo before `orbit done`.",
+      "prompt": "I already aggregated and wrote back backend's memo this session, but while reporting I remembered another entry point worth noting (the auth middleware in internal/middleware/auth.go). Help me record it.",
+      "expected_output": "Don't just `orbit jot` and stop — backend's card is already written back this session, so a fresh jot would be stranded in the queue (unaggregated until a future session). Writeback is terminal, so fold the entry point into the card now: `orbit jot backend \"auth middleware entry: internal/middleware/auth.go\"`, then immediately re-aggregate — `orbit jot backend --pop` → `orbit info backend` (read current card) → merge → write back via `cat ... | orbit memo backend`, so the discovery lands in the card before `orbit done`.",
       "files": []
     },
     {
@@ -185,6 +185,12 @@
       "id": 31,
       "prompt": "I've already explored backend and finished editing and testing my fix on its feature branch. Now push it to remote.",
       "expected_output": "Just push with native git — do NOT insert an extra discovery or verification step. The discovery gate is positional: you cleared it when you explored backend before editing, so push (a later action) is already past it and needs no re-check. Raw mode: `git push origin <branch>`; scoped mode (after `orbit switch -c`): `git push`. Orbit takes no stance on whether or when you push.",
+      "files": []
+    },
+    {
+      "id": 32,
+      "prompt": "backend has no memo. Write its cold-start memo — how deep should I explore first?",
+      "expected_output": "Explore only within the `explore.paths` scope orbit gives you — orbit carries it in the seed jot it wrote when you added backend (a `path:depth` list; the repo root by default, which the user can extend). That scope is enough to name the repo's roles and its MVP/VIP entry points — the two things the card must answer. Don't survey the whole tree: the card is a pull-decision card, not a code doc; deep structure belongs in a dedicated code-doc, not the memo. Use `orbit memo backend --scaffold`, fill both card sections, and keep it tight — heed the `card budget` orbit reports rather than assuming a line count.",
       "files": []
     }
   ]

@@ -51,5 +51,12 @@ case "$subcmd" in
   *) exit 0 ;;
 esac
 
+# sync --force does `git reset --hard` on the pool repo (destructive) — still prompt.
+if [ "$subcmd" = "sync" ]; then
+  case " $rest " in
+    *" --force "*) exit 0 ;;
+  esac
+fi
+
 printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"orbit %s: read-only / idempotent workspace command auto-approved by the orbit plugin"}}\n' "$subcmd"
 exit 0
