@@ -17,11 +17,33 @@ set -euo pipefail
 
 TRY_DIR="${ORBIT_TRY_DIR:-$HOME/orbit-try}"
 UPSTREAM="$TRY_DIR/upstream"
+BIN_DIR="$TRY_DIR/bin"          # runtime lands here so `rm -rf $TRY_DIR` wipes it too
 INSTALL_URL="https://raw.githubusercontent.com/orbcli/orbit/main/install.sh"
 
 say()  { printf '\033[36m%s\033[0m\n' "$*"; }
 warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+
+# Resolve install.sh source, mirroring how install.sh itself finds orbit.sh:
+# prefer a co-located checkout copy (../../install.sh) so local edits take effect
+# and orbit.sh resolves locally too; fall back to the published URL when piped
+# (curl | bash), where $0 gives no usable path.
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd) || SCRIPT_DIR=""
+LOCAL_INSTALL=""
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../../install.sh" ]; then
+  LOCAL_INSTALL="$(cd "$SCRIPT_DIR/../.." && pwd)/install.sh"
+fi
+
+# Run install.sh with the runtime steered into the demo dir. Uses the local
+# checkout when available (so ORBIT_BIN_DIR is honored regardless of what version
+# is published), else the remote. Extra args (e.g. --claude) pass through.
+run_install() {
+  if [ -n "$LOCAL_INSTALL" ]; then
+    ORBIT_BIN_DIR="$BIN_DIR" bash "$LOCAL_INSTALL" "$@"
+  else
+    curl -sL "$INSTALL_URL" | ORBIT_BIN_DIR="$BIN_DIR" bash -s -- "$@"
+  fi
+}
 
 # --- args -----------------------------------------------------------------
 # Optionally fold the agent-plugin install into this run so the user skips a
@@ -45,9 +67,14 @@ done
 
 # --- preflight ------------------------------------------------------------
 command -v git >/dev/null 2>&1 || die "git is required but not found on PATH."
-command -v orbit >/dev/null 2>&1 || die \
-  "orbit not found on PATH. Install it first:
-    curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh | bash"
+
+# If the user already has a global orbit in ~/.local/bin, a piped `curl | bash`
+# non-login shell may not have that dir on PATH. Surface it before probing so we
+# reuse an existing install instead of dropping a second copy into the demo dir.
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) PATH="$HOME/.local/bin:$PATH"; export PATH ;;
+esac
 
 # Isolation guard: never seed inside an existing Orbit project (would pollute a
 # real .repos/ pool). Walk up from TRY_DIR's parent looking for .repos/.
@@ -65,6 +92,35 @@ if [ -e "$TRY_DIR" ]; then
   fi
 else
   mkdir -p "$TRY_DIR"
+fi
+
+# --- ensure the orbit runtime ---------------------------------------------
+# "Try it now" promises zero setup. If orbit isn't already on PATH, install it
+# INTO the throwaway dir ($TRY_DIR/bin) instead of polluting ~/.local/bin — then
+# a single `rm -rf $TRY_DIR` at the end wipes the runtime along with everything
+# else. If an agent was requested, fold its plugin into the same install
+# (ORBIT_BIN_DIR steers only the runtime; the plugin still lands in the agent's
+# own plugin dir, so its removal is called out separately in the hint below).
+ORBIT_LOCAL=""          # set when we installed into $BIN_DIR (drives the PATH/cleanup hints)
+if ! command -v orbit >/dev/null 2>&1; then
+  mkdir -p "$BIN_DIR"
+  if [ -n "$AGENT_INSTALL" ]; then
+    say "⚙  orbit not found — installing the runtime + Orbit plugin for $AGENT into $BIN_DIR ..."
+    if run_install "$AGENT_INSTALL"; then
+      AGENT_INSTALL=""                      # runtime + plugin both in; skip the later pass
+    else
+      warn "   plugin step failed — continuing with the runtime; use the by-hand launch below."
+      AGENT=""; AGENT_INSTALL=""
+    fi
+  else
+    say "⚙  orbit not found — installing the runtime into $BIN_DIR ..."
+    run_install \
+      || die "orbit install failed. Install it manually, then re-run this script."
+  fi
+  PATH="$BIN_DIR:$PATH"; export PATH
+  ORBIT_LOCAL=1
+  command -v orbit >/dev/null 2>&1 \
+    || die "orbit still not on PATH after install (expected $BIN_DIR/orbit)."
 fi
 
 # --- seed content (embedded so the script is self-contained) --------------
@@ -238,10 +294,11 @@ GOAL="Downlink a fuel-reserve field in the telemetry frame so mission-control ca
 say "⚙  Creating a workspace for the mission ..."
 orbit new "$GOAL" --name mission >/dev/null
 
-# --- optionally fold in the agent-plugin install --------------------------
+# --- install the agent plugin (only if orbit was already present; a fresh
+#     install folded the plugin into the bootstrap above and cleared this flag) --
 if [ -n "$AGENT_INSTALL" ]; then
   say "⚙  Installing the Orbit plugin for $AGENT ..."
-  if curl -sL "$INSTALL_URL" | bash -s -- "$AGENT_INSTALL" >/dev/null 2>&1; then
+  if run_install "$AGENT_INSTALL" >/dev/null 2>&1; then
     say "   plugin installed."
   else
     warn "   plugin install failed — falling back to manual launch instructions."
@@ -249,18 +306,27 @@ if [ -n "$AGENT_INSTALL" ]; then
   fi
 fi
 
+# When the runtime lives in the demo dir, the user's shell doesn't have it on
+# PATH — so precede each launch block with the export on its own line.
+if [ -n "$ORBIT_LOCAL" ]; then
+  ORBIT_PATH="export PATH=\"$BIN_DIR:\$PATH\"
+    "
+else
+  ORBIT_PATH=""
+fi
+
 # --- assemble the agent-launch section (depends on --claude/--qodercli) ----
 if [ "$AGENT" = claude ]; then
   AGENT_SECTION="── Let your agent fly it (Claude Code plugin installed) ───────────────
     # The session hook detects this workspace — no magic phrase needed.
 
-    cd $TRY_DIR/mission && claude start
+    ${ORBIT_PATH}cd $TRY_DIR/mission && claude start
 "
 elif [ "$AGENT" = qodercli ]; then
   AGENT_SECTION="── Let your agent fly it (Qoder CLI plugin installed) ─────────────────
     # The session hook detects this workspace — no magic phrase needed.
 
-    cd $TRY_DIR/mission && qodercli start
+    ${ORBIT_PATH}cd $TRY_DIR/mission && qodercli start
 "
 else
   AGENT_SECTION="── Let your agent fly it (needs a plugin: Claude Code or Qoder CLI) ────
@@ -269,9 +335,19 @@ else
     # (or re-run this script with --claude / --qodercli to fold it in):
     #   curl -sL $INSTALL_URL | bash -s -- --claude      # Claude Code
     #   curl -sL $INSTALL_URL | bash -s -- --qodercli    # Qoder CLI
-    cd $TRY_DIR/mission
+    ${ORBIT_PATH}cd $TRY_DIR/mission
     claude start          # Claude Code
     # or: qodercli start  # Qoder CLI"
+fi
+
+# --- plugin uninstall: the agent plugin lives in the agent, not $TRY_DIR, so
+#     `rm -rf $TRY_DIR` can't reach it — name its removal explicitly ---
+if [ "$AGENT" = claude ]; then
+  PLUGIN_UNINSTALL="    claude plugin uninstall orbit                     # Orbit plugin (lives in Claude Code)"
+elif [ "$AGENT" = qodercli ]; then
+  PLUGIN_UNINSTALL="    qodercli plugins uninstall orbit@orbcli -s user   # Orbit plugin (lives in Qoder)"
+else
+  PLUGIN_UNINSTALL=""
 fi
 
 # --- hand off -------------------------------------------------------------
@@ -288,7 +364,7 @@ $AGENT_SECTION
     # The agent commits locally, then pauses for your OK before pushing.
 
 ── …or do it by hand ─────────────────────────────────────────────────
-    cd $TRY_DIR/mission
+    ${ORBIT_PATH}cd $TRY_DIR/mission
     orbit add navigator
     orbit add mission-control
 
@@ -303,6 +379,6 @@ $AGENT_SECTION
     orbit done
 
 ── When you're done exploring ────────────────────────────────────────
-    rm -rf $TRY_DIR
-
+    rm -rf $TRY_DIR${ORBIT_LOCAL:+          # repos, workspace, and the orbit runtime}
+$PLUGIN_UNINSTALL
 GUIDE

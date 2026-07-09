@@ -21,7 +21,10 @@ else
   SOURCE="$DEFAULT_SOURCE"
 fi
 
-TARGET_BIN_DIR="$HOME/.local/bin"
+# Where the `orbit` runtime lands. Defaults to ~/.local/bin; override with
+# ORBIT_BIN_DIR to install into a caller-managed dir (e.g. a throwaway demo dir).
+# A custom dir also means the caller owns PATH + cleanup, so the rc is left alone.
+TARGET_BIN_DIR="${ORBIT_BIN_DIR:-$HOME/.local/bin}"
 TARGET_HELPER="$TARGET_BIN_DIR/orbit"
 # shellcheck disable=SC2016
 PATH_EXPORT_LINE='export PATH="$HOME/.local/bin:$PATH"'
@@ -242,7 +245,12 @@ completion_hint() {
 classify_source
 resolve_source
 install_cli
-ensure_path_export "$(detect_shell_rc)"
+# Manage the login shell's rc only for the default location. A custom ORBIT_BIN_DIR
+# means the caller owns PATH (and cleanup), so leave the rc untouched — no dead
+# PATH entry left behind after the caller removes its dir.
+if [ -z "${ORBIT_BIN_DIR:-}" ]; then
+  ensure_path_export "$(detect_shell_rc)"
+fi
 
 if [ "$INSTALL_ZSH" -eq 1 ]; then
   ensure_path_export "$HOME/.zshrc"
@@ -261,7 +269,11 @@ if [ "$INSTALL_QODER" -eq 1 ]; then
 fi
 
 printf '%s\n' "Next steps:"
-printf '  %s\n' "- Open a new shell or run: source $(detect_shell_rc)"
+if [ -n "${ORBIT_BIN_DIR:-}" ]; then
+  printf '  %s\n' "- Add to PATH: export PATH=\"$TARGET_BIN_DIR:\$PATH\""
+else
+  printf '  %s\n' "- Open a new shell or run: source $(detect_shell_rc)"
+fi
 printf '  %s\n' "- Verify with: orbit doctor"
 if [ "$INSTALL_CLAUDE" -eq 1 ]; then
   printf '  %s\n' "- In Claude Code, the Orbit skill and SessionStart hook are now active"
