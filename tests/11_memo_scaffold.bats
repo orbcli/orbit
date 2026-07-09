@@ -32,13 +32,8 @@ teardown() {
 
   local output
   output=$(cd "$proj" && orbit memo myrepo --scaffold 2>/dev/null)
-  assert_contains "$output" "Key Entry Points"
-  assert_contains "$output" "Key Directories"
-  assert_contains "$output" "Module Boundaries"
-  assert_contains "$output" "Internal Dependencies"
-  assert_contains "$output" "Build & Test"
-  assert_contains "$output" "Configuration"
-  assert_contains "$output" "Key Conventions"
+  assert_contains "$output" "When to add (roles)"
+  assert_contains "$output" "How to use"
   [ ! -f "$proj/.repos/.myrepo.md" ]
 }
 

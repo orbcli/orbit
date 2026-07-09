@@ -21,6 +21,7 @@ This directory contains design specifications and reference materials for Orbit.
 | [spec-knowledge.md](spec-knowledge.md) | Knowledge system: progressive loading, staleness detection, and memo lifecycle |
 | [spec-lifecycle.md](spec-lifecycle.md) | Workspace lifecycle (new → add → done → prune) |
 | [spec-metadata.md](spec-metadata.md) | Metadata formats (git-config INI + Markdown) |
+| [spec-warnings.md](spec-warnings.md) | Registry of stderr guidance warnings (the steering channel) and their format contract |
 
 ### Reference Materials
 

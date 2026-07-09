@@ -22,6 +22,10 @@ Use `orbit context` (no key) when you need full context (goal, repos, memos). Us
 
 Detection is workspace-level only. Project root path is never exposed (prevents operating on `.repos/` infrastructure). Repo-level detection uses git natively.
 
+## Heeding orbit's warnings
+
+Orbit has no runtime to *enforce* procedure — **its stderr warnings are the steering channel.** When a command prints one — `card budget`, gap warning, jot overflow, `orbit done` gates, README-truncation, raw-mode tracking note, sync-behind note — **read it and act on it.** It is orbit telling you the next right action, not decoration. stdout is machine-readable data; the guidance lives on stderr. Treat these hints as authoritative: they are how orbit routes procedure and boundaries to you when it cannot block you.
+
 ## Startup detection
 
 Workspace context can reach you two ways: a **SessionStart hook** may inject it automatically, or you run `orbit context path` yourself when the user asks to start working. The hook branches on cold start: a **fresh workspace (no repos yet)** gets a full prime block headed `=== PRIME — <name> ===` / `⚙ systems primed` (`path: … / status: …`, a DONE banner if the workspace is done, any pending jots, and the **pool roster** — the repos available to `orbit add`, one-line brief each) so you can orient and choose repos; a workspace that **already holds repos** gets a brief resume nudge instead (`Resuming — … continue the prior task`, with goal/status and on-demand pointers) rather than a repo dump. Treat any of these identically — the moment you observe workspace context, check the status **before your first reply of the session**, even if the user's opening message is unrelated to orbit.
@@ -62,33 +66,33 @@ These steps describe the work itself, independent of who performs it. Run them y
 
 1. **Read goal first.** Run `orbit goal` to understand what this workspace is for.
 2. **Screen.** Run `orbit repos` to see available repos (name + url + brief). Identify candidates relevant to your goal.
-3. **Assess.** Run `orbit info <repo>` for each candidate — detailed description, entry points, tech stack. Also detects upstream freshness and memo staleness.
+3. **Assess.** Run `orbit info <repo>` for each candidate — the memo card: the repo's roles (when/why to add) and entry points (where to start). Also detects upstream freshness and memo staleness.
    - **README fallback = no memo.** When `orbit info` falls back to showing the README, it means **no memo exists**. The README is the repo's unprocessed façade, not decision context — never treat it as "enough" to justify skipping `orbit add` or the step 7 exploration.
    - **Shortcut:** `orbit context` combines steps 1–3 into a single call (goal + all repos + memos).
-4. **Decide.** Based on info: memo gives enough context (API surface, module boundaries) → don't add. Need to grep source, trace call chains, or modify code → `orbit add`. Repo not in pool → `orbit clone` then add. Only need docs → web search. A README fallback (step 3) is **not** "enough context" — it never justifies "don't add".
+4. **Decide.** Based on info: memo card gives enough context (the repo's roles and entry points answer your need) → don't add. Need to grep source, trace call chains, or modify code → `orbit add`. Repo not in pool → `orbit clone` then add. Only need docs → web search. A README fallback (step 3) is **not** "enough context" — it never justifies "don't add".
    - **Task type doesn't exempt you from exploring.** Release, ops, and pure-research tasks explore first too — the default mental model is not "editing code". If you judge full source truly isn't needed, state that reason explicitly here rather than skipping exploration by default.
 5. **Cold-start sync.** If step 3 showed remoteAhead > 0, run `orbit sync <repo>` now — before add. Agent hasn't started relying on the code yet, so sync cost is lowest. This ensures `orbit add` creates the worktree from the latest pool HEAD. **Scope:** `sync` fast-forwards the *pool* repo (`.repos/<repo>`) only — it does **not** move a worktree you've already checked out. If a worktree tracks the branch you synced, it's now behind the pool; bring it up to date with native git if you want. Don't re-run `orbit sync` expecting the worktree to advance.
 6. **Add repos.** Run `orbit add <repo>` only for repos that need full source (from inside a workspace directory). Worktree starts from pool's current HEAD (latest after sync). Pass `-s` when you already hold enough context to justify the add — from `orbit info` in step 3, the memo surfaced at prime, or a prior session: `orbit add <repo> -s`. Plain `orbit add` (no `-s`) echoes the memo as a safety net — reach for it only when adding without that context; seeing the memo dump means you added blind and should confirm you actually need the full source. **Hard rule:** if step 3's `orbit info` showed **no memo** (README fallback), `-s` is forbidden — no memo means zero inherited context, so add without `-s` and explore in step 7.
    - **Seed jot on no/low memo.** When you add a repo whose memo is missing or thin, `orbit add` auto-appends a `[seed]` jot — a durable placeholder that survives compaction and keeps the queue non-empty so wrap-up/done still force a memo. It is an *instruction to you*, not a discovery: act on it in step 7, and **never merge a `[seed]` line into the memo**. It stays in the queue (and keeps the repo flagged by `orbit context gaps`) until you capture a real jot or write a real memo.
-7. **Memo check.** First, pop any residual jot entries from a prior session: `orbit jot <repo> --pop` (a `[seed]` line here means the repo still has no real memo — treat it as a prompt to explore and write one, then discard the line). Then, based on staleness info from step 3 (recalculated after sync):
+7. **Memo check.** First, pop any residual jot entries from a prior session: `orbit jot <repo> --pop` (a `[seed]` line here is a system instruction, not a discovery — either "no real memo yet: explore and write one" or "card over budget: curate it back down"; act on its text, then discard the line). Then, based on staleness info from step 3 (recalculated after sync):
    - **"memo is N commits behind HEAD"** → memo is stale. Read the existing memo first, then skim recent changes. If structure changed (new entry points, renamed modules, changed deps), incrementally update — add or correct, don't rewrite. Merge any popped jot entries into the same write. If no structural changes and no jot entries, run `orbit memo <repo> --refresh` to reset the staleness counter (prevents re-evaluation in future sessions).
-   - **No memo** or **low-quality** (significantly below cold-start target of ~40 lines) → explore the repo and write one now. Use `orbit memo <repo> --scaffold` for the template. Capture entry points, directory layout, build commands, dependencies while you're orienting. Include any popped jot entries.
+   - **No memo** or **thin card** (doesn't answer both card questions) → explore the repo and write one now, within the `explore.paths` scope orbit gives you (the seed jot names it — don't survey the whole tree). Use `orbit memo <repo> --scaffold` for the template. Capture the repo's roles + the MVP/VIP entry points while you're orienting. Include any popped jot entries.
    - **This step builds understanding *now* — it cannot be deferred to wrap-up.** Reading the code and drafting the memo skeleton happen here, before any target action. Step 10 only aggregates incremental discoveries on top of the understanding you build here; it is not where exploration first happens.
    - **Discovery gate — applies to every added repo.** Do not begin *any* target action — edit, branch, push, release, or tag — until steps 3–7 are complete for that repo. Jumping from `add` straight to a target action is the exact failure this gate prevents.
 8. **Branch.** Before making changes, create a feature branch in each repo you'll modify:
    - **Raw mode** (default, most cases): `git checkout -b <branch>` — use when the branch is unlikely to conflict with other workspaces.
    - **Scoped mode**: `orbit switch -c <name>` — use when working on shared/public branches where multiple workspaces may touch the same repo.
-9. **Work.** Use standard git commands inside worktrees. When you discover valuable repo knowledge (cross-repo call flows, hidden conventions, pitfalls, config quirks), run `orbit jot "one-liner"` from within the repo directory — lightweight, no need to read or merge memo. If jot warns about accumulated entries (>10), consider aggregating now (see step 10). **Jot on others' behalf (fallback):** if a finding about a repo you added or worked in comes from a source you didn't brief on orbit (a custom agent, or non-agent external research), run `orbit jot <repo> "discovery"` yourself when you receive it. The primary path is to brief that agent so it jots on its own (see Delegating).
-   - **What to jot**: structural knowledge about the repo's main branch — entry points, conventions, cross-repo call chains, pitfalls — regardless of whether you learned it from reading code or from design/research work in the repo. Reviewing a diff or refactoring existing code counts as reading code: the base (main-branch) structure you traverse to understand a change is jottable even when the change itself is not — separate the two rather than skipping the whole task because it's "on a feature branch". **Not**: feature-branch changes, temporary debug info.
-   - **Jot triggers (event-driven — don't wait for wrap-up).** Jot the moment you (a) pin down a non-obvious root cause while debugging, (b) get a test to go red→green because of a hidden convention, or (c) figure out *why* the existing structure is the way it is after hitting a pitfall. Mnemonic: a pitfall you hit while understanding or fixing a change, that reveals existing main-branch structure, is a main-branch pitfall — jot it (it is not a feature-branch change).
+9. **Work.** Use standard git commands inside worktrees. **jot feeds the card, so jot only what the card needs and doesn't have yet** — a role the card doesn't list, or an MVP/VIP entry point the card misses or gets wrong. Run `orbit jot "one-liner"` from within the repo directory — lightweight, no need to read or merge memo. If jot warns about accumulated entries (>10), consider aggregating now (see step 10). **Jot on others' behalf (fallback):** if a finding about a repo you added or worked in comes from a source you didn't brief on orbit (a custom agent, or non-agent external research), run `orbit jot <repo> "discovery"` yourself when you receive it. The primary path is to brief that agent so it jots on its own (see Delegating).
+   - **What to jot**: only information the card is missing and needs — a **role** (why a workspace would pull this repo in) or an **MVP/VIP entry point** (the file/dir to start from, and why), about the repo's main branch, that isn't already captured. Reviewing a diff or refactoring counts as reading code: a role or entry point you learn while traversing the base (main-branch) structure is jottable even when the change itself is not. **Not**: deep code structure (module internals, conventions, pitfalls, call graphs) — that is out of card scope and belongs in a code-doc, not memo; not feature-branch changes; not debug notes; not anything the card already says.
+   - **Jot triggers (event-driven — don't wait for wrap-up).** Jot the moment you realize (a) this repo also serves a role the card doesn't list, or (b) the real entry point for a task differs from — or is absent in — what the card names. If the discovery isn't a role or an entry point the card needs, it isn't a jot.
    - **Resume/compact sessions still jot.** A "continue the prior task, don't re-survey" resume nudge does not suppress discovery capture, and a compact can wipe your mental "to-jot" note — so jot findings as they surface, even mid-refactor after a compact.
    - **Need another repo?** (e.g., tracing a cross-repo dependency) → go back to steps 2–7: `orbit repos` to screen → `orbit info` to assess → decide whether to add → sync if needed → add → memo check. This cross-repo branch is a prime thing to delegate — a worker runs the same screen → assess → add loop autonomously via its briefing (see "Delegating to sub-agents").
 10. **Wrap-up.** Before finishing, aggregate jot entries and assess PR impact. This step is **incremental aggregation only** — it folds discoveries onto the understanding built in step 7; it is never where first-time exploration you skipped earlier gets done:
    - **Reflect first**: before popping, review what you learned this session about repos you added or worked in. If any structural insight never made it into a jot, jot it now, then continue. Keep scope to repos you added or worked in; do not sweep repos you only read via `orbit info`.
-   - **Jot aggregation**: for each repo with jot entries, run `orbit jot <repo> --pop` to consume entries, then `orbit info <repo>` to read current memo, merge entries into memo following the 80-line budget and merge-first rules, write back via `cat <<'EOF' | orbit memo <repo>`. **Drop any `[seed]` line** — it is a system placeholder, never memo content. Run `orbit context gaps` to confirm no repo you developed is left with no real memo before `orbit done`.
+   - **Jot aggregation**: for each repo with jot entries, run `orbit jot <repo> --pop` to consume entries, then `orbit info <repo>` to read current card, merge entries in — staying within the card budget orbit reports (curate, don't append) and following merge-first rules — write back via `cat <<'EOF' | orbit memo <repo>`. **Drop any `[seed]` line** — it is a system placeholder, never memo content. Run `orbit context gaps` to confirm no repo you developed is left with no real memo before `orbit done`.
    - **Writeback is terminal.** Merging into memo is the *last* action for that repo — capture everything *before* the pop→merge, including insights that surface while you draft your report to the user. A jot made after writeback is stranded: this session's aggregation is already closed, so it sits orphaned in the queue until a future session. If a genuine discovery surfaces post-writeback, re-run pop→merge to fold it in — don't leave it queued.
-   - **Memo quality gate**: for each repo you actually explored this session (read its code/structure, not just skimmed), run `orbit info <repo>` and judge whether the memo captures reusable substance — purpose, key entry points, structure — by substance, not line count (~40 lines is a target, not a quota; an accurate thin memo is fine). If it's thin and you understand the repo well enough, upgrade it now (cold-start write per "Upgrade low-quality memos"); if you didn't explore deeply enough to write accurately, do NOT pad — report instead and let the user decide. Don't `orbit done` leaving a repo you actively developed in with a known-thin memo unacknowledged.
-   - **PR impact assessment**: memo describes the pool repo's stable (main) branch, not your feature branch — do NOT update memo based on feature branch state. If your PR introduces structural changes (new entry points, changed module boundaries, new dependencies), include a post-merge memo refresh suggestion: "After merge: `orbit sync <repo> && orbit info <repo>` — update memo if structure changed."
+   - **Memo quality gate**: for each repo you actually explored this session (read its code/structure, not just skimmed), run `orbit info <repo>` and judge whether the card answers both questions — its roles, and the MVP/VIP entry points — by substance, not line count (an accurate thin card is fine; orbit's card budget is an append-drift guard, not a quota to fill). If it doesn't and you understand the repo well enough, upgrade it now (cold-start write per "Upgrade thin cards"); if you didn't explore deeply enough to write accurately, do NOT pad — report instead and let the user decide. Don't `orbit done` leaving a repo you actively developed in with a known-thin card unacknowledged.
+   - **PR impact assessment**: memo describes the pool repo's stable (main) branch, not your feature branch — do NOT update memo based on feature branch state. If your PR introduces changes the card would need to reflect (a new entry point, or a new role for the repo), include a post-merge memo refresh suggestion: "After merge: `orbit sync <repo> && orbit info <repo>` — update the card if roles or entry points changed."
 11. **Mark done.** When the workspace has a goal and you've completed the work (PR created, code committed, tests passing), run the wrap-up sequence from step 10, then `orbit done --pr <url>`. When the workspace has no goal, only run `orbit done` when the user explicitly asks.
    - **Session ending before done**: aggregate jot entries into memo, then suggest the user run `orbit done` — do not auto-done, as work may be incomplete.
 12. **Prune.** `orbit prune` cleans up done workspaces (branch cleanup + directory removal).
@@ -121,9 +125,11 @@ Following a thread into another repo (do this yourself, don't ask me):
   `orbit add <repo> -s` from <ws-abs-path>, then work in <ws-abs-path>/<repo>.
 
 Recording knowledge (the moment you find it, before it's lost):
-- `orbit jot <repo> "one-liner"` for STRUCTURAL knowledge about the repo's main branch:
-  entry points, cross-repo call chains, conventions, pitfalls.
-- NOT feature-branch changes, NOT debug notes.
+- `orbit jot <repo> "one-liner"` ONLY for what the repo's memo card needs and lacks:
+  a role (why a workspace would pull this repo in) or an MVP/VIP entry point (where to
+  start, and why), about the repo's main branch.
+- NOT deep structure (module internals, conventions, pitfalls, call graphs — out of card
+  scope), NOT feature-branch changes, NOT debug notes.
 - If you cannot run orbit, put the same items under a "## Discoveries" heading in your report.
 
 Do NOT run: orbit memo / sync / done / new / goal / clone / config — report those needs to me.
@@ -202,76 +208,43 @@ orbit switch hotfix-123    # → fetches + creates ws/<workspace>/hotfix-123
 
 ## Writing repo memos
 
-**Memo is operational cache metadata, not documentation.** Writing back via `orbit memo` is a standard workflow step — it is NOT creating documentation. Do not skip this step due to general "don't create docs" rules. Memos are reused by future agent sessions to avoid redundant exploration.
+**Memo is a pull-decision card, not documentation.** Writing back via `orbit memo` is a standard workflow step — it is NOT creating documentation. Do not skip it due to general "don't create docs" rules. The card is reused by future sessions to decide whether to pull a repo into a workspace and where to start.
 
-Use `orbit memo <repo> --scaffold` as a starting point — it outputs a template with recommended sections. How to use:
-- **Delete** sections that don't apply (e.g. a pure library has no Configuration section). Never leave TODO placeholders in the final memo.
-- **Add** sections not in the template if they capture useful knowledge (e.g. "Migration Notes", "Known Pitfalls", "Cross-Repo Call Flow").
-- **Rename** section headers to match the repo's conventions or language if it reads more naturally.
+A card answers exactly two questions — nothing else:
+1. **When/why add this repo?** — its roles. Plural and unbounded: a repo may fill many roles; list every one.
+2. **How do I use it in the simplest way?** — the MVP/VIP file-or-dir paths to start from, each with why it matters and when to reach for it. Also plural (a CLI entry and a core package can both belong); no cap.
 
-Write type-aware memos — pick sections based on what the repo is:
+Deep code structure — module boundaries, data layer, conventions, pitfalls, API enumeration, dependency graphs — is **out of scope**. That belongs in a dedicated code-doc, not the card. If one exists, the user points `explore.paths` at it or adds it to the pool; orbit stays agnostic about its format.
 
-| Repo type | Sections to include |
-|-----------|----------|
-| Backend/Service | entry points (`cmd/`), API routes, DB/ORM, middleware, config loading, deploy method |
-| Frontend | entry points, routing, state management, build tool, dev server command |
-| Library/SDK | public API surface (exported packages/modules), internal vs public boundary, versioning |
-| Infra/DevOps | resource definitions, deploy method, environments, CI/CD pipeline |
-| CLI/Tool | subcommand structure, config file format, plugin system |
+Use `orbit memo <repo> --scaffold` for the template (title + brief, `## When to add (roles)`, `## How to use`). Fill both sections; never leave TODO placeholders in the final card.
 
-Common sections (include when applicable):
-
-- **Key Entry Points** — binary entry points, main packages, request handlers
-- **Module Boundaries** — which packages/dirs are public API vs internal implementation
-- **Internal Dependencies** — which other pool repos this repo imports
-- **Depended By** — which pool repos depend on this one (if you discovered this)
-- **Build & Test** — build command, test command, lint command, CI config location
-- **Configuration** — config file format, env vars, feature flags
-- **Key Conventions** — naming conventions, error handling patterns, code generation steps
-
-Example (backend service):
+Example:
 
 ```bash
 cat <<'EOF' | orbit memo backend
 # backend
 
-Go REST API, sqlc-generated DB layer, Echo router.
+Go REST API behind the org's public-facing endpoints.
 
-## Key Entry Points
-- `cmd/server/main.go` — server startup, initializes DB/router/middleware
-- `internal/handler/` — HTTP handlers, organized by domain
-- `internal/service/` — business logic layer, called by handlers
-- `internal/repo/` — data access layer, sqlc-generated
+## When to add (roles)
+- Owns the user/auth HTTP API — pull it in for any task touching login or accounts
+- Source of the `pkg/client` SDK other services import — pull it to change that contract
 
-## Module Boundaries
-- `pkg/client/` — external client SDK, imported by other repos
-- `internal/` — internal implementation, not publicly exposed
-
-## Internal Dependencies
-- common (pkg/errors, pkg/log)
-- api (CRD types)
-
-## Build & Test
-- `make build` — compile
-- `make test` — unit tests (go test ./...)
-- `make lint` — golangci-lint
-- CI: `.github/workflows/ci.yml`
-
-## Configuration
-- `config/config.yaml` — main config
-- Environment variables: `DB_DSN`, `PORT`, `LOG_LEVEL`
+## How to use
+- `cmd/server/main.go` — process entry; start here to trace startup / wiring
+- `pkg/client/` — the exported SDK; the interface other repos call, change carefully
 EOF
 ```
 
 Rules:
-- **Budget: ~80 lines.** Cold start writes ~40 lines (half budget), leaving room for future sessions to accumulate knowledge
-- First paragraph = brief (plain text, ≤ 120 chars, one sentence stating repo purpose)
-- Within budget, prefer specific over vague — concrete paths beat generic descriptions
-- NOT a copy of README or PRD — write what helps the next agent start working
-- README fallback briefs are often garbage (markdown tags, truncated) — replace them
-- **Merge-first:** existing memo is accumulated knowledge from prior sessions — treat it like inherited context. Always read via `orbit info <repo>` before writing. Only correct factual errors and append new discoveries. Never rewrite content that's still accurate, even if you'd phrase it differently. Compact only when total exceeds ~80 lines.
-- **Compression:** when memo + new knowledge exceeds ~80 lines, compress in the same write. Judge each section's value by: (1) inferrability — can it be derived from code directly? (2) cross-session utility — useful for any task or only this one? (3) rebuild cost — how long to rediscover? Low-value sections can be dropped entirely.
-- **Upgrade low-quality memos:** if existing memo is significantly below cold-start target (~40 lines), rewrite it (this counts as cold start, not incremental update)
+- **Keep it tight — a decision card, not a survey.** orbit owns the line budget (the `memo.maxLines` ceiling, configurable) and reports it (the `card budget`, N~M lines) at jot-overflow and `done`; heed that reported number rather than assuming one. It is a compress trigger, not a target — when orbit says the card is over budget, curate (drop what a quick `ls`/grep reveals), don't append.
+- First line after the title = brief (plain text, ≤ 120 chars, one sentence stating repo purpose); never compressed.
+- Prefer specific over vague — concrete paths beat generic descriptions.
+- NOT a copy of README or PRD — write what helps the next agent decide and start.
+- README fallback briefs are often garbage (markdown tags, truncated) — replace them.
+- **Cold-start scope:** explore only within the `explore.paths` scope orbit names for you (in the seed jot) — enough to name the roles and entry points without surveying the whole tree.
+- **Merge-first:** existing card is accumulated knowledge from prior sessions — treat it like inherited context. Always read via `orbit info <repo>` before writing. Correct factual errors, add a role or entry point; never rewrite content that's still accurate. Curate (don't append) once past the ceiling.
+- **Upgrade thin cards:** if the existing card doesn't answer both questions, rewrite it (counts as cold start, not incremental update).
 
 ## Safety rules
 
@@ -283,7 +256,7 @@ Rules:
 ## Safe to run freely
 
 These orbit subcommands are read-only or idempotent workspace-writes — run them without asking:
-- **Read-only:** `repos` `info` `status` `context` `goal` (read) `jot --pop` `version` `doctor`
+- **Read-only:** `repos` `info` `status` `context` `goal` (read) `jot --pop` `version` `doctor` `completion`
 - **Idempotent workspace-write:** `add` `switch` `sync` `memo` `jot` `goal` (write)
 
 `done` `prune` `clone` `config` `new` are destructive or reach outside the workspace — confirm before running these.
@@ -300,7 +273,7 @@ These orbit subcommands are read-only or idempotent workspace-writes — run the
 - Never write full memo content (`cat ... | orbit memo <repo>`) for repos you haven't actually explored. Use `orbit memo <repo> --scaffold` to get a scaffold, then explore before writing.
 - Never create a new workspace if an existing one matches the task context.
 - Never write memos for repos you didn't add to your workspace or work in. Memo writeback is on-demand, not a sweep.
-- Never dump README or PRD content into a memo. Memo is operational cache (key entries, structure, tech stack), not a documentation copy.
+- Never dump README or PRD content into a memo. The card answers two questions (roles + how to use), not a documentation copy.
 
 ## Examples
 

@@ -125,7 +125,7 @@ There is no standalone `orbit init` command. Commands that require `.repos/` (`c
 
 ## Workspace and Repo Inference
 
-Commands requiring workspace context (`orbit add`, `orbit done`, `orbit goal`) infer the current workspace from the first-level directory of CWD relative to the project root. They error at the project root (cannot infer).
+Commands requiring workspace context (`orbit add`, `orbit done`, `orbit goal`, `orbit jot`, `orbit switch`, `orbit context`) infer the current workspace from the first-level directory of CWD relative to the project root. They error at the project root (cannot infer). `orbit jot` and `orbit switch` additionally infer the repo (see below).
 
 `orbit add <repo>` implicitly determines the workspace from execution location (agents always work within a workspace; no need to specify repeatedly).
 
@@ -155,7 +155,7 @@ Typical use case: agent needs to verify API compatibility against a specific ver
 
 By default `orbit add` echoes the repo's memo to **stderr** after creating the worktree (stdout keeps only the parseable `added <repo> → ...` line). This is a safety net: an agent that jumped straight to `add` without any context still gets repo context, and seeing the memo dump signals it added blind. A well-behaved agent that already holds enough context — from `orbit info`, the memo surfaced at prime, or a prior session — passes `-s` (curl-style) to suppress the echo. When no memo exists, the echo becomes a hint to explore and run `orbit memo`.
 
-**Seed jot on thin/missing memo**: when the added repo's memo is thin (missing, or fewer than `ORBIT_MEMO_THIN_LINES` ≈ 12 non-blank lines), `orbit add` appends a single `[seed] ...` entry to the repo's jot queue (once per repo — skipped if a `[seed]` entry already exists). The seed is a durable, compaction-proof reminder to explore the repo and write a real memo before `done`; it is a system instruction, **not** a discovery, and must never be merged into a memo. Because it lives in the workspace `.orbit` file (not agent context), it survives context loss. See the `[seed]` sentinel in [spec-metadata](./spec-metadata.md) and the gap model in [spec-knowledge](./spec-knowledge.md).
+**Seed jot on thin/missing memo**: when the added repo's memo is thin (missing, or fewer than `memo.minLines` non-blank lines, default 4), `orbit add` appends a single `[seed] ...` entry to the repo's jot queue (once per repo — skipped if a `[seed]` entry already exists). The seed is a durable, compaction-proof reminder to explore the repo (within `explore.paths`) and write a real card before `done`; it is a system instruction, **not** a discovery, and must never be merged into a memo. Because it lives in the workspace `.orbit` file (not agent context), it survives context loss. See the `[seed]` sentinel in [spec-metadata](./spec-metadata.md) and the gap model in [spec-knowledge](./spec-knowledge.md).
 
 **Delegation**: `orbit add` is *guarded creation* — it fails cleanly on collision (worktree exists / branch checked out elsewhere), not a read-modify-write. It is therefore safe to delegate to a worker sub-agent that follows a cross-repo thread on its own (see PRINCIPLES.md Principle 7).
 
@@ -183,7 +183,7 @@ orbit jot [<repo>] --pop [--json]  # pop all entries (consume + delete)
 - Repo can be omitted when CWD is inside a worktree (inferred, same as `orbit switch`)
 - Text can be omitted → opens editor (same rules as `orbit goal`)
 - Stdin non-TTY + no text argument → reads from stdin
-- After push: count entries for this repo; if > 10, stderr warning: `"orbit: <repo>: N jot entries accumulated, consider merging into memo"`
+- After push: count entries for this repo; if > 10, stderr warning: `"orbit: <repo> has N jot entries: run jot --pop, read info, then rewrite the memo card in <min>~<max> lines"`
 
 **Pop mode** (`--pop`):
 - Outputs all entries for the repo (one per line), then deletes them from `.orbit`
@@ -205,7 +205,7 @@ Outputs the complete context of the current workspace, for agents to load in one
   - `path` — absolute path of the workspace directory
   - `goal` — workspace goal
   - `status` — workspace status (active/done)
-  - `gaps` — names of repos in this workspace that still lack a real memo: the memo is thin (missing, or fewer than `ORBIT_MEMO_THIN_LINES` ≈ 12 non-blank lines) **and** the repo has no non-`[seed]` jot entry. One name per line; empty output means no gaps. Supports `--json` (a JSON string array, e.g. `["backend"]`), used by the `Stop` hook to nudge before the agent finishes. Read-only.
+  - `gaps` — names of repos in this workspace that still lack a real memo: the memo is thin (missing, or fewer than `memo.minLines` non-blank lines, default 4) **and** the repo has no non-`[seed]` jot entry. One name per line; empty output means no gaps. Supports `--json` (a JSON string array, e.g. `["backend"]`), used by the `Stop` hook to nudge before the agent finishes. Read-only.
 - **Full mode** (no key): outputs workspace name, path, goal, status, then for each repo outputs branch + full memo text
 - **`--prime` (startup preflight)**: used by the `SessionStart` hook for context pre-injection on **cold-start (no-repo) workspaces** and by the skill's startup detection. (When a workspace already holds repos, the hook treats the session as a resume and injects a brief continue-the-task nudge instead of running `--prime` — see the hook, not this flag; the flag's own behavior is unconditional.) It is a **lean orientation view, not a superset of full mode** — the deliberate difference is that it does *not* dump full memos, keeping session-start context economical (progressive loading). Read-only. Differences from full mode:
   - Human header becomes `=== PRIME — <workspace> ===` / `⚙ systems primed` (plain full mode uses `=== workspace: <workspace> ===`)
@@ -360,7 +360,7 @@ Field descriptions:
 ```json
 {
   "repo": "backend",
-  "content": "Go REST API, sqlc-generated DB layer\n\n## Architecture\n- cmd/server/ entry point\n- internal/handler/ HTTP routes\n...",
+  "content": "Go REST API, sqlc-generated DB layer\n\n## When to add (roles)\n- Owns the HTTP API — add for endpoint work\n\n## How to use\n- api/ — OpenAPI contract, edit first\n...",
   "remoteAhead": 3,
   "memoBehind": 5
 }
@@ -406,7 +406,7 @@ Field descriptions:
       "branch": "feat/oauth2",
       "url": "git@github.com:org/backend.git",
       "brief": "Go REST API, sqlc-generated DB layer",
-      "memo": "Go REST API, sqlc-generated DB layer\n\n## Architecture\n- cmd/server/ entry point\n..."
+      "memo": "Go REST API, sqlc-generated DB layer\n\n## When to add (roles)\n- Owns the HTTP API — add for endpoint work\n..."
     }
   ]
 }

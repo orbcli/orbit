@@ -37,7 +37,7 @@ if ws=$(orbit context path 2>/dev/null) && [ -n "$ws" ]; then
     # still with no real memo (only a [seed] placeholder). Explicit so the agent
     # re-engages before done rather than silently leaving the pool with no context.
     gaps=$(orbit context gaps 2>/dev/null | paste -sd ', ' - 2>/dev/null || true)
-    [ -n "$gaps" ] && printf 'Memo debt — no real memo yet for: %s. Explore + jot + write a memo for these before done.\n' "$gaps"
+    [ -n "$gaps" ] && printf 'Orbit memo debt: no real memo yet for %s. Explore, jot, then write a memo for these before done.\n' "$gaps"
   else
     orbit context --prime 2>/dev/null || true
   fi

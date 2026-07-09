@@ -38,11 +38,11 @@ orbit new --no-goal                         # -> no-goal creation (free explorat
 
 - Default `task-{auto-increment}` (scans existing task-* directories, takes max+1)
 - `--name` for manual override
-- `--auto-name` (mid-term) opt-in calls agent (single inference without directory context)
+- `--auto-name` (mid-term, **not yet implemented**) opt-in calls agent (single inference without directory context)
 
-#### `--auto-name` (Mid-term Capability)
+#### `--auto-name` (Mid-term Capability — planned, not yet implemented)
 
-Calls a lightweight agent based on goal text to generate a semantic directory name (e.g., "fix API definition" -> `api-definition-refactor`). Single inference, no workspace context needed, falls back to default `task-{N}` strategy on failure.
+Calls a lightweight agent based on goal text to generate a semantic directory name (e.g., "fix API definition" -> `api-definition-refactor`). Single inference, no workspace context needed, falls back to default `task-{N}` strategy on failure. This flag is not accepted by the current CLI.
 
 ### `orbit new` Execution Location
 
@@ -59,8 +59,8 @@ Calls a lightweight agent based on goal text to generate a semantic directory na
 `orbit done` writes to the workspace's `.orbit` file (format described in [spec-metadata](./spec-metadata.md) "Workspace Metadata" section).
 
 Pre-completion warnings (stderr, non-blocking — `done` still succeeds): before marking complete, `orbit done` emits two reminders so knowledge is not lost on the subsequent `prune`:
-- **Jot entries remain** — if any repo still has jot entries (of any kind, including `[seed]` placeholders), it lists them: `warning: jot entries remain for: <repos> — consider aggregating into memo before done`.
-- **No real memo (gap gate)** — for repos that are still gaps (thin memo AND no non-`[seed]` jot; the same set as `orbit context gaps`), it warns: `warning: no memo yet for: <repos> — explore and write a memo before done (next session inherits nothing)`. This is the CLI backstop for the memo-guarantee model when the `Stop`/`SessionStart` hooks are absent.
+- **Jot entries remain** — if any repo still has jot entries (of any kind, including `[seed]` placeholders), it lists them: `orbit: jot entries remain for <repos>: run jot --pop, read info, then merge into the memo before done`.
+- **No real memo (gap gate)** — for repos that are still gaps (thin memo AND no non-`[seed]` jot; the same set as `orbit context gaps`), it warns: `orbit: no memo yet for <repos>: explore and write a memo before done or the next session inherits nothing`. This is the CLI backstop for the memo-guarantee model when the `Stop`/`SessionStart` hooks are absent.
 
 Idempotent semantics: executing `orbit done` again on an already `status=done` workspace overwrites `done-at`/`done-date` with the current time; `--pr` appends to the existing PR list (no deduplication, allowing multiple additions). This supports scenarios where multiple repos submit PRs in batches.
 
@@ -132,6 +132,7 @@ Three-layer determination:
 |----------|---------|---------|
 | `ORBIT_ROOT` | Overrides project root auto-discovery, explicitly specifies the project root path | None (traverses upward from CWD looking for `.repos/`) |
 | `ORBIT_BRANCH_PREFIX` | Custom local branch prefix for scoped mode (replaces default `ws/`) | `ws` |
+| `ORBIT_EDITOR` | Editor used to compose free-form text (goal, jot, memo) when no argument/stdin is given; also forces editor mode in non-TTY contexts | Falls back to `VISUAL`, then `EDITOR`, then `vi` |
 
 `ORBIT_ROOT` use cases:
 - CI/CD environments where CWD is not under project root

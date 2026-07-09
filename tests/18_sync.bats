@@ -238,7 +238,7 @@ _push_update_to() {
 
   run bash -c "cd '$proj/ws1' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo 2>&1"
   [ "$status" -eq 0 ]
-  assert_contains "$output" "is now behind"
+  assert_contains "$output" "untouched by sync"
 }
 
 @test "sync: no hint when worktree is on a non-matching branch" {
@@ -257,7 +257,7 @@ _push_update_to() {
 
   run bash -c "cd '$proj/ws1' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo 2>&1"
   [ "$status" -eq 0 ]
-  ! assert_contains "$output" "is now behind"
+  ! assert_contains "$output" "untouched by sync"
 }
 
 @test "sync: no worktree hint at project root" {
@@ -271,7 +271,7 @@ _push_update_to() {
 
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo 2>&1"
   [ "$status" -eq 0 ]
-  ! assert_contains "$output" "is now behind"
+  ! assert_contains "$output" "untouched by sync"
 }
 
 # --- info fetch behavior ---

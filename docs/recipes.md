@@ -108,13 +108,13 @@ cd go-upgrade/ && orbit add backend && orbit add shared-lib && cd ..
 
 # Launch agents in separate terminals
 # Terminal 1:
-cd auth-refactor/ && claude
+cd auth-refactor/ && claude "orbit start"
 
 # Terminal 2:
-cd order-export/ && claude
+cd order-export/ && claude "orbit start"
 
 # Terminal 3:
-cd go-upgrade/ && claude
+cd go-upgrade/ && claude "orbit start"
 
 # Three agents work independently in their own worktrees, without interfering with each other
 # The same backend repo can exist in three workspaces simultaneously on different branches
@@ -212,7 +212,7 @@ PostgreSQL driver, native protocol implementation, supports COPY, prepared state
 EOF
 
 # Create a workspace, provide only the goal
-orbit new "Optimize order query endpoint caching strategy" --exec "claude"
+orbit new "Optimize order query endpoint caching strategy" --exec 'claude "orbit start"'
 
 # After launch, the agent will:
 # 1. orbit repos to view available repos and their briefs
@@ -296,25 +296,14 @@ cat <<'EOF' | orbit memo payments
 
 Stripe-integrated payment service, handles charges, refunds, and webhooks.
 
-## Key Entry Points
-- `cmd/server/main.go` — HTTP server startup, mounts routes
-- `internal/handler/webhook.go` — Stripe webhook receiver
-- `internal/handler/charge.go` — Payment initiation
-- `internal/service/refund.go` — Refund logic
+## When to add (roles)
+- Owns all Stripe integration — add for any charge, refund, or webhook change.
+- Exposes `pkg/client/` as the SDK other services call to initiate payments.
 
-## Module Boundaries
-- `internal/` — all business logic, not exported
-- `pkg/client/` — SDK for other services to call payments
-
-## Build & Test
-- `make run` — local dev server (requires STRIPE_KEY env)
-- `make test` — unit tests
-- `make integration` — requires test Stripe keys
-
-## Key Conventions
-- All Stripe API calls go through `internal/gateway/stripe.go` (single wrapper)
-- Webhook signature verification in middleware, not in handlers
-- Amounts stored as integer cents, never floats
+## How to use
+- `internal/handler/webhook.go` — Stripe webhook receiver; start here for webhook work.
+- `internal/service/refund.go` — refund logic; the entry point for refund changes.
+- `internal/gateway/stripe.go` — the single Stripe wrapper all API calls route through.
 EOF
 
 # Verify: memo is now visible
@@ -323,14 +312,14 @@ orbit info payments
 ```
 
 Key points:
-- `orbit memo --scaffold` gives you the recommended structure without writing anything — use it as a reference
-- Explore the repo first, then write the memo — don't guess or copy README content verbatim
-- A good cold-start memo is ~40 lines: brief + entry points + module boundaries + build commands
-- Future sessions (yours or a teammate's) will see this memo via `orbit info` or `orbit context`
+- `orbit memo --scaffold` gives you the card structure (roles + how to use) without writing anything — use it as a reference
+- Explore the repo first (within `explore.paths`), then write the card — don't guess or copy README content verbatim
+- A good card answers two questions: when/why to add the repo (its roles) and how to use it (the MVP/VIP entry points) — well within orbit's card budget (`memo.maxLines`, which orbit reports at aggregation)
+- Future sessions (yours or a teammate's) will see this card via `orbit info` or `orbit context`
 
 ## Accumulate Toolchain Feedback in a Knowledge Repo
 
-> Scenario: As you work, you keep learning things about your **development toolchain** — the agent skills, linters, compilers, and CI/CD pipelines that make the work faster but aren't part of any repo you're editing. A pitfall in your CI config, a linter rule that keeps biting, a better way to drive a skill: this feedback is cross-cutting, so it has no natural home in the project repo at hand. It also grows over time and needs periodic review. Per-repo `memo` is the wrong home (memo is a bounded ~80-line cache describing a single repo, and `jot` only feeds that cache). Keep a dedicated knowledge repo for the toolchain and write to it with normal git.
+> Scenario: As you work, you keep learning things about your **development toolchain** — the agent skills, linters, compilers, and CI/CD pipelines that make the work faster but aren't part of any repo you're editing. A pitfall in your CI config, a linter rule that keeps biting, a better way to drive a skill: this feedback is cross-cutting, so it has no natural home in the project repo at hand. It also grows over time and needs periodic review. Per-repo `memo` is the wrong home (memo is a bounded, small pull-decision card for a single repo, and `jot` only feeds that card). Keep a dedicated knowledge repo for the toolchain and write to it with normal git.
 
 ```bash
 # A dedicated toolchain-knowledge repo — skill notes, CI pitfalls, linter/compiler
@@ -360,7 +349,7 @@ orbit add toolchain-blueprint
 
 Key points:
 - **The subject is the toolchain, not the project** — skills, linters, compilers, CI/CD are what speed up development but live outside the repo you're editing, so their feedback has no per-repo home. A dedicated Git repo gives that cross-cutting knowledge a place to accumulate
-- This does **not** belong in `memo`: memo is a bounded (~80-line) per-repo cache for "what this repo is" — it can't hold large accumulating narrative, and `jot` (append-only capture that folds into memo) is the wrong tool at this scale
+- This does **not** belong in `memo`: memo is a bounded, small per-repo pull-decision card for "when to add this repo + how to use it" — it can't hold large accumulating narrative, and `jot` (append-only capture that folds into memo) is the wrong tool at this scale
 - Writing via **branch + PR** makes each note reviewable and traceable (git history + code review), unlike an agent's ephemeral memory
 - **Consolidate in periodic batches, not incrementally**: an agent that reviews the whole accumulated set in one pass produces a balanced synthesis instead of drifting toward whatever was reported most recently
 - This is the "any Git repo is a workspace member" pattern applied to knowledge — the agent reads *and writes* the knowledge repo exactly like code
@@ -404,22 +393,18 @@ cat <<'EOF' | orbit memo backend
 
 Go REST API serving an online marketplace.
 
-## Key Entry Points
-- `cmd/server/main.go` — Server startup
-- `internal/handler/` — HTTP handlers
-- `internal/service/` — Business logic
-- `internal/repo/` — Data access layer (sqlc generated)
+## When to add (roles)
+- Owns the marketplace HTTP API — add for any endpoint, handler, or business-logic change.
+- Owns the data layer (sqlc-generated) and goose migrations — add for schema work.
 
-## Tech Stack
-Go 1.22, gin, sqlc, PostgreSQL, Redis
-
-## Notes
-- Database migrations are in the `migrations/` directory, managed by goose
-- Configuration uses environment variables, refer to `.env.example`
+## How to use
+- `cmd/server/main.go` — server startup + route mounting; start here to trace a request.
+- `internal/handler/` — HTTP handlers; the entry point for adding or changing endpoints.
+- `internal/repo/` — sqlc data access; pair with `migrations/` (goose) for schema changes.
 EOF
 
 # After new members join, they clone the same set of repos (or receive an export)
 # Their agents can run orbit repos to see all repositories and briefs
-# orbit info backend shows the complete tech stack and entry point documentation
-# No need to explore the code structure from scratch
+# orbit info backend shows the repo's roles and entry points
+# New members skip cold-start exploration and know when to add each repo and where to start
 ```

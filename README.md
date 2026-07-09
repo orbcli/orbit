@@ -31,7 +31,7 @@ Orbit manages multi-repo Git workspaces, letting AI coding agents read, modify, 
 
 ```
 Level 0  orbit repos        → Name + one-line brief (~50 tokens/repo)
-Level 1  orbit info <repo>  → Structure, key entry points, tech stack (~500 tokens)
+Level 1  orbit info <repo>  → Repo roles + key entry points — when to add, where to start (~200 tokens)
 Level 2  orbit add <repo>   → Complete source directory, can grep, read files, trace call chains
 ```
 
@@ -152,10 +152,10 @@ A cold launch into a workspace unfolds the way a rocket reaches orbit — three 
 | Beat | Trigger | What happens |
 |:---|:---|:---|
 | **Prime** | `orbit context --prime` | *Systems primed.* On a cold-start workspace (no repos yet), the plugin hook injects orientation at session start — goal, status, any unfinished notes from the last session, and the pool roster: the repos on offer to `orbit add`, one line each. No source loaded yet; just bearings and the manifest. |
-| **Ignition** | `orbit info` → `orbit add <repo>` | *Engines light.* The agent sizes up each candidate with `orbit info` (memo + structure), then pulls the repos it needs into the workspace as full worktrees — assess before you add, so the turbopumps spool up on the right source. |
+| **Ignition** | `orbit info` → `orbit add <repo>` | *Engines light.* The agent sizes up each candidate with `orbit info` (memo: roles + entry points), then pulls the repos it needs into the workspace as full worktrees — assess before you add, so the turbopumps spool up on the right source. |
 | **Orbit** | *the work* | *On station.* The agent greps, traces call chains, edits, commits, and pushes in real source — operating in orbit toward the goal, each repo's memo already aboard from its `info` pass. |
 
-Each beat honors progressive loading: prime injects orientation, not the whole codebase; repo detail arrives only when the agent commits to a repo. On station the agent **resupplies rather than relaunches** — when a call chain reaches a repo not yet aboard, it pulls that one in on demand (`orbit repos` → `orbit info` → `orbit add`) without returning to the pad, and still assesses before it adds. Resuming a workspace that already holds repos skips priming entirely: the hook simply nudges the agent to pick up the prior task, repo detail on demand.
+On station the agent **resupplies rather than relaunches** — when a call chain reaches a repo not yet aboard, it pulls that one in on demand (`orbit repos` → `orbit info` → `orbit add`) without returning to the pad, still assessing before it adds. Resuming a workspace that already holds repos skips priming entirely: the hook simply nudges the agent to pick up the prior task, repo detail on demand.
 
 ## Auto-approving safe commands
 

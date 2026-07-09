@@ -254,12 +254,12 @@ cat <<'EOF' | orbit memo backend
 
 Go REST API, sqlc-generated DB layer.
 
-## Key Entry Points
-- `cmd/server/main.go` — Server startup
-- `internal/service/` — Business logic
+## When to add (roles)
+- Owns the HTTP API and business logic — add for any endpoint or service change.
 
-## Tech Stack
-Go 1.22, sqlc, PostgreSQL
+## How to use
+- `cmd/server/main.go` — server startup + route mounting; start here to trace a request.
+- `internal/service/` — business logic; the entry point for behavior changes.
 EOF
 ```
 
@@ -278,6 +278,20 @@ orbit memo                    # Refresh all repo indexes
 orbit memo backend --refresh  # Refresh single repo index
 ```
 
+### Memo config keys (project-level, on `.repos/.orbit`)
+
+Three optional keys tune the memo card; set them with `orbit config <key> <value>` (unset → default):
+
+```bash
+orbit config memo.minLines 4        # soft floor: below this a memo counts as thin/missing (default 4)
+orbit config memo.maxLines 16       # hard ceiling: curate instead of appending past it; also caps the
+                                    #   README fallback in `orbit info` (default 16)
+orbit config explore.paths ".:1"    # cold-start exploration scope for the first `orbit add` of a repo:
+                                    #   a comma-delimited list of <path>:<depth> entries (default ".:1")
+```
+
+`memo.minLines`/`memo.maxLines` are surfaced as `card budget: <min>–<max> lines` at the curation checkpoints (jot overflow and `orbit done`). `explore.paths` is a one-time cold-start knob only — once the first exploration writes the card, the jot → incremental-memo pipeline maintains it. Orbit attaches no meaning to what lives at those paths (a pre-generated code-doc works just as well).
+
 ## 9. Recording Discoveries (Jot)
 
 During work, record repo knowledge for later memo aggregation:
@@ -285,7 +299,7 @@ During work, record repo knowledge for later memo aggregation:
 ```bash
 cd task-01/backend/
 orbit jot "entry point is cmd/main.go"          # Record a discovery (repo inferred from CWD)
-orbit jot backend "uses Echo router"             # Explicit repo name
+orbit jot backend "role: owns the public /auth API"   # Explicit repo name
 orbit jot backend --pop                          # Pop all entries (outputs + clears)
 ```
 

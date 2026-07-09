@@ -20,7 +20,7 @@ Agents decide what they need — no human setup required:
 
 ```
 Level 0  orbit repos        → Name + one-line brief (~50 tokens/repo)
-Level 1  orbit info <repo>  → Structure, key entry points, tech stack (~500 tokens)
+Level 1  orbit info <repo>  → Repo roles + key entry points — when to add, where to start (~200 tokens)
 Level 2  orbit add <repo>   → Full source — grep, read, trace
 ```
 
@@ -43,7 +43,7 @@ Ships with **Claude Code** and **Qoder** plugins — `SessionStart` hooks for de
 ### Core Commands
 - **`clone`** — Add repos to the shared pool (supports fork push-URLs)
 - **`repos`** — Browse the pool roster (`--json`, plus `memoBehind` staleness)
-- **`info`** — Repo memo, structure, and auto-fetch, with two-layer staleness detection
+- **`info`** — Repo memo (roles + entry points) and auto-fetch, with two-layer staleness detection
 - **`memo`** — Read and write repo knowledge (`--scaffold` to generate a template, `--refresh` to rebuild the index)
 - **`sync`** — Fast-forward pool repos to upstream (force reset, branch switching)
 
