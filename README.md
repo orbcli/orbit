@@ -126,10 +126,24 @@ For the complete command flow, see [`USAGE.md`](USAGE.md); for common scenarios,
 
 Want the whole loop without wiring up your own repos? This spins up a tiny two-repo mission — a probe's flight computer (`navigator`) and its ground station (`mission-control`), wired by a shared telemetry-frame contract — entirely on your machine. No GitHub account, no network, no server: the "upstreams" are local bare repos, so even `git push` works.
 
+With the Claude Code plugin folded in — launch straight away:
+
+```bash
+curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh \
+  | bash -s -- --claude
+```
+
+With the Qoder CLI plugin folded in:
+
+```bash
+curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh \
+  | bash -s -- --qodercli
+```
+
+Runtime only (skill-only or other agents) — seeds the demo and prints launch options:
+
 ```bash
 curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh | bash
-# or fold in the agent plugin so you can launch straight away:
-curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh | bash -s -- --claude
 ```
 
 It drops you into a ready workspace with both repos in the pool and a goal set: add a `fuel` field to the telemetry downlink — a change that must land in *both* repos in lockstep, because the frame is a positional contract neither repo can see alone. With `--claude` (or `--qodercli`) the plugin install is folded in, so you just `claude start` (or `qodercli start`) — the session hook detects the workspace, no magic phrase needed. The agent commits locally, then pauses for your OK before pushing. Prefer to drive it yourself? The script prints a by-hand path too. Clean up any time with `rm -rf ~/orbit-try`.
