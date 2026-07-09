@@ -27,6 +27,7 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null ||
 
 # Refuse anything with shell chaining/redirection/substitution — a bare single
 # command is the only shape we can reason about safely.
+# shellcheck disable=SC2016  # single quotes are intentional — match literal metachars, no expansion
 case "$cmd" in
   *';'*|*'&'*|*'|'*|*'`'*|*'$('*|*'>'*|*'<'*|*$'\n'*) exit 0 ;;
 esac
