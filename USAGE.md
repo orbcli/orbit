@@ -140,7 +140,7 @@ created workspace: task-01
 Godspeed.
 ```
 
-Copy and run the recommended command to launch the agent. The agent triggers orbit skill startup detection through the initial prompt, reads context, and starts working.
+Copy and run the recommended command to launch the agent. The agent triggers orbit skill startup detection through the initial prompt, reads context, and starts working. With the Claude Code or Qoder plugin installed, the `orbit start` phrase is optional — the session hook detects the workspace either way; keep it for skill-only setups, where it is the trigger.
 
 Common configuration examples:
 

@@ -5,6 +5,8 @@
 [![GitHub Release](https://img.shields.io/github/v/release/orbcli/orbit)](https://github.com/orbcli/orbit/releases)
 
 > Source code as agent knowledge — multi-repo Git workspaces where agents read, code, and ship
+>
+> → No RAG. No index — real source, not retrieval.
 
 <p align="center">
   <img src="docs/media/orbit-demo-hero.gif" alt="Orbit demo — one cross-repo mission, both worktrees engaged, knowledge captured into memos" width="800">
@@ -15,6 +17,8 @@
 Orbit manages multi-repo Git workspaces, letting AI coding agents read, modify, and commit directly in real source code — full worktrees, not index fragments. Each agent works in an isolated workspace, enabling natural parallelism. Ships with Claude Code and Qoder integrations.
 
 **Who is this for?** Developers — solo or on a team — whose work spans multiple repos: your main project, its dependency source (Kubernetes, React, gRPC…), and the toolchain you maintain alongside it (agent skills, CI/CD, linters, PRD/config). Especially if you're on polyrepo and don't want to migrate to a monorepo just to give agents cross-repo context.
+
+Your agent needs to work across repos — but today each session starts fresh, hallucinating API details it could just grep from real source. Orbit gives it real worktrees for all your repos.
 
 ## Why Orbit
 
@@ -87,7 +91,7 @@ orbit config agent.recommend 'claude "orbit start"'
 
 Once configured, each `orbit new` will recommend a launch command — just copy and execute. The agent automatically reads the goal, discovers repos, and starts working.
 
-Baking the `orbit start` phrase into the command loads the orbit skill from the first turn. Whether that phrase is strictly required depends on the integration — see [Context detection](#context-detection).
+Baking the `orbit start` phrase into the command loads the orbit skill from the first turn. With the Claude Code or Qoder plugin installed, the bundled session hook detects the workspace and injects its state without the phrase — but loading the skill's full conventions is model-driven, so keeping the phrase (or `/orbit`) is still the reliable way to trigger them. It's essential only for skill-only or other-agent setups that have no hook. See [Context detection](#context-detection).
 
 ### 3. Create a workspace and start working
 
@@ -117,6 +121,18 @@ orbit new "Upgrade informer to v0.28 new API" --exec 'claude "orbit start"'
 No separate `init` command is needed — `orbit clone` and `orbit new` automatically initialize the project root when required.
 
 For the complete command flow, see [`USAGE.md`](USAGE.md); for common scenarios, see [`docs/recipes.md`](docs/recipes.md).
+
+## Try it now (60 seconds, no setup)
+
+Want the whole loop without wiring up your own repos? This spins up a tiny two-repo mission — a probe's flight computer (`navigator`) and its ground station (`mission-control`), wired by a shared telemetry-frame contract — entirely on your machine. No GitHub account, no network, no server: the "upstreams" are local bare repos, so even `git push` works.
+
+```bash
+curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh | bash
+# or fold in the agent plugin so you can launch straight away:
+curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh | bash -s -- --claude
+```
+
+It drops you into a ready workspace with both repos in the pool and a goal set: add a `fuel` field to the telemetry downlink — a change that must land in *both* repos in lockstep, because the frame is a positional contract neither repo can see alone. With `--claude` (or `--qodercli`) the plugin install is folded in, so you just `claude start` (or `qodercli start`) — the session hook detects the workspace, no magic phrase needed. The agent commits locally, then pauses for your OK before pushing. Prefer to drive it yourself? The script prints a by-hand path too. Clean up any time with `rm -rf ~/orbit-try`.
 
 ## Core Concepts
 
