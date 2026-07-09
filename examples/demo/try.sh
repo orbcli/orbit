@@ -30,8 +30,10 @@ die()  { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 # (curl | bash), where $0 gives no usable path.
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd) || SCRIPT_DIR=""
 LOCAL_INSTALL=""
+REPO_ROOT=""
 if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../../install.sh" ]; then
-  LOCAL_INSTALL="$(cd "$SCRIPT_DIR/../.." && pwd)/install.sh"
+  REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+  LOCAL_INSTALL="$REPO_ROOT/install.sh"
 fi
 
 # Run install.sh with the runtime steered into the demo dir. Uses the local
@@ -329,15 +331,23 @@ elif [ "$AGENT" = qodercli ]; then
     ${ORBIT_PATH}cd $TRY_DIR/mission && qodercli start
 "
 else
-  AGENT_SECTION="── Let your agent fly it (needs a plugin: Claude Code or Qoder CLI) ────
-    # One-time: install the Orbit plugin so the agent knows Orbit — it adds the
-    # skill + the session hook that detects this workspace. Pick your agent
-    # (or re-run this script with --claude / --qodercli to fold it in):
+  # Skill source dir — a plain SKILL.md tree, no plugin machinery. Point at the
+  # local checkout when we have one; otherwise name the repo path to fetch.
+  if [ -n "$REPO_ROOT" ]; then
+    SKILL_DIR="$REPO_ROOT/skills/orbit"
+  else
+    SKILL_DIR="orbit repo: skills/orbit"
+  fi
+  AGENT_SECTION="── Let your agent fly it (skill only — no plugin required) ────────────
+    # No plugin needed: install just the Orbit skill, then launch with the
+    # \"orbit start\" phrase — without a session hook, the phrase is what loads
+    # Orbit. Copy the skill dir into your agent's skills folder:
+    #   $SKILL_DIR
+    # Prefer a plugin + auto-detecting hook? Install one:
     #   curl -sL $INSTALL_URL | bash -s -- --claude      # Claude Code
     #   curl -sL $INSTALL_URL | bash -s -- --qodercli    # Qoder CLI
     ${ORBIT_PATH}cd $TRY_DIR/mission
-    claude start          # Claude Code
-    # or: qodercli start  # Qoder CLI"
+    <agent> \"orbit start\"        # your CLI/IDE Agent: claude, qodercli, …"
 fi
 
 # --- plugin uninstall: the agent plugin lives in the agent, not $TRY_DIR, so
