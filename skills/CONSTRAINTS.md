@@ -327,7 +327,7 @@ Sync (`orbit sync`) advances pool HEAD, causing memoBehind to increase — there
 
 ## Push Behavior
 
-Orbit takes no stance on git push workflow — that is the developer's (or automation system's) call, and the permission mode governs whether any command prompts. The skill documents *mechanics*, not policy: it must not gate pushes behind a push-safety flag or a confirmation dialog. (Discovery-first before high-impact actions like tag/push is already covered by the Discovery gate in the Discovery-First Workflow, on knowledge grounds, not as a push-approval policy.)
+Orbit takes no stance on git push workflow — that is the developer's (or automation system's) call, and the permission mode governs whether any command prompts. The skill documents *mechanics*, not policy: it must not gate pushes behind a push-safety flag or a confirmation dialog. (Discovery-first before high-impact actions is already covered by the Discovery gate in the Discovery-First Workflow, on knowledge grounds, not as a push-approval policy.)
 
 ### Branch Mode Choice (Must Be Documented)
 

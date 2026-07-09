@@ -3,10 +3,10 @@ name: orbit
 description: "Operate Orbit — the user’s Git-native multi-repo workspace manager. Primary trigger: an orbit workspace is detected at session start (a SessionStart block “Detected an orbit workspace” / “=== PRIME — … ===”), OR the user opens a session by saying “orbit启动” or “orbit start” — in either case invoke this skill before your first reply. Also use when the user asks to clone a repo, create or manage a workspace, add a repo, switch branches, view status, set or clear a goal, jot a discovery, aggregate memos, or finish / complete / mark work done (“done” / “finish” / “完成”) — or when the message mentions workspaces, source pools, `.repos/`, or cross-repo tasks."
 ---
 
-<!-- MAINTAINERS: This SKILL.md is governed by ../CONSTRAINTS.md (skills/CONSTRAINTS.md) —
+<!-- MAINTAINERS: This SKILL.md is governed by skills/CONSTRAINTS.md (path relative to repo root) —
      the canonical, cross-agent constraints for orbit skills. Before editing this file:
      (1) comply with those constraints, (2) mirror the same body change to the sibling
-     variant skills/qoder/orbit/SKILL.md (the two bodies must stay identical), and
+     variant — skills/orbit/SKILL.md and skills/qoder/orbit/SKILL.md must stay byte-identical, and
      (3) update evals/evals.json per the doc's Eval Maintenance Requirements. -->
 
 Use this skill to operate the user's Git-native multi-repo workspace manager (Orbit).
@@ -276,7 +276,7 @@ Rules:
 - **Never access `.repos/` directly.** All repos operations go through orbit commands.
 - **Don't run `orbit new` if already in a workspace.** It creates at project root level.
 - **Default scope is the current workspace** inferred from CWD. Don't target other workspaces unless explicitly asked.
-- **Discover before irreversible or high-impact actions.** Tag, push, and publish can trigger release pipelines — before any such action, complete Workflow steps 3–7 (info → add → explore) for the affected repo(s). Task type is no exception: a "just tag a release" task still requires discovery first. (Orbit takes no stance on *whether* you push or commit — that's your call, gated by your permission mode, not by orbit.)
+- **Understand before your first target action on an added repo.** A *knowledge* gate, not an approval gate: before your first edit / branch / push / tag / release on a repo, complete Workflow steps 3–7 (info → memo → explore). `add` only creates a worktree — it is not understanding and never clears the gate. Normal work clears it at edit time; the trap is jumping straight from `add` to a high-impact action ("just tag a release", publish) on a repo you never read. (Gates on *understanding*, not permission — orbit takes no stance on *whether* you push or commit.)
 
 ## Safe to run freely
 
