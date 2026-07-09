@@ -263,7 +263,7 @@ orbit sync [repo...] [--force] [--branch <branch>]
 - Does not update the `.orbit` index `head` field (`head` reflects HEAD at memo write time, not at sync time)
 - `orbit_staleness_check` compares memo HEAD vs pool current HEAD; distance naturally changes after sync
 - sync does not cascade to memo refresh — memo validity is determined by actual work needs, not by commit distance (see [`docs/spec-knowledge.md`](./spec-knowledge.md) Sync and Memo Cascade Relationship; agent behavior rules in `skills/CONSTRAINTS.md` Sync Decision Rules)
-- Existing worktrees are unaffected (each on its own independent branch)
+- Existing worktrees are unaffected (each on its own independent branch) — sync only fast-forwards the pool repo, never a checked-out worktree. When sync runs from inside a workspace and a worktree tracks the branch just advanced, it emits a stderr hint that the worktree is now behind. Updating the worktree is left to native git — orbit takes no stance on how.
 
 **Error handling:**
 - ff-only fails → stderr warning + suggests `--force`, continues processing next repo

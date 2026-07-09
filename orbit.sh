@@ -233,6 +233,12 @@ orbit_git_supports_orphan_worktree() {
   [ "$(printf '%s\n' "2.42" "$ver" | sort -V | head -n1)" = "2.42" ]
 }
 
+orbit_git_supports_autosetupremote() {
+  local ver
+  ver=$(git --version | awk '{print $3}')
+  [ "$(printf '%s\n' "2.37" "$ver" | sort -V | head -n1)" = "2.37" ]
+}
+
 orbit_reserved_workspace() {
   case "$1" in
     ''|.|..|.repos|.git|*/*) return 0 ;;
@@ -264,12 +270,16 @@ orbit_remote_branch_exists() {
   git -C "$repo" ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1
 }
 
-orbit_ensure_remote_branch() {
+orbit_add_fetch_refspec() {
   local repo="$1" branch="$2"
   local refspec="+refs/heads/$branch:refs/remotes/origin/$branch"
-  if ! git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null | grep -Fqx "$refspec"; then
-    git -C "$repo" config --add remote.origin.fetch "$refspec"
-  fi
+  git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null | grep -Fqx "$refspec" && return 0
+  git -C "$repo" config --add remote.origin.fetch "$refspec"
+}
+
+orbit_ensure_remote_branch() {
+  local repo="$1" branch="$2"
+  orbit_add_fetch_refspec "$repo" "$branch"
   if ! git -C "$repo" rev-parse --verify --quiet "origin/$branch" >/dev/null 2>&1; then
     git -C "$repo" fetch origin "$branch" 2>/dev/null || orbit_fail "cannot fetch origin/$branch"
   fi
@@ -487,6 +497,10 @@ orbit_clone() {
   fi
 
   git -C "$dst" config push.default upstream
+  # Let a bare `git push` on a fresh raw-mode branch create origin/<branch> and set
+  # tracking (git >= 2.37). Without it, push.default=upstream makes bare push error on
+  # a branch with no upstream. Older git silently ignores this key (no-op).
+  git -C "$dst" config push.autoSetupRemote true
 
   if [ -n "$push_url" ]; then
     git -C "$dst" remote set-url --push origin "$push_url"
@@ -711,6 +725,12 @@ orbit_add() {
   # Surface the memo so agents that skipped `orbit info` still get repo context.
   # A well-behaved agent that already ran `orbit info` passes -s to suppress this.
   if [ "$silent" -eq 0 ]; then
+    # Raw-mode tracking limitation: the pool is a single-branch clone, so a branch
+    # you create with `git checkout -b <name>` and push won't show remote tracking
+    # in `git status` / `@{upstream}` until `git fetch origin <name>` materializes
+    # the ref. `orbit switch -c <name>` (scoped) wires tracking up front.
+    # shellcheck disable=SC2016
+    printf 'orbit: note: raw-mode branches (git checkout -b) won'\''t show remote tracking under the single-branch pool until `git fetch origin <branch>`; `orbit switch -c <name>` sets tracking up front\n' >&2
     local md_file="$root/.repos/.$repo_name.md"
     if [ -f "$md_file" ]; then
       printf -- '--- memo: %s (pass -s to suppress) ---\n' "$repo_name" >&2
@@ -759,6 +779,9 @@ orbit_switch() {
   if [ "$push_default" != "upstream" ]; then
     git -C "$repo_dir" config push.default upstream
   fi
+  if [ "$(git -C "$repo_dir" config --get push.autoSetupRemote 2>/dev/null || true)" != "true" ]; then
+    git -C "$repo_dir" config push.autoSetupRemote true
+  fi
 
   local local_branch
   local_branch=$(orbit_tracking_branch "$ws" "$branch_name") || return 1
@@ -775,6 +798,9 @@ orbit_switch() {
     fi
     git -C "$wt_path" checkout -b "$local_branch"
     orbit_set_upstream "$wt_path" "$local_branch" "$branch_name"
+    # Pre-register the fetch refspec so the first `git push` materializes
+    # refs/remotes/origin/<branch> (status/@{upstream} work under single-branch pool).
+    orbit_add_fetch_refspec "$repo_dir" "$branch_name"
     printf 'created %s (upstream: origin/%s)\n' "$local_branch" "$branch_name"
   else
     if git -C "$repo_dir" rev-parse --verify --quiet "refs/heads/$local_branch" >/dev/null 2>&1; then
@@ -795,7 +821,7 @@ orbit_switch() {
 }
 
 orbit_sync_one() {
-  local repo_name="$1" root="$2" force="$3" new_branch="$4"
+  local repo_name="$1" root="$2" force="$3" new_branch="$4" ws="${5:-}"
   local repo_dir="$root/.repos/$repo_name"
   [ -d "$repo_dir" ] || { printf 'orbit: %s: repo not in pool, skipping\n' "$repo_name" >&2; return 1; }
 
@@ -840,6 +866,19 @@ orbit_sync_one() {
     fi
     printf 'synced %s (fast-forward to origin/%s)\n' "$repo_name" "$branch"
   fi
+
+  # sync updates the pool repo only. If this workspace has a worktree of this repo
+  # tracking the same remote branch we just advanced, it is now behind — hint the pull.
+  if [ -n "$ws" ]; then
+    local wt="$root/$ws/$repo_name"
+    if [ -e "$wt/.git" ]; then
+      local wt_up
+      wt_up=$(git -C "$wt" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+      if [ "$wt_up" = "origin/$branch" ]; then
+        printf "orbit: %s: pool advanced; your worktree (tracking origin/%s) is now behind and untouched by sync — update it with native git if you want\n" "$repo_name" "$branch" >&2
+      fi
+    fi
+  fi
 }
 
 orbit_sync() {
@@ -859,6 +898,8 @@ orbit_sync() {
   local root
   root=$(orbit_require_root) || return 1
 
+  local ws_ctx=""
+  ws_ctx=$(orbit_infer_workspace "$root" 2>/dev/null) || ws_ctx=""
   if [ "${#repos[@]}" -eq 0 ]; then
     local ws repo_name
     if ws=$(orbit_infer_workspace "$root" 2>/dev/null); then
@@ -886,7 +927,7 @@ orbit_sync() {
 
   local failed=0
   for repo_name in "${repos[@]}"; do
-    orbit_sync_one "$repo_name" "$root" "$force" "$new_branch" || failed=1
+    orbit_sync_one "$repo_name" "$root" "$force" "$new_branch" "$ws_ctx" || failed=1
   done
 
   return "$failed"
@@ -1902,6 +1943,12 @@ orbit_doctor() {
   else
     printf '[FAIL] git not found\n'
     all_ok=0
+  fi
+
+  if command -v git >/dev/null 2>&1 && ! orbit_git_supports_autosetupremote; then
+    # backticks are literal text in the user-facing warning
+    # shellcheck disable=SC2016
+    printf '[WARN] git < 2.37: a bare `git push` on a fresh raw-mode branch will error instead of creating origin/<branch> + tracking (recommend git >= 2.42)\n'
   fi
 
   if command -v git >/dev/null 2>&1 && ! orbit_git_supports_orphan_worktree; then

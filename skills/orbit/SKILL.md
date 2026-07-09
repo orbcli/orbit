@@ -67,7 +67,7 @@ These steps describe the work itself, independent of who performs it. Run them y
    - **Shortcut:** `orbit context` combines steps 1–3 into a single call (goal + all repos + memos).
 4. **Decide.** Based on info: memo gives enough context (API surface, module boundaries) → don't add. Need to grep source, trace call chains, or modify code → `orbit add`. Repo not in pool → `orbit clone` then add. Only need docs → web search. A README fallback (step 3) is **not** "enough context" — it never justifies "don't add".
    - **Task type doesn't exempt you from exploring.** Release, ops, and pure-research tasks explore first too — the default mental model is not "editing code". If you judge full source truly isn't needed, state that reason explicitly here rather than skipping exploration by default.
-5. **Cold-start sync.** If step 3 showed remoteAhead > 0, run `orbit sync <repo>` now — before add. Agent hasn't started relying on the code yet, so sync cost is lowest. This ensures `orbit add` creates the worktree from the latest pool HEAD.
+5. **Cold-start sync.** If step 3 showed remoteAhead > 0, run `orbit sync <repo>` now — before add. Agent hasn't started relying on the code yet, so sync cost is lowest. This ensures `orbit add` creates the worktree from the latest pool HEAD. **Scope:** `sync` fast-forwards the *pool* repo (`.repos/<repo>`) only — it does **not** move a worktree you've already checked out. If a worktree tracks the branch you synced, it's now behind the pool; bring it up to date with native git if you want. Don't re-run `orbit sync` expecting the worktree to advance.
 6. **Add repos.** Run `orbit add <repo>` only for repos that need full source (from inside a workspace directory). Worktree starts from pool's current HEAD (latest after sync). Pass `-s` when you already hold enough context to justify the add — from `orbit info` in step 3, the memo surfaced at prime, or a prior session: `orbit add <repo> -s`. Plain `orbit add` (no `-s`) echoes the memo as a safety net — reach for it only when adding without that context; seeing the memo dump means you added blind and should confirm you actually need the full source. **Hard rule:** if step 3's `orbit info` showed **no memo** (README fallback), `-s` is forbidden — no memo means zero inherited context, so add without `-s` and explore in step 7.
    - **Seed jot on no/low memo.** When you add a repo whose memo is missing or thin, `orbit add` auto-appends a `[seed]` jot — a durable placeholder that survives compaction and keeps the queue non-empty so wrap-up/done still force a memo. It is an *instruction to you*, not a discovery: act on it in step 7, and **never merge a `[seed]` line into the memo**. It stays in the queue (and keeps the repo flagged by `orbit context gaps`) until you capture a real jot or write a real memo.
 7. **Memo check.** First, pop any residual jot entries from a prior session: `orbit jot <repo> --pop` (a `[seed]` line here means the repo still has no real memo — treat it as a prompt to explore and write one, then discard the line). Then, based on staleness info from step 3 (recalculated after sync):
@@ -139,7 +139,7 @@ orbit clone <url> [--push <fork-url>] [--name <repo>] [--branch <branch>]
 orbit repos [--json]
 orbit info <repo> [--json]
 orbit memo [<repo>] [--refresh|--scaffold]
-orbit sync [repo...] [--force] [--branch <branch>]
+orbit sync [repo...] [--force] [--branch <branch>]  # updates the POOL repo only — NOT your worktree
 
 # Workspace lifecycle (from inside a workspace)
 orbit new ["<goal>"] [--name <name>] [--exec "<cmd>"] [--no-goal]
@@ -178,6 +178,8 @@ orbit add backend          # → ws/<workspace>/main (local base)
 git checkout -b feature/x  # plain branch, no prefix
 git push origin feature/x  # explicit push target
 ```
+
+**Tracking-display limitation (raw mode only).** The pool is a single-branch clone, so a branch you create with `git checkout -b` and push won't show remote tracking in `git status` / `@{upstream}` — the remote-tracking ref isn't materialized. The branch and its push are fine; only the ahead/behind display is blank. Run `git fetch origin <branch>` once to materialize the ref, or use scoped mode (`orbit switch -c`), which wires tracking up front. `orbit add` prints this note too.
 
 ### Scoped mode (opt-in, prevents multi-workspace conflicts)
 

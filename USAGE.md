@@ -98,6 +98,8 @@ orbit sync                        # sync all pool repos (at project root)
 
 Scope is inferred from CWD: project root → all repos; workspace → repos in that workspace; worktree → that single repo. You can also specify repo names explicitly.
 
+`sync` fast-forwards the **pool** repo (`.repos/<repo>`) only — it never moves a worktree you've already checked out. When run from inside a workspace whose worktree tracks the branch just advanced, sync emits a stderr note that the worktree is now behind; bring it up to date with native git if you want. Don't re-run `orbit sync` expecting the worktree to move.
+
 ## 4. Creating a Workspace
 
 ```bash
@@ -189,6 +191,8 @@ git checkout -b feature/api-refactor
 # work, commit
 git push origin feature/api-refactor
 ```
+
+**Tracking-display limitation:** the pool is a single-branch clone, so a raw-mode branch you push this way won't show remote tracking in `git status` / `@{upstream}` — the branch and push are fine, only the ahead/behind display is blank. Run `git fetch origin <branch>` once to materialize the ref, or use scoped mode below, which wires tracking up front.
 
 ### Scoped Mode (when branch isolation is needed)
 
