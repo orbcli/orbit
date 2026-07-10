@@ -60,7 +60,8 @@ representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement at
-orbit-conduct@proton.me.
+orbit-conduct@proton.me, or by using GitHub's "Report content" feature on the
+relevant comment, issue, or discussion.
 
 All complaints will be reviewed and investigated promptly and fairly.
 
