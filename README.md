@@ -14,15 +14,15 @@
   <em><a href="docs/media/orbit-demo-full.gif">▶ Watch the full run</a></em>
 </p>
 
-Orbit manages multi-repo Git workspaces where AI coding agents read, modify, and commit directly in real source code — full worktrees with git history, not index fragments. Ships with Claude Code and Qoder integrations.
+Orbit manages multi-repo Git workspaces where AI coding agents read, modify, and commit directly in real source code — full worktrees with git history, not index fragments. Integrates with Claude Code and Qoder.
 
-I built Orbit because I was tired of copy-pasting context between repo sessions — one agent should see all your repos in one context, not one repo at a time.
+I built Orbit because I was tired of copy-pasting context between repo sessions — one agent should have your entire repo pool available, loading what it needs on demand instead of being locked to one repo per session.
 
 **Who it's for:** developers whose agent work spans multiple repos — main project, dependency source, toolchain and wiki alongside it. Solo or team, polyrepo or cross-repo debugging.
 
 ## Why Orbit
 
-**Cross-repo context consistency.** One agent, one workspace, multiple delivery — all repos share the same context. The agent greps, reads, and modifies across repos without switching tools: when it changes backend, it sees the result immediately in frontend. Full git history (blame, log, branch topology) across every repo, no copy-pasting, no stale snapshots.
+**Cross-repo context consistency.** One agent, one workspace, multi-repo delivery — every repo the agent pulls in shares the same context. The agent greps, reads, and modifies across repos without switching tools: when it changes backend, it sees the result immediately in frontend. Full git history (blame, log, branch topology) across every repo, no copy-pasting, no stale snapshots.
 
 | Approach | Accuracy | History | Write-back | Cross-repo |
 |------|---------|---------|-----------|------------|
@@ -34,9 +34,9 @@ I built Orbit because I was tired of copy-pasting context between repo sessions 
 
 **Parallel isolation.** Each workspace is an independent multi-repo worktree combination. Multiple agents work in parallel, each in its own workspace — no branch conflicts, no state leaking between tasks. Reusing a single workspace across tasks means branch contamination and agent interference; isolation is what makes multi-task, multi-agent practical.
 
-**Real directory tree, zero toolchain adaptation.** A workspace is a real directory tree — not symlinks, not editor virtual views. Drop a `go.work` and `go build`/`gopls` resolve across repos with zero setup. Same for Cargo/pnpm/Gradle. Your toolchain doesn't know orbit exists, and that's the point.
+**Real directory tree, zero toolchain adaptation.** A workspace is a real directory tree — not symlinks, not editor virtual views. Drop a `go.work` and `go build`/`gopls` resolve across repos with zero setup. Same for Cargo/pnpm/Gradle. Your toolchain doesn't know Orbit exists, and that's the point.
 
-**Goal to workspace in one command.** `orbit new "goal"` assembles the repos a task needs with the right branches — no manual worktree setup. Information loads progressively:
+**Goal to workspace in one command.** `orbit new "goal"` creates a task-scoped workspace. Once the agent starts, it uses orbit commands to assemble repos progressively:
 
 ```
 Level 0  orbit repos        → Name + one-line brief (~50 tokens/repo)
@@ -46,7 +46,7 @@ Level 2  orbit add <repo>   → Full source directory
 
 After working, the agent captures discoveries with `orbit jot` and folds them into repo memos — the same content later sessions read at Level 1, closing the feedback loop.
 
-**Knowledge repo as a workspace member.** A dedicated knowledge repo — design notes, PRDs, decisions — sits alongside code repos as a first-class member. The agent reads from it and writes back via branch + PR, so toolchain feedback accumulates in one place instead of getting lost in chat or session memory. Solo devs sweep whenever; teams aggregate daily. Same mechanism, no server. See [`docs/recipes.md`](docs/recipes.md#knowledge--notes-repo-as-a-workspace-member) for the pattern.
+**Knowledge repo as a workspace member.** A dedicated knowledge repo — design notes, PRDs, decisions — sits alongside code repos as a first-class member. The agent reads from it and writes back via branch + PR, so knowledge accumulates in one place instead of getting lost in chat or session memory. Solo devs sweep whenever; teams aggregate daily. Same mechanism, no server. See [`docs/recipes.md`](docs/recipes.md#knowledge--notes-repo-as-a-workspace-member) for the pattern.
 
 ## Try it now (60 seconds, no setup)
 
@@ -124,7 +124,8 @@ project-root/
 ## What Orbit is Not
 
 - **Not an orchestrator** — gives each agent an isolated workspace; parallelism comes from isolation, not scheduling.
-- **Not a cloud service** — no server, no embeddings, no vector store. Everything lives as real source and plain markdown in your `.repos/`.
+- **Not a cloud service** — Zero infra, no server, no database, no container, no daemon. Everything lives as real source and plain markdown in your `.repos/`.
+- **Not a workflow manager** — orbit doesn't prescribe git workflow (commit, branch, push are native git) or manage workspace files (`go.work`, `Cargo.toml`, `AGENTS.md`, `CLAUDE.md` workspaces). They work because the directory layout is real; placing them is your or your agent's call.
 
 See [`PRINCIPLES.md`](PRINCIPLES.md#non-goals) for the full non-goals.
 
