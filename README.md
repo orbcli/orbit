@@ -14,84 +14,80 @@
   <em><a href="docs/media/orbit-demo-full.gif">▶ Watch the full run</a></em>
 </p>
 
-Orbit manages multi-repo Git workspaces, letting AI coding agents read, modify, and commit directly in real source code — full worktrees, not index fragments. Each agent works in an isolated workspace, enabling natural parallelism. Ships with Claude Code and Qoder integrations.
+Orbit manages multi-repo Git workspaces where AI coding agents read, modify, and commit directly in real source code — full worktrees with git history, not index fragments. Ships with Claude Code and Qoder integrations.
 
-**Who is this for?** Developers — solo or on a team — whose work spans multiple repos: your main project, its dependency source (Kubernetes, React, gRPC…), and the toolchain you maintain alongside it (agent skills, CI/CD, linters, PRD/config). Especially if you're on polyrepo and don't want to migrate to a monorepo just to give agents cross-repo context.
+I built Orbit because I was tired of copy-pasting context between repo sessions — one agent should see all your repos in one context, not one repo at a time.
 
-Your agent needs to work across repos — but today each session starts fresh, hallucinating API details it could just grep from real source. Orbit gives it real worktrees for all your repos.
+**Who it's for:** developers whose agent work spans multiple repos — main project, dependency source, toolchain and wiki alongside it. Solo or team, polyrepo or cross-repo debugging.
 
 ## Why Orbit
 
-**Source-driven, read-write unified** — Pull in dependency source code (Kubernetes, React, gRPC, etc.) and let agents grep API signatures, read implementations, and trace call chains — verifying against real code rather than stale training data. The same directory serves as both knowledge source and working directory: verify an API, then modify code, commit, and push — no tool switching.
+**Cross-repo context consistency.** One agent, one workspace, multiple delivery — all repos share the same context. The agent greps, reads, and modifies across repos without switching tools: when it changes backend, it sees the result immediately in frontend. Full git history (blame, log, branch topology) across every repo, no copy-pasting, no stale snapshots.
 
-| Approach | Information Source | Accuracy | Can Modify Code | Context Cost |
-|------|---------|--------|-----------|-----------|
-| Agent memory | Training data | Low — may be stale | — | None |
-| Web search | Docs / StackOverflow | Medium — fragments, hard to trace | — | Medium |
-| RAG | Embedding + vector retrieval | Medium — loses code structure | ✗ Read-only | Medium |
-| **Orbit** | **Complete source worktree** | **High — grep, read, trace call chains** | **✓ Modify in place, commit, push** | **On-demand** |
+| Approach | Accuracy | History | Write-back | Cross-repo |
+|------|---------|---------|-----------|------------|
+| Agent memory | Low — stale | ✗ None | — | ✗ Per-session |
+| Web search | Medium — fragments | ✗ None | — | ✗ None |
+| Add directory | High — per-dir | ✓ Per-repo | ✓ Yes | ✗ Virtual scope |
+| RAG | Medium — loses structure | ✗ Lost in chunks | ✗ Read-only | ✗ Per-query |
+| **Orbit** | **High — grep, trace** | **✓ Full git** | **✓ Commit, push** | **✓ Workspace-scoped** |
 
-**Agent self-service** — `orbit new "goal"` starts a task. The agent browses repo briefs, decides which repos it needs, and runs `orbit add` — no human pre-configuration required. Information loads progressively, diving deeper on demand:
+**Parallel isolation.** Each workspace is an independent multi-repo worktree combination. Multiple agents work in parallel, each in its own workspace — no branch conflicts, no state leaking between tasks. Reusing a single workspace across tasks means branch contamination and agent interference; isolation is what makes multi-task, multi-agent practical.
+
+**Real directory tree, zero toolchain adaptation.** A workspace is a real directory tree — not symlinks, not editor virtual views. Drop a `go.work` and `go build`/`gopls` resolve across repos with zero setup. Same for Cargo/pnpm/Gradle. Your toolchain doesn't know orbit exists, and that's the point.
+
+**Goal to workspace in one command.** `orbit new "goal"` assembles the repos a task needs with the right branches — no manual worktree setup. Information loads progressively:
 
 ```
 Level 0  orbit repos        → Name + one-line brief (~50 tokens/repo)
-Level 1  orbit info <repo>  → Repo roles + key entry points — when to add, where to start (~200 tokens)
-Level 2  orbit add <repo>   → Complete source directory, can grep, read files, trace call chains
+Level 1  orbit info <repo>  → Roles + entry points (~200 tokens)
+Level 2  orbit add <repo>   → Full source directory
 ```
 
-After working, the agent captures discoveries with `orbit jot` and folds them back into the repo memo via `orbit memo` — the same content later sessions read at Level 1, closing the knowledge feedback loop.
+After working, the agent captures discoveries with `orbit jot` and folds them into repo memos — the same content later sessions read at Level 1, closing the feedback loop.
 
-**Parallel isolation** — Each workspace is an independent multi-repo worktree combination that persists across sessions. Multiple agents work in parallel, each in its own workspace. Teams using polyrepo don't need to migrate to monorepo — agents grep and trace call chains across repos within a workspace, while each repo keeps its own Git history and CI.
+**Knowledge repo as a workspace member.** A dedicated knowledge repo — design notes, PRDs, decisions — sits alongside code repos as a first-class member. The agent reads from it and writes back via branch + PR, so toolchain feedback accumulates in one place instead of getting lost in chat or session memory. Solo devs sweep whenever; teams aggregate daily. Same mechanism, no server. See [`docs/recipes.md`](docs/recipes.md#knowledge--notes-repo-as-a-workspace-member) for the pattern.
 
-**Knowledge accumulation** — Cloned repos grow richer with usage as agents write memos. Those memos persist across sessions, so your own later sessions skip re-exploration — and because they're plain files in the repo, sharing across teammates falls out for free: a new teammate's agent immediately reads accumulated repo understanding without exploring from scratch.
+## Try it now (60 seconds, no setup)
 
-**Knowledge repo as a workspace member** — Beyond the per-repo memo, add a *dedicated knowledge repo* to the pool: a full Git repo of plain markdown — design notes, PRDs, decisions, an agent-maintained wiki — first-class alongside your code repos, with no cap on what it holds. One knowledge repo serves any workspace on demand (`orbit add`), and the agent writes back into it via branch + PR. So the auxiliary infrastructure you maintain by hand — agent skills, CI/CD, linters, compilers, PRD/notes — that rarely lives in the repo you're editing finally has a place for its feedback to accumulate: the agent routes pitfalls and fixes into the knowledge repo instead of losing them. A solo dev sweeps it on their own cadence; a team's owner aggregates daily — same git-native mechanism, no server. See [`docs/recipes.md`](docs/recipes.md#knowledge--notes-repo-as-a-workspace-member) for the general pattern, or [the toolchain feedback loop](docs/recipes.md#accumulate-toolchain-feedback-in-a-knowledge-repo) for that use case.
+Spins up a two-repo mission — a probe's flight computer and its ground station, wired by a shared contract — entirely on your machine. No GitHub account, no network, no server.
 
-## What Orbit is Not
+```bash
+# Claude Code
+curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh \
+  | bash -s -- --claude
 
-- **Not an agent orchestrator** — Orbit doesn't schedule or coordinate *peer* agents (a single owner agent may still delegate to worker sub-agents — see [`PRINCIPLES.md`](PRINCIPLES.md#7-tiered-decision-authority-for-agent-operations)). It gives each agent an isolated workspace; parallelism comes from isolation, not from a scheduler.
-- **Not a cloud index or context service** — no server, no embeddings, no vector store. Knowledge lives as real source worktrees and plain-markdown memos in your own `.repos/`.
-- **Not a RAG / code-indexing tool** — agents work against complete source they can grep, edit, commit, and push, not read-only retrieved fragments.
+# Qoder CLI
+curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh \
+  | bash -s -- --qodercli
 
-See [`PRINCIPLES.md`](PRINCIPLES.md#non-goals) for the full non-goals.
+# Runtime only (other agents)
+curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh | bash
+```
+
+The demo drops you into a ready workspace: add a `fuel` field to the telemetry downlink — a change that must land in *both* repos in lockstep. With `--claude` or `--qodercli`, the plugin install is folded in — just `claude start` (or `qodercli start`). Clean up with `rm -rf ~/orbit-try`.
 
 ## Quick Start
 
 ### 1. Install
 
-From a local checkout, install the runtime plus your agent's plugin:
-
 ```bash
+# From a local checkout
 ./install.sh --claude          # Claude Code plugin
 ./install.sh --qoder           # Qoder plugin (--qodercli is an alias)
 ./install.sh --claude --zsh    # add shell completion: --zsh or --bash
-```
 
-`install.sh` always installs the global `orbit` runtime to `~/.local/bin` and puts it on your PATH. Add `--zsh` / `--bash` for tab-completion and `--force` to reinstall an existing plugin. To install only the runtime, run `./install.sh` with no flags — or bootstrap it without cloning:
-
-```bash
+# Or without cloning
 curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh | bash
 ```
 
-To uninstall, remove the runtime and any plugin you installed:
-
-```bash
-rm ~/.local/bin/orbit                 # runtime
-claude plugin uninstall orbit         # Claude Code plugin, if installed
-qodercli plugins uninstall orbit@orbcli -s user   # Qoder plugin, if installed
-```
-
-Shell completion, if installed, is a single `_orbit` (zsh) or `orbit` (bash) file in your completion path; delete it to remove. Your `.repos/` pool is never touched by uninstall.
+`install.sh` installs the runtime to `~/.local/bin` and puts it on your PATH. Add `--force` to reinstall an existing plugin. To uninstall: remove `~/.local/bin/orbit` and any plugin (`claude plugin uninstall orbit` / `qodercli plugins uninstall orbit@orbcli -s user`).
 
 ### 2. Configure agent launch command (one-time)
 
 ```bash
 orbit config agent.recommend 'claude "orbit start"'
 ```
-
-Once configured, each `orbit new` will recommend a launch command — just copy and execute. The agent automatically reads the goal, discovers repos, and starts working.
-
-Baking the `orbit start` phrase into the command loads the orbit skill from the first turn. With the Claude Code or Qoder plugin installed, the bundled session hook detects the workspace and injects its state without the phrase — but loading the skill's full conventions is model-driven, so keeping the phrase (or `/orbit`) is still the reliable way to trigger them. It's essential only for skill-only or other-agent setups that have no hook. See [Context detection](#context-detection).
 
 ### 3. Create a workspace and start working
 
@@ -100,53 +96,15 @@ Baking the `orbit start` phrase into the command loads the orbit skill from the 
 orbit clone git@github.com:org/backend.git
 orbit clone git@github.com:org/frontend.git
 
-# Create workspace, launch agent with recommended command
+# Create workspace, launch agent
 orbit new "Modify API definition and update frontend calls"
 cd task-01 && claude "orbit start"
 
-# Agent automatically:
-#   orbit context --prime → primes on goal + status (fresh workspace; source loads on demand)
-#   orbit add backend / frontend → pulls into workspace on demand
-#   works, commits, pushes
-#   orbit memo → writes back findings for subsequent sessions
-#   orbit done --pr <url>
-```
-
-You can also use `--exec` to skip manual launch:
-
-```bash
+# Or skip manual launch:
 orbit new "Upgrade informer to v0.28 new API" --exec 'claude "orbit start"'
 ```
 
-No separate `init` command is needed — `orbit clone` and `orbit new` automatically initialize the project root when required.
-
 For the complete command flow, see [`USAGE.md`](USAGE.md); for common scenarios, see [`docs/recipes.md`](docs/recipes.md).
-
-## Try it now (60 seconds, no setup)
-
-Want the whole loop without wiring up your own repos? This spins up a tiny two-repo mission — a probe's flight computer (`navigator`) and its ground station (`mission-control`), wired by a shared telemetry-frame contract — entirely on your machine. No GitHub account, no network, no server: the "upstreams" are local bare repos, so even `git push` works.
-
-With the Claude Code plugin folded in — launch straight away:
-
-```bash
-curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh \
-  | bash -s -- --claude
-```
-
-With the Qoder CLI plugin folded in:
-
-```bash
-curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh \
-  | bash -s -- --qodercli
-```
-
-Runtime only (skill-only or other agents) — seeds the demo and prints launch options:
-
-```bash
-curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh | bash
-```
-
-It drops you into a ready workspace with both repos in the pool and a goal set: add a `fuel` field to the telemetry downlink — a change that must land in *both* repos in lockstep, because the frame is a positional contract neither repo can see alone. With `--claude` (or `--qodercli`) the plugin install is folded in, so you just `claude start` (or `qodercli start`) — the session hook detects the workspace, no magic phrase needed. The agent commits locally, then pauses for your OK before pushing. Prefer to drive it yourself? The script prints a by-hand path too. Clean up any time with `rm -rf ~/orbit-try`.
 
 ## Core Concepts
 
@@ -163,35 +121,36 @@ project-root/
     frontend/
 ```
 
+## What Orbit is Not
+
+- **Not an orchestrator** — gives each agent an isolated workspace; parallelism comes from isolation, not scheduling.
+- **Not a cloud service** — no server, no embeddings, no vector store. Everything lives as real source and plain markdown in your `.repos/`.
+
+See [`PRINCIPLES.md`](PRINCIPLES.md#non-goals) for the full non-goals.
+
 ## Context detection
 
-Orbit works best when the agent knows it is inside a workspace from its first turn. How reliably that happens depends on the integration:
+Orbit works best when the agent knows it's inside a workspace from its first turn:
 
-| Integration | Reliable context detection | Workaround |
+| Integration | Auto-detect | Workaround |
 |:---|:---|:---|
-| Claude Code plugin | **Yes** — a bundled `SessionStart` hook (startup / resume / compact) detects the workspace and injects its state automatically | — |
-| Qoder plugin | **Yes** — a bundled `SessionStart` hook (startup / resume / compact) detects the workspace and injects its state automatically | — |
-| Skill only / other agents | No | trigger manually |
-
-Where detection is not automatic, trigger the skill at session start: the `/orbit` slash command in Claude Code, or an `orbit start` message (portable across frameworks). The plugin hooks (Claude Code and Qoder) guarantee detection and context injection, but loading the skill's full conventions is still model-driven — so `/orbit` or `orbit start` remains the reliable trigger even there.
+| Claude Code plugin | **Yes** — bundled `SessionStart` hook injects workspace state | — |
+| Qoder plugin | **Yes** — bundled `SessionStart` hook injects workspace state | — |
+| Skill only / other agents | No | `/orbit` or `orbit start` at session start |
 
 ## Launch sequence
 
-A cold launch into a workspace unfolds the way a rocket reaches orbit — three beats, each loading only what that stage needs:
+A cold start loads progressively:
 
-| Beat | Trigger | What happens |
-|:---|:---|:---|
-| **Prime** | `orbit context --prime` | *Systems primed.* On a cold-start workspace (no repos yet), the plugin hook injects orientation at session start — goal, status, any unfinished notes from the last session, and the pool roster: the repos on offer to `orbit add`, one line each. No source loaded yet; just bearings and the manifest. |
-| **Ignition** | `orbit info` → `orbit add <repo>` | *Engines light.* The agent sizes up each candidate with `orbit info` (memo: roles + entry points), then pulls the repos it needs into the workspace as full worktrees — assess before you add, so the turbopumps spool up on the right source. |
-| **Orbit** | *the work* | *On station.* The agent greps, traces call chains, edits, commits, and pushes in real source — operating in orbit toward the goal, each repo's memo already aboard from its `info` pass. |
+1. **Prime** (`orbit context --prime`) — goal, status, prior notes, repo pool roster. No source loaded yet.
+2. **Ignition** (`orbit info` → `orbit add <repo>`) — agent assesses repos via memo, pulls what it needs as full worktrees.
+3. **Orbit** — grep, edit, commit, push. New repos pulled on demand.
 
-On station the agent **resupplies rather than relaunches** — when a call chain reaches a repo not yet aboard, it pulls that one in on demand (`orbit repos` → `orbit info` → `orbit add`) without returning to the pad, still assessing before it adds. Resuming a workspace that already holds repos skips priming entirely: the hook simply nudges the agent to pick up the prior task, repo detail on demand.
+Resuming a workspace with repos already present skips priming.
 
 ## Auto-approving safe commands
 
-An orbit session runs read-only and idempotent subcommands constantly, so per-command confirmation prompts add up. **Plugin users — nothing to do:** both plugins ship a `PreToolUse` hook that auto-approves exactly the safe subcommands and fails safe (destructive or non-orbit commands still prompt). Skill-only users can allowlist the same set by hand.
-
-See [`skills/CONSTRAINTS.md`](skills/CONSTRAINTS.md#permission-and-auto-execution-policy) for the command tiers, the allowlist snippet, and the full rationale.
+Plugin users: nothing to configure — both plugins auto-approve safe orbit subcommands. Skill-only users can allowlist by hand. See [`skills/CONSTRAINTS.md`](skills/CONSTRAINTS.md#permission-and-auto-execution-policy) for command tiers and the allowlist snippet.
 
 ## Command Reference
 

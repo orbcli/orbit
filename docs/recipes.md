@@ -4,6 +4,8 @@ Step-by-step guides for common scenarios. Each recipe assumes Orbit is already i
 
 Recipes are grouped by the two things Orbit is for: **multi-repo development** (working across repos as one workspace) and **agent knowledge & context** (turning source into knowledge an agent can read, verify, and carry forward).
 
+**Human vs agent.** The human provides the goal and does one-time setup (`orbit clone`). Inside the workspace, the agent handles the rest: discovering repos, assembling the workspace, developing, and committing. Recipes show the full flow; steps inside the workspace are the agent's job.
+
 # Multi-repo development
 
 ## Multi-Repo Feature Development
@@ -11,19 +13,20 @@ Recipes are grouped by the two things Orbit is for: **multi-repo development** (
 > Scenario: A feature spans both backend and frontend repositories, requiring simultaneous changes to the API definition and the frontend calls.
 
 ```bash
-# 1. First time: add repos to the pool (only needed once)
+# (human) First time: add repos to the pool (only needed once)
 orbit clone git@github.com:org/backend.git
 orbit clone git@github.com:org/frontend.git
 
-# 2. Create a workspace
+# (human) Create a workspace with the goal
 orbit new "Avatar upload: add backend endpoint, add frontend upload component"
 cd task-01/
+# --- from here, the agent takes over ---
 
-# 3. Add the repos you need
+# (agent) Discovers which repos it needs, adds them
 orbit add backend
 orbit add frontend
 
-# 4. Develop normally within each repo
+# (agent) Develops in each repo
 cd backend/
 git checkout -b feature/avatar-upload
 # Code, test, commit...
@@ -34,13 +37,80 @@ git checkout -b feature/avatar-upload
 # Code, test, commit...
 git push origin feature/avatar-upload
 
-# 5. Mark as done
+# (agent) Marks as done
 cd ..
 orbit done --pr https://github.com/org/backend/pull/42
 orbit done --pr https://github.com/org/frontend/pull/43
 
-# 6. Reclaim after PRs are merged
+# (human) Reclaim after PRs are merged
 orbit prune task-01
+```
+
+## Cross-Repo Multi-Module Development (`go.work` and friends)
+
+> Scenario: You're changing a Go service and a library it imports — two separate repos. You want `go build` and `gopls` to treat them as one module graph (cross-module jump-to-definition, refactors, no `replace` hacks), instead of cutting a release just to test a one-line library change.
+
+Because an Orbit workspace is a **real directory tree** of real worktrees, a `go.work` at the workspace root resolves across the repos by relative path — the Go toolchain treats them as one. Orbit does nothing Go-specific; this falls out of using the real filesystem.
+
+```bash
+orbit new "Add retry to lib, wire it into service" --name retry-work
+cd retry-work/
+orbit add service
+orbit add mylib
+
+# Drop a go.work at the WORKSPACE ROOT (parent of both worktrees).
+# It sits outside every repo, so no repo's git ever sees it — zero pollution, no .gitignore needed.
+go work init ./service ./mylib
+# (or write it by hand:)
+#   cat > go.work <<'EOF'
+#   go 1.23
+#   use (
+#     ./service
+#     ./mylib
+#   )
+#   EOF
+
+# Now the toolchain treats both modules as one:
+cd service/
+go build ./...            # resolves ./mylib locally, no replace directive, no release
+# gopls: cross-module jump-to-definition, autocomplete, and refactors all work
+
+# Edit mylib and immediately see it resolve in service:
+cd ../mylib/
+# change an exported function...
+cd ../service/
+go test ./...            # picks up the local mylib change instantly
+```
+
+Key points:
+- The `go.work` (and the `go.work.sum` the toolchain generates next to it) lives at the **workspace root**, a parent of both worktrees — so it's naturally outside every repo's git and never gets committed by accident (no `.gitignore` entry required)
+- This works because the workspace is a genuine on-disk tree with real relative paths — an editor's multi-root view or a "granted directory" list can't offer that
+- **Orbit does not manage `go.work`** — you (or the agent) create it; Orbit just provides the real layout that makes it work with zero adaptation
+- The same pattern applies to any toolchain that resolves multi-module builds by real on-disk layout: **Cargo workspaces** (`[workspace] members = [...]`), **pnpm/yarn workspaces**, **Gradle/Maven multi-project**
+
+Same pattern, other ecosystems — the workspace file sits at the workspace root (parent of all worktrees), never committed into any repo:
+
+```toml
+# Cargo.toml at workspace root (Rust)
+[workspace]
+members = ["service", "mylib"]
+resolver = "2"
+# → cargo build in service/ resolves mylib locally, no [patch] needed
+```
+
+```yaml
+# pnpm-workspace.yaml at workspace root (JS/TS)
+packages:
+  - 'service'
+  - 'mylib'
+# → pnpm install links mylib into service/node_modules; tsc/eslint resolve across packages
+```
+
+```groovy
+// settings.gradle at workspace root (Java/Kotlin)
+rootProject.name = 'myproject'
+include 'service', 'mylib'
+// → gradle build in service/ resolves mylib as a project dependency, no publish needed
 ```
 
 ## Cross-Repo Bugfix
@@ -48,20 +118,24 @@ orbit prune task-01
 > Scenario: A production bug requires fixing both backend and shared-lib simultaneously — urgent hotfix.
 
 ```bash
+# (human) Create workspace with the bug description
 orbit new "Fix order amount calculation precision loss" --name hotfix-amount
 cd hotfix-amount/
+# --- agent takes over ---
+
+# (agent) Adds the relevant repos, locates root cause
 orbit add backend
 orbit add shared-lib
 
-# First locate the root cause in shared-lib
 cd shared-lib/
 grep -rn "decimal\|float" lib/money/
 # Found the issue, fix it, commit
 
-# Then fix the caller in backend
+# (agent) Fixes the caller
 cd ../backend/
 # Update dependency version, fix the call...
 
+# (agent) Marks done with PRs
 cd ..
 orbit done --pr https://github.com/org/shared-lib/pull/15
 orbit done --pr https://github.com/org/backend/pull/88
@@ -72,22 +146,28 @@ orbit done --pr https://github.com/org/backend/pull/88
 > Scenario: Submit a PR to an open-source project — fetch from upstream, push to your fork.
 
 ```bash
-# Specify the fork's push URL at clone time
+# (human) Specify the fork's push URL at clone time (one-time)
 orbit clone git@github.com:grpc/grpc-go.git --push git@github.com:me/grpc-go.git
 
+# (human) Create workspace
 orbit new "Fix grpc-go connection pool leak"
 cd task-01/
+# --- agent takes over ---
+
+# (agent) Adds the repo, fixes the bug
 orbit add grpc-go
 
 cd grpc-go/
 git checkout -b fix/conn-pool-leak
 # Fix, test, commit
 
-# Push automatically goes to fork (push URL configured at install time)
+# (agent) Pushes to fork
 git push origin fix/conn-pool-leak
-# Go to GitHub to submit PR from me/grpc-go to grpc/grpc-go
+
+# (human) Submit PR on GitHub from me/grpc-go to grpc/grpc-go
 
 cd ..
+# (agent or human)
 orbit done --pr https://github.com/grpc/grpc-go/pull/7890
 ```
 
@@ -96,17 +176,12 @@ orbit done --pr https://github.com/grpc/grpc-go/pull/7890
 > Scenario: Multiple agents work on different tasks simultaneously, each isolated in their own workspace.
 
 ```bash
-# Create multiple workspaces
+# (human) Create multiple workspaces
 orbit new "Refactor user authentication module" --name auth-refactor
 orbit new "Add order export feature" --name order-export
 orbit new "Upgrade Go to 1.23" --name go-upgrade
 
-# Add repos needed for each workspace
-cd auth-refactor/ && orbit add backend && orbit add frontend && cd ..
-cd order-export/ && orbit add backend && cd ..
-cd go-upgrade/ && orbit add backend && orbit add shared-lib && cd ..
-
-# Launch agents in separate terminals
+# (human) Launch agents in separate terminals
 # Terminal 1:
 cd auth-refactor/ && claude "orbit start"
 
@@ -116,7 +191,10 @@ cd order-export/ && claude "orbit start"
 # Terminal 3:
 cd go-upgrade/ && claude "orbit start"
 
-# Three agents work independently in their own worktrees, without interfering with each other
+# (agents) Each agent independently:
+# - Discovers and adds the repos it needs (orbit add)
+# - Develops, commits, pushes in its own workspace
+# - Marks done with PRs
 # The same backend repo can exist in three workspaces simultaneously on different branches
 ```
 
@@ -165,22 +243,27 @@ Key points:
 > Scenario: Your project has only one repository, but you need the agent to verify against dependency source code to avoid hallucinations.
 
 ```bash
-# Add both your project and the dependency library to repos
+# (human) Add both your project and the dependency library to repos
 orbit clone git@github.com:my/project.git
 orbit clone git@github.com:kubernetes/client-go.git
 
+# (human) Create workspace
 orbit new "Upgrade informer to client-go v0.28 new API"
 cd task-01/
-orbit add project                    # Your project, the one to modify
-orbit add client-go --ref v0.28.0    # Reference source, checkout to pinned version
+# --- agent takes over ---
 
-# Agent can verify directly in the client-go directory
+# (agent) Adds project (to modify) and dependency (to verify against)
+orbit add project
+orbit add client-go --ref v0.28.0    # pin to the version you depend on
+
+# (agent) Verifies directly in the client-go directory
 cd client-go/
 grep -rn "DialContext\|Deprecated" .
 # Confirm API signatures, deprecation status, replacement options
 
+# (agent) Modifies code based on verification results
 cd ../project/
-# Modify code based on verification results, ensuring compatibility
+# Modify code, ensuring compatibility
 ```
 
 Key points:
@@ -193,12 +276,12 @@ Key points:
 > Scenario: You give the agent a goal and let it decide which library source code it needs to reference.
 
 ```bash
-# Pre-clone some commonly used dependencies to repos
+# (human) Pre-clone commonly used dependencies to repos
 orbit clone git@github.com:gin-gonic/gin.git
 orbit clone git@github.com:go-redis/redis.git
 orbit clone git@github.com:jackc/pgx.git
 
-# Give the agent memos to help it quickly assess relevance
+# (human) Seed memos so the agent can assess relevance quickly
 cat <<'EOF' | orbit memo gin
 HTTP framework: routing, middleware, binding/validation.
 EOF
@@ -211,10 +294,11 @@ cat <<'EOF' | orbit memo pgx
 PostgreSQL driver, native protocol implementation, supports COPY, prepared statements.
 EOF
 
-# Create a workspace, provide only the goal
+# (human) Create workspace — provide only the goal
 orbit new "Optimize order query endpoint caching strategy" --exec 'claude "orbit start"'
+# --- agent takes over from here ---
 
-# After launch, the agent will:
+# (agent) Autonomously:
 # 1. orbit repos to view available repos and their briefs
 # 2. orbit info redis to view detailed memo, assess whether it's needed
 # 3. orbit add redis to add it to the workspace
