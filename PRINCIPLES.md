@@ -70,6 +70,7 @@ Not pursued in the current phase:
 - Prescribing git workflow — whether and how to commit, branch, or push is native git, governed by the agent's permission mode, not by orbit or its skill
 - Complex team permission controls
 - Unified abstraction layer for all AI tools
+- Managing language workspace files — orbit does not generate or maintain `go.work`, `Cargo.toml` workspaces, and the like; they work because the directory layout is real, but placing them is the user's or agent's call
 
 ## Design Principles
 
@@ -202,7 +203,7 @@ The advantage of manifest-first is that workspace compositions can be versioned 
 
 ### Why not symlinks
 
-Symlinks are not used: Git and IDE recognition is unstable, they don't solve branch isolation, and agent boundaries become inconsistent with filesystem boundaries. `git worktree` provides a real working directory, real Git status, and real branch boundaries.
+Symlinks are not used: Git and IDE recognition is unstable, they don't solve branch isolation, and agent boundaries become inconsistent with filesystem boundaries. `git worktree` provides a real working directory, real Git status, and real branch boundaries. The same realness extends to language toolchains: because a workspace is a genuine directory tree, multi-module mechanisms that resolve by real relative paths — Go's `go.work`, Cargo/pnpm/Gradle workspaces — work with zero adaptation; a virtual editor view or a set of granted paths cannot offer that.
 
 ### Why not code indexing/RAG
 
