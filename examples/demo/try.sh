@@ -333,13 +333,13 @@ elif [ "$AGENT" = codex ]; then
     # The session hook detects this workspace — no magic phrase needed.
     # On first run, review and trust the bundled hooks in /hooks.
 
-    ${ORBIT_PATH}cd $TRY_DIR/mission && codex
+    ${ORBIT_PATH}cd $TRY_DIR/mission && codex start
 "
 elif [ "$AGENT" = opencode ]; then
   AGENT_SECTION="── Let your agent fly it (OpenCode plugin installed) ──────────────────
     # The system.transform hook detects this workspace — no magic phrase needed.
 
-    ${ORBIT_PATH}cd $TRY_DIR/mission && opencode
+    ${ORBIT_PATH}cd $TRY_DIR/mission && opencode run start
 "
 elif [ "$AGENT" = qodercli ]; then
   AGENT_SECTION="── Let your agent fly it (Qoder CLI plugin installed) ─────────────────
