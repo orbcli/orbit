@@ -1,9 +1,11 @@
 {
   "name": "orbcli",
-  "owner": { "name": "orbcli contributors" },
+  "owner": {
+    "name": "orbcli contributors"
+  },
   "plugins": [
     {
-      "name": "orbit",
+      "name": "qoder-orbit",
       "source": "./",
       "description": "Multi-repo Git workspaces for any AI coding agent — one agent across many repos."
     }

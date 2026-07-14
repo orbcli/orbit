@@ -1,6 +1,7 @@
 .tmp*/
 .claude
 .qoder
+.opencode
 tests/.sandbox/
 
 # macOS

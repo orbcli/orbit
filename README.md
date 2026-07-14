@@ -14,7 +14,7 @@
   <em><a href="docs/media/orbit-demo-full.gif">▶ Watch the full run</a></em>
 </p>
 
-Orbit manages multi-repo Git workspaces where AI coding agents read, modify, and commit directly in real source code — full worktrees with git history, not index fragments. Integrates with Claude Code and Qoder.
+Orbit manages multi-repo Git workspaces where AI coding agents read, modify, and commit directly in real source code — full worktrees with git history, not index fragments. Integrates with Claude Code, Codex, OpenCode, and Qoder.
 
 I built Orbit because I was tired of copy-pasting context between repo sessions — one agent should have your entire repo pool available, loading what it needs on demand instead of being locked to one repo per session.
 
@@ -57,6 +57,14 @@ Spins up a two-repo mission — a probe's flight computer and its ground station
 curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh \
   | bash -s -- --claude
 
+# Codex
+curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh \
+  | bash -s -- --codex
+
+# OpenCode
+curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh \
+  | bash -s -- --opencode
+
 # Qoder CLI
 curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh \
   | bash -s -- --qodercli
@@ -65,7 +73,7 @@ curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.s
 curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh | bash
 ```
 
-The demo drops you into a ready workspace: add a `fuel` field to the telemetry downlink — a change that must land in *both* repos in lockstep. With `--claude` or `--qodercli`, the plugin install is folded in — just `claude start` (or `qodercli start`). Clean up with `rm -rf ~/orbit-try`.
+The demo drops you into a ready workspace: add a `fuel` field to the telemetry downlink — a change that must land in *both* repos in lockstep. With `--claude`, `--codex`, or `--qodercli`, the plugin install is folded in — just `claude start`, `codex`, or `qodercli start`. Clean up with `rm -rf ~/orbit-try`.
 
 ## Quick Start
 
@@ -74,14 +82,22 @@ The demo drops you into a ready workspace: add a `fuel` field to the telemetry d
 ```bash
 # From a local checkout
 ./install.sh --claude          # Claude Code plugin
+./install.sh --codex           # Codex plugin
+./install.sh --opencode        # OpenCode plugin
 ./install.sh --qoder           # Qoder plugin (--qodercli is an alias)
 ./install.sh --claude --zsh    # add shell completion: --zsh or --bash
 
 # Or without cloning
 curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh | bash
+curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh \
+  | bash -s -- --claude --zsh
 ```
 
-`install.sh` installs the runtime to `~/.local/bin` and puts it on your PATH. Add `--force` to reinstall an existing plugin. To uninstall: remove `~/.local/bin/orbit` and any plugin (`claude plugin uninstall orbit` / `qodercli plugins uninstall orbit@orbcli -s user`).
+`install.sh` installs the runtime to `~/.local/bin` and puts it on your PATH. Add `--force` to reinstall an existing plugin. To uninstall: `./install.sh --uninstall --all` (or pick targets: `--uninstall --claude --codex`, `--uninstall --cli` for just the runtime, etc.).
+
+Codex plugin hooks require a one-time trust review (`/hooks` in the CLI) before they run.
+
+**OpenCode via npm** (alternative): add `"orbit"` to the `plugin` array in `opencode.json` — OpenCode auto-installs it at startup. The plugin self-registers its bundled skill path, so no manual skill setup is needed.
 
 ### 2. Configure agent launch command (one-time)
 
@@ -136,6 +152,8 @@ Orbit works best when the agent knows it's inside a workspace from its first tur
 | Integration | Auto-detect | Workaround |
 |:---|:---|:---|
 | Claude Code plugin | **Yes** — bundled `SessionStart` hook injects workspace state | — |
+| Codex plugin | **Yes** — bundled `SessionStart` hook injects workspace state | — |
+| OpenCode plugin | **Yes** — bundled `system.transform` hook injects workspace state | — |
 | Qoder plugin | **Yes** — bundled `SessionStart` hook injects workspace state | — |
 | Skill only / other agents | No | `/orbit` or `orbit start` at session start |
 
@@ -151,7 +169,7 @@ Resuming a workspace with repos already present skips priming.
 
 ## Auto-approving safe commands
 
-Plugin users: nothing to configure — both plugins auto-approve safe orbit subcommands. Skill-only users can allowlist by hand. See [`skills/CONSTRAINTS.md`](skills/CONSTRAINTS.md#permission-and-auto-execution-policy) for command tiers and the allowlist snippet.
+Plugin users: nothing to configure — all four plugins (Claude, Codex, OpenCode, Qoder) auto-approve safe orbit subcommands. Skill-only users can allowlist by hand. See [`skills/CONSTRAINTS.md`](skills/CONSTRAINTS.md#permission-and-auto-execution-policy) for command tiers and the allowlist snippet.
 
 ## Command Reference
 

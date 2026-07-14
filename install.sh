@@ -30,17 +30,26 @@ TARGET_HELPER="$TARGET_BIN_DIR/orbit"
 PATH_EXPORT_LINE='export PATH="$HOME/.local/bin:$PATH"'
 
 FORCE=0
+UNINSTALL=0
+UNINSTALL_CLI=0
+UNINSTALL_ALL=0
 INSTALL_CLAUDE=0
+INSTALL_CODEX=0
+INSTALL_OPENCODE=0
 INSTALL_QODER=0
 INSTALL_ZSH=0
 INSTALL_BASH=0
 SOURCE_TYPE=""   # path | repo | url — set by classify_source
+OC_PLUGIN_TMP=""
+OC_SKILL_TMP=""
 
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
 cleanup() {
   [ -n "${SRC_ORBIT_TMP:-}" ] && rm -f "$SRC_ORBIT_TMP"
   [ -n "${CLONE_TMP:-}" ] && rm -rf "$CLONE_TMP"
+  [ -n "${OC_PLUGIN_TMP:-}" ] && rm -f "$OC_PLUGIN_TMP"
+  [ -n "${OC_SKILL_TMP:-}" ] && rm -f "$OC_SKILL_TMP"
   return 0
 }
 trap cleanup EXIT
@@ -63,19 +72,30 @@ classify_source() {
 
 usage() {
   cat <<'EOF'
-usage: ./install.sh [--claude] [--qoder|--qodercli] [--zsh] [--bash] [--force]
+usage: ./install.sh [--claude] [--codex] [--opencode] [--qoder|--qodercli] [--zsh] [--bash] [--force]
+                    [--uninstall [--cli] [--all] [--claude] [--codex] [--opencode] [--qoder] [--zsh] [--bash]]
 
 Always installs the global `orbit` command to ~/.local/bin and ensures it is on
 your PATH. Run with no flags (locally or via curl) to install just the runtime.
 
 options:
   --claude    install the Orbit plugin into Claude Code (claude plugin ...)
+  --codex     install the Orbit plugin into Codex (codex plugin ...)
+  --opencode  install the Orbit plugin into OpenCode as a local file (~/.config/opencode/plugins/)
   --qoder     install the Orbit plugin via the Qoder CLI (qodercli plugins ...)
   --qodercli  alias of --qoder
   --zsh       install zsh tab-completion
   --bash      install bash tab-completion
-  --force     reinstall the plugin if already present
+  --force     refresh an already-installed plugin: update it in place where the
+              agent supports it, otherwise remove and reinstall. Without --force,
+              install only adds/refreshes the marketplace and installs — it never
+              removes an existing plugin.
   --help      show this message
+
+uninstall:
+  --uninstall  uninstall mode (must be combined with at least one target)
+  --cli        uninstall the orbit runtime (~/.local/bin/orbit)
+  --all        uninstall everything (runtime + all plugins + completions)
 
 environment:
   ORBIT_SOURCE  install source: owner/repo, a git URL, or a local path
@@ -85,21 +105,31 @@ environment:
 examples:
   ./install.sh
   ./install.sh --claude --zsh
+  ./install.sh --uninstall --claude --codex
+  ./install.sh --uninstall --all
   curl -sL REMOTE/install.sh | bash
   curl -sL REMOTE/install.sh | bash -s -- --claude
+  curl -sL REMOTE/install.sh | bash -s -- --codex
   curl -sL REMOTE/install.sh | bash -s -- --claude --force
+  curl -sL REMOTE/install.sh | bash -s -- --opencode
   curl -sL REMOTE/install.sh | bash -s -- --qoder
   curl -sL REMOTE/install.sh | bash -s -- --zsh
+  curl -sL REMOTE/install.sh | bash -s -- --claude --zsh --force
 EOF
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --claude)   INSTALL_CLAUDE=1; shift ;;
+    --codex)    INSTALL_CODEX=1; shift ;;
     --qoder|--qodercli) INSTALL_QODER=1; shift ;;
+    --opencode) INSTALL_OPENCODE=1; shift ;;
     --zsh)      INSTALL_ZSH=1; shift ;;
     --bash)     INSTALL_BASH=1; shift ;;
     --force)    FORCE=1; shift ;;
+    --uninstall) UNINSTALL=1; shift ;;
+    --cli)      UNINSTALL_CLI=1; shift ;;
+    --all)      UNINSTALL_ALL=1; shift ;;
     -h|--help|help) usage; exit 0 ;;
     *) printf '%s\n' "unknown option: $1" >&2; usage >&2; exit 1 ;;
   esac
@@ -151,6 +181,10 @@ ensure_path_export() {
 
 install_cli() {
   mkdir -p "$TARGET_BIN_DIR"
+  if [ -f "$TARGET_HELPER" ] && [ "$FORCE" -eq 0 ]; then
+    printf '%s\n' "orbit runtime already installed at $TARGET_HELPER — skipping (use --force to reinstall)"
+    return 0
+  fi
   rm -f "$TARGET_HELPER"
   cp -L "$SRC_ORBIT" "$TARGET_HELPER"
   chmod +x "$TARGET_HELPER"
@@ -161,15 +195,16 @@ install_claude_plugin() {
   command -v claude >/dev/null 2>&1 || fail "claude CLI not found; install Claude Code first"
   [ "$SOURCE_TYPE" != "path" ] || [ -f "$SOURCE/.claude-plugin/marketplace.json" ] \
     || fail "marketplace manifest not found: $SOURCE/.claude-plugin/marketplace.json"
-  # A path source (or --force) re-points the marketplace at itself, overriding
-  # any prior network install so plugin-dev edits take effect on reinstall.
-  if [ "$SOURCE_TYPE" = "path" ] || [ "$FORCE" -eq 1 ]; then
-    claude plugin uninstall orbit -y >/dev/null 2>&1 || true
-    claude plugin marketplace remove orbcli >/dev/null 2>&1 || true
-  fi
+  # Point the marketplace at $SOURCE (fresh add) or refresh an existing snapshot.
   claude plugin marketplace add "$SOURCE" >/dev/null 2>&1 \
     || claude plugin marketplace update orbcli >/dev/null 2>&1 || true
-  claude plugin install "orbit@orbcli"
+  # Claude has no `plugin update`, so --force is a remove-then-install; a refreshed
+  # marketplace snapshot (above) is what actually carries new content. Plain install
+  # never removes — it just (re)installs, which is a no-op if already present.
+  if [ "$FORCE" -eq 1 ]; then
+    claude plugin uninstall claude-orbit -y >/dev/null 2>&1 || true
+  fi
+  claude plugin install "claude-orbit@orbcli"
   printf '%s\n' "Installed Orbit plugin into Claude Code"
 }
 
@@ -177,14 +212,92 @@ install_qoder_plugin() {
   command -v qodercli >/dev/null 2>&1 || fail "qodercli not found; install the Qoder CLI first"
   [ "$SOURCE_TYPE" != "path" ] || [ -f "$SOURCE/.qoder-plugin/plugin.json" ] \
     || fail "plugin manifest not found: $SOURCE/.qoder-plugin/plugin.json"
-  if [ "$SOURCE_TYPE" = "path" ] || [ "$FORCE" -eq 1 ]; then
-    qodercli plugins uninstall "orbit@orbcli" -s user >/dev/null 2>&1 || true
-    qodercli plugins marketplace remove orbcli >/dev/null 2>&1 || true
-  fi
+  # Point the marketplace at $SOURCE (fresh add) or refresh an existing snapshot.
   qodercli plugins marketplace add "$SOURCE" >/dev/null 2>&1 \
     || qodercli plugins marketplace update orbcli >/dev/null 2>&1 || true
-  qodercli plugins install "orbit@orbcli" -s user
+  if [ "$FORCE" -eq 1 ]; then
+    # qodercli has a real `plugins update`, so --force updates in place first;
+    # only fall back to remove-then-install if the update path does not apply
+    # (e.g. the plugin is not installed yet).
+    if qodercli plugins update "qoder-orbit@orbcli" -s user >/dev/null 2>&1; then
+      printf '%s\n' "Updated Orbit plugin via qodercli"
+      return 0
+    fi
+    qodercli plugins uninstall "qoder-orbit@orbcli" -s user >/dev/null 2>&1 || true
+  fi
+  # Plain install never removes; it just installs (no-op if already present).
+  qodercli plugins install "qoder-orbit@orbcli" -s user
   printf '%s\n' "Installed Orbit plugin via qodercli"
+}
+
+install_codex_plugin() {
+  command -v codex >/dev/null 2>&1 || fail "codex CLI not found; install Codex first"
+  # Codex reads a repo marketplace from .agents/plugins/marketplace.json (its
+  # plugin entry is codex-orbit), separate from Claude's legacy
+  # .claude-plugin/marketplace.json. Both marketplaces share the name orbcli but
+  # live under different CLIs and expose distinct plugin names, so they never
+  # collide.
+  [ "$SOURCE_TYPE" != "path" ] || [ -f "$SOURCE/.agents/plugins/marketplace.json" ] \
+    || fail "marketplace manifest not found: $SOURCE/.agents/plugins/marketplace.json"
+  # Point the marketplace at $SOURCE (fresh add) or refresh an existing snapshot.
+  codex plugin marketplace add "$SOURCE" >/dev/null 2>&1 \
+    || codex plugin marketplace upgrade orbcli >/dev/null 2>&1 || true
+  # Codex has no `plugin update`, so --force is a remove-then-install; the refreshed
+  # marketplace snapshot (above) is what carries new content. Plain install never
+  # removes — `plugin add` is a no-op if already present.
+  if [ "$FORCE" -eq 1 ]; then
+    codex plugin remove "codex-orbit@orbcli" >/dev/null 2>&1 || true
+  fi
+  codex plugin add "codex-orbit@orbcli"
+  printf '%s\n' "Installed Orbit plugin into Codex"
+}
+
+install_opencode_plugin() {
+  local plugin_src skill_src
+  case "$SOURCE_TYPE" in
+    path)
+      plugin_src="$SOURCE/.opencode-plugin/plugin.ts"
+      skill_src="$SOURCE/skills/orbit/SKILL.md"
+      ;;
+    repo)
+      plugin_src="$(mktemp)"; OC_PLUGIN_TMP="$plugin_src"
+      skill_src="$(mktemp)"; OC_SKILL_TMP="$skill_src"
+      curl -fsSL "https://raw.githubusercontent.com/$SOURCE/$ORBIT_REF/.opencode-plugin/plugin.ts" -o "$plugin_src" \
+        || fail "failed to download plugin.ts from github:$SOURCE@$ORBIT_REF"
+      curl -fsSL "https://raw.githubusercontent.com/$SOURCE/$ORBIT_REF/skills/orbit/SKILL.md" -o "$skill_src" \
+        || fail "failed to download SKILL.md from github:$SOURCE@$ORBIT_REF"
+      ;;
+    url)
+      plugin_src="$CLONE_TMP/.opencode-plugin/plugin.ts"
+      skill_src="$CLONE_TMP/skills/orbit/SKILL.md"
+      ;;
+  esac
+
+  [ -f "$plugin_src" ] || fail "plugin.ts not found: $plugin_src"
+  [ -f "$skill_src" ] || fail "SKILL.md not found: $skill_src"
+
+  local plugin_dir="$HOME/.config/opencode/plugins"
+  local skill_dir="$HOME/.config/opencode/skills/orbit"
+
+  mkdir -p "$plugin_dir" "$skill_dir"
+
+  # OpenCode has no marketplace/CLI — the plugin is a copied file. Mirror the
+  # install vs --force policy of the CLI agents:
+  #   plain install : skip if already present (never delete), else copy in.
+  #   --force        : remove the old file, then copy the current one (reinstall).
+  if [ -f "$plugin_dir/orbit.ts" ] && [ "$FORCE" -eq 0 ]; then
+    printf '%s\n' "OpenCode plugin already installed at $plugin_dir/orbit.ts — skipping (use --force to reinstall)"
+    return 0
+  fi
+  if [ "$FORCE" -eq 1 ]; then
+    rm -f "$plugin_dir/orbit.ts"
+  fi
+
+  cp "$plugin_src" "$plugin_dir/orbit.ts"
+  cp "$skill_src" "$skill_dir/SKILL.md"
+
+  printf '%s\n' "Installed Orbit plugin into OpenCode ($plugin_dir/orbit.ts)"
+  printf '%s\n' "Installed Orbit skill into OpenCode ($skill_dir/SKILL.md)"
 }
 
 install_completion_zsh() {
@@ -233,7 +346,7 @@ completion_hint() {
     */bash) flag="--bash" ;;
     *)      flag="--zsh (zsh) or --bash (bash)" ;;
   esac
-  printf '%s\n' "Tab-completion not installed. To add it:"
+  printf '%s\n' "To install shell tab-completion:"
   if [ "$SOURCE_TYPE" = "repo" ]; then
     printf '  %s\n' "curl -sL https://raw.githubusercontent.com/$SOURCE/$ORBIT_REF/install.sh | bash -s -- $flag"
   else
@@ -241,7 +354,93 @@ completion_hint() {
   fi
 }
 
+# --- Uninstall functions (fail-safe: no-op if target is already gone) ---
+uninstall_cli() {
+  [ -f "$TARGET_HELPER" ] || { printf '%s\n' "orbit runtime not found at $TARGET_HELPER — nothing to remove"; return 0; }
+  rm "$TARGET_HELPER"
+  printf '%s\n' "Removed orbit runtime from: $TARGET_HELPER"
+}
+
+uninstall_claude_plugin() {
+  command -v claude >/dev/null 2>&1 || { printf '%s\n' "claude CLI not found — skipping"; return 0; }
+  claude plugin uninstall claude-orbit -y >/dev/null 2>&1 || true
+  claude plugin marketplace remove orbcli >/dev/null 2>&1 || true
+  printf '%s\n' "Removed Orbit plugin from Claude Code"
+}
+
+uninstall_codex_plugin() {
+  command -v codex >/dev/null 2>&1 || { printf '%s\n' "codex CLI not found — skipping"; return 0; }
+  codex plugin remove "codex-orbit@orbcli" >/dev/null 2>&1 || true
+  codex plugin marketplace remove orbcli >/dev/null 2>&1 || true
+  printf '%s\n' "Removed Orbit plugin from Codex"
+}
+
+uninstall_qoder_plugin() {
+  command -v qodercli >/dev/null 2>&1 || { printf '%s\n' "qodercli not found — skipping"; return 0; }
+  qodercli plugins uninstall "qoder-orbit@orbcli" -s user >/dev/null 2>&1 || true
+  qodercli plugins marketplace remove orbcli >/dev/null 2>&1 || true
+  printf '%s\n' "Removed Orbit plugin from Qoder"
+}
+
+uninstall_opencode_plugin() {
+  rm -f "$HOME/.config/opencode/plugins/orbit.ts"
+  rm -f "$HOME/.config/opencode/skills/orbit/SKILL.md"
+  printf '%s\n' "Removed Orbit plugin from OpenCode"
+}
+
+uninstall_completion_zsh() {
+  local d
+  for d in \
+    "$HOME/.local/share/zsh/site-functions" \
+    /usr/local/share/zsh/site-functions \
+    /usr/share/zsh/site-functions; do
+    [ -f "$d/_orbit" ] && rm "$d/_orbit" && printf '%s\n' "Removed zsh completion: $d/_orbit"
+  done
+  return 0
+}
+
+uninstall_completion_bash() {
+  local d
+  for d in \
+    "$HOME/.local/share/bash-completion/completions" \
+    /usr/local/share/bash-completion/completions \
+    /usr/share/bash-completion/completions; do
+    [ -f "$d/orbit" ] && rm "$d/orbit" && printf '%s\n' "Removed bash completion: $d/orbit"
+  done
+  return 0
+}
+
 # --- Run ---
+if [ "$UNINSTALL" -eq 1 ]; then
+  # --all expands to every target
+  if [ "$UNINSTALL_ALL" -eq 1 ]; then
+    UNINSTALL_CLI=1
+    INSTALL_CLAUDE=1
+    INSTALL_CODEX=1
+    INSTALL_OPENCODE=1
+    INSTALL_QODER=1
+    INSTALL_ZSH=1
+    INSTALL_BASH=1
+  fi
+  # Must specify at least one target
+  if [ "$UNINSTALL_CLI" -eq 0 ] && [ "$INSTALL_CLAUDE" -eq 0 ] && [ "$INSTALL_CODEX" -eq 0 ] \
+    && [ "$INSTALL_OPENCODE" -eq 0 ] && [ "$INSTALL_QODER" -eq 0 ] \
+    && [ "$INSTALL_ZSH" -eq 0 ] && [ "$INSTALL_BASH" -eq 0 ]; then
+    fail "--uninstall requires at least one target: --cli, --all, --claude, --codex, --opencode, --qoder, --zsh, or --bash"
+  fi
+
+  if [ "$INSTALL_CLAUDE" -eq 1 ]; then   uninstall_claude_plugin; fi
+  if [ "$INSTALL_CODEX" -eq 1 ]; then    uninstall_codex_plugin; fi
+  if [ "$INSTALL_OPENCODE" -eq 1 ]; then uninstall_opencode_plugin; fi
+  if [ "$INSTALL_QODER" -eq 1 ]; then   uninstall_qoder_plugin; fi
+  if [ "$INSTALL_ZSH" -eq 1 ]; then     uninstall_completion_zsh; fi
+  if [ "$INSTALL_BASH" -eq 1 ]; then    uninstall_completion_bash; fi
+  if [ "$UNINSTALL_CLI" -eq 1 ]; then   uninstall_cli; fi
+
+  printf '%s\n' "Done. PATH entries in your shell rc are left in place (harmless without the binary)."
+  exit 0
+fi
+
 classify_source
 resolve_source
 install_cli
@@ -264,6 +463,12 @@ fi
 if [ "$INSTALL_CLAUDE" -eq 1 ]; then
   install_claude_plugin
 fi
+if [ "$INSTALL_CODEX" -eq 1 ]; then
+  install_codex_plugin
+fi
+if [ "$INSTALL_OPENCODE" -eq 1 ]; then
+  install_opencode_plugin
+fi
 if [ "$INSTALL_QODER" -eq 1 ]; then
   install_qoder_plugin
 fi
@@ -277,6 +482,12 @@ fi
 printf '  %s\n' "- Verify with: orbit doctor"
 if [ "$INSTALL_CLAUDE" -eq 1 ]; then
   printf '  %s\n' "- In Claude Code, the Orbit skill and SessionStart hook are now active"
+fi
+if [ "$INSTALL_CODEX" -eq 1 ]; then
+  printf '  %s\n' "- In Codex, the Orbit skill and SessionStart hook are now active (review hooks in /hooks on first run)"
+fi
+if [ "$INSTALL_OPENCODE" -eq 1 ]; then
+  printf '  %s\n' "- In OpenCode, the Orbit skill and system-context hook are now active"
 fi
 if [ "$INSTALL_QODER" -eq 1 ]; then
   printf '  %s\n' "- In Qoder, the Orbit skill is now active"

@@ -5,7 +5,7 @@
   },
   "plugins": [
     {
-      "name": "claude-orbit",
+      "name": "codex-orbit",
       "source": "./",
       "description": "Multi-repo Git workspaces for any AI coding agent — one agent across many repos."
     }
