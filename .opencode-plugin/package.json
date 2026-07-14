@@ -1,5 +1,5 @@
 {
-  "name": "orbit",
+  "name": "opencode-orbit",
   "version": "0.1.0",
   "description": "Multi-repo Git workspaces for OpenCode — one agent across many repos",
   "type": "module",

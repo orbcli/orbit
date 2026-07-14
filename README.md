@@ -102,7 +102,7 @@ which Codex's sandbox may block. Orbit commands may need escalation.
 See [USAGE.md](USAGE.md#12-codex-sandbox-escalation) for the recommended approach
 and the risks of `--add-dir` / `writable_roots`.
 
-**OpenCode via npm** (alternative): add `"orbit"` to the `plugin` array in `opencode.json` — OpenCode auto-installs it at startup. The plugin self-registers its bundled skill path, so no manual skill setup is needed.
+**OpenCode via npm** (alternative): add `"opencode-orbit"` to the `plugin` array in `opencode.json` — OpenCode auto-installs it at startup. The plugin self-registers its bundled skill path, so no manual skill setup is needed.
 
 ### 2. Configure agent launch command (one-time)
 
