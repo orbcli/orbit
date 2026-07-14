@@ -29,7 +29,7 @@ orbit new --no-goal                         # -> no-goal creation (free explorat
 ### Core Behavior
 
 1. Read goal: positional argument `"<goal>"` takes priority; if missing, the source depends on the environment — when `ORBIT_EDITOR` is set or stdin is an interactive terminal, an editor is opened; when stdin is piped (non-interactive), the goal is read from stdin. An empty result (blank editor buffer or empty pipe) **aborts** with an error rather than falling back — use `--no-goal` to intentionally create a workspace without a goal (free exploration mode)
-2. Locate project root: traverses upward from CWD looking for `.repos/`; found -> uses that location as root; not found -> implicitly initializes at CWD (creates `.repos/` + `.repos/.orbit`) then uses CWD as root
+2. Locate project root: traverses upward from CWD looking for `.repos/`; found -> uses that location as root; not found -> implicitly initializes at CWD (creates `.repos/` + `.repos/.orbit` + `.repos/README.md` pool marker) then uses CWD as root
 3. Creates workspace directory + writes `.orbit` file (records goal and created)
 4. Prints next steps (follows scaffolding tool conventions, does not auto cd)
 5. If `--exec` is present -> executes the specified command directly inside the new directory
