@@ -177,17 +177,43 @@ orbit_require_root() {
   printf '%s\n' "$root"
 }
 
+# Pool infrastructure marker. .repos/ is orbit's pool, not an agent API surface:
+# it lives outside the workspace sandbox and all access goes through orbit
+# commands. This README is a passive warning that surfaces if an agent ever
+# lists .repos/ directly. Idempotent — written once, never overwritten.
+orbit_write_pool_readme() {
+  local repos_dir="$1"
+  [ -f "$repos_dir/README.md" ] && return 0
+  cat > "$repos_dir/README.md" <<'EOF'
+# .repos/ — orbit pool infrastructure (do not access directly)
+
+This directory is orbit's repo pool. It is internal infrastructure, not an API
+surface. Do not read, edit, or run git inside `.repos/` directly.
+
+All pool access goes through orbit commands:
+
+- `orbit repos` / `orbit info <repo>` — list and inspect pool repos
+- `orbit add <repo>` — bring a repo into your workspace as a worktree
+- `orbit sync <repo>` — update a pool repo from its upstream
+- `orbit memo <repo>` — read/write a repo's memo card
+
+Work happens in workspace worktrees created by `orbit add`, never here.
+EOF
+}
+
 orbit_ensure_init() {
   local root
   if root=$(orbit_find_root); then
     mkdir -p "$root/.repos"
     [ -f "$root/.repos/.orbit" ] || touch "$root/.repos/.orbit"
+    orbit_write_pool_readme "$root/.repos"
     printf '%s\n' "$root"
     return 0
   fi
   root="$(pwd)"
   mkdir -p "$root/.repos"
   touch "$root/.repos/.orbit"
+  orbit_write_pool_readme "$root/.repos"
   printf '%s\n' "$root"
 }
 

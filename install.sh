@@ -338,8 +338,37 @@ install_completion_bash() {
   esac
 }
 
+# Detect an already-installed completion for the login shell. Echoes the file
+# path (and returns 0) when one exists, so the install hint can skip nagging the
+# user to install completion they already have. Only the login shell's flavor is
+# checked — that's the shell whose tab-completion the hint would recommend.
+completion_already_installed() {
+  local d
+  case "${SHELL:-}" in
+    */zsh)
+      for d in \
+        "$HOME/.local/share/zsh/site-functions" \
+        /usr/local/share/zsh/site-functions \
+        /usr/share/zsh/site-functions; do
+        [ -f "$d/_orbit" ] && { printf '%s\n' "$d/_orbit"; return 0; }
+      done ;;
+    */bash)
+      for d in \
+        "$HOME/.local/share/bash-completion/completions" \
+        /usr/local/share/bash-completion/completions \
+        /usr/share/bash-completion/completions; do
+        [ -f "$d/orbit" ] && { printf '%s\n' "$d/orbit"; return 0; }
+      done ;;
+  esac
+  return 1
+}
+
 completion_hint() {
   [ "$INSTALL_ZSH" -eq 0 ] && [ "$INSTALL_BASH" -eq 0 ] || return 0
+  # Already installed for this shell → skip the nag; there's nothing to do.
+  if completion_already_installed >/dev/null 2>&1; then
+    return 0
+  fi
   local flag
   case "${SHELL:-}" in
     */zsh)  flag="--zsh" ;;

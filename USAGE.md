@@ -341,7 +341,95 @@ ORBIT_ROOT=<project-root>         # Explicitly specify project root
 ORBIT_BRANCH_PREFIX=<prefix>      # Override tracking branch prefix, default ws
 ```
 
-## 12. JSON Output
+## 12. Codex Sandbox Escalation
+
+Codex runs with a filesystem sandbox that restricts writes to the workspace
+root and a few system directories. Orbit manages its pool repos under
+`.repos/` outside the workspace root, so commands that write into the pool
+(`orbit add`, `orbit memo`, `orbit sync`, `orbit done`, `git` operations in
+worktrees, etc.) are blocked by the sandbox and require escalation.
+
+### Recommended: obey sandbox, escalate only when needed
+
+The sandbox is a security boundary. Keep `.repos/` outside the writable roots
+so the agent never sees it as an accessible path. When an orbit command or git
+operation fails with a sandbox permission error, retry with
+`sandbox_permissions: "require_escalated"` and include a `prefix_rule` so the
+user can persist the approval:
+
+| Prefix rule | Covers |
+|---|---|
+| `["orbit"]` | All orbit subcommands |
+| `["git", "checkout"]` | Branch creation in worktrees |
+| `["git", "switch"]` | Branch switch/create in worktrees (incl. `orbit switch` fallback) |
+| `["git", "commit"]` | Commits in worktrees |
+| `["git", "add"]` | Staging changes in worktrees |
+| `["git", "push"]` | Pushing worktree branches |
+
+Suggest persisting these rules on first use. Subsequent sessions reuse the
+stored approvals without additional prompts. Note the scope: a `git` prefix
+rule like `["git", "commit"]` approves that subcommand in **any** path, not
+only orbit worktrees. That is intended here — worktree writes land in the pool
+outside the workspace — but the user should approve it knowing the breadth.
+
+### Workaround: auto-loading guidance via AGENTS.md
+
+This is a convenience workaround, not the primary path. The recommended flow
+above (escalate on demand, persist the prefix rules once) already makes
+subsequent sessions frictionless. Reach for this only if you dislike being
+reminded of the escalation steps each session.
+
+Copy the block below into an `AGENTS.md` at the **orbit project root** (the
+directory that holds `.repos/`). Codex auto-loads it on startup, so the agent
+knows the escalation steps from its first message — no per-session reminder.
+
+```markdown
+# Orbit workspace
+
+## Sandbox escalation for orbit commands
+
+Orbit commands (add, memo, sync, done, etc.) and git operations inside orbit
+worktrees write git metadata under `.repos/` — the pool repo infrastructure
+outside the workspace sandbox. These writes are blocked by the sandbox.
+
+**Do NOT add `.repos/` to `writable_roots`.** The agent must not see `.repos/`
+as a writable path in its system prompt — that would expose the directory and
+risk the agent working directly in the pool instead of through orbit worktrees.
+
+When an orbit command or git operation in an orbit worktree fails with a sandbox
+permission error, retry with `sandbox_permissions: "require_escalated"` and
+include a `prefix_rule` so the user can persist the approval:
+
+- `["orbit"]` — all orbit subcommands
+- `["git", "checkout"]` — branch creation in worktrees
+- `["git", "switch"]` — branch switch/create in worktrees (incl. `orbit switch` fallback)
+- `["git", "commit"]` — commits in worktrees
+- `["git", "add"]` — staging changes in worktrees
+- `["git", "push"]` — pushing worktree branches
+
+Suggest persisting these rules on first use so subsequent sessions are frictionless.
+```
+
+### Not recommended: `--add-dir` / `writable_roots`
+
+You *can* skip per-command escalation by adding `.repos/` to the sandbox
+writable roots, but this is not recommended:
+
+- **One-off**: `codex --add-dir /path/to/pool/.repos start`
+- **Persistent**: add to `~/.codex/config.toml`:
+
+  ```toml
+  [projects."/path/to/workspace"]
+  trust_level = "trusted"
+  writable_roots = ["/path/to/pool/.repos"]
+  ```
+
+**Why not**: `writable_roots` are injected into the agent's system prompt. The
+agent then knows `.repos/` exists and is writable, which risks it working
+directly in the pool instead of through orbit worktrees — undermining orbit's
+isolation guarantees. Use only if you understand and accept this tradeoff.
+
+## 13. JSON Output
 
 Some commands support `--json` for script/agent parsing:
 
@@ -358,7 +446,7 @@ orbit jot backend --pop --json  # Pop jot entries as JSON
 
 `orbit repos --json` includes a `"memoBehind": N` field per record, indicating how many commits behind the current HEAD the memo was written at (0 = up to date).
 
-## 13. Workspace Context
+## 14. Workspace Context
 
 Get the complete context of the current workspace in one call (goal, status, all repo branches and memos):
 
@@ -376,7 +464,7 @@ Full mode outputs workspace summary and each repo's full memo text; `--json` out
 
 Must be executed within a workspace (workspace inferred from CWD).
 
-## 14. Environment Diagnostics
+## 15. Environment Diagnostics
 
 Check whether the current environment meets orbit's runtime requirements:
 
@@ -392,7 +480,7 @@ Checks:
 
 `orbit doctor` can be executed from anywhere; being inside an orbit project is not required. It also prints the orbit runtime version, which you can query on its own with `orbit version` (aliases: `--version`, `-v`).
 
-## 15. Shell Completion
+## 16. Shell Completion
 
 `orbit` has built-in completion script generation:
 
@@ -412,7 +500,7 @@ orbit completion zsh > /path/to/fpath/_orbit
 orbit completion bash > /path/to/bash-completion/completions/orbit
 ```
 
-## 16. Auto-approving safe commands
+## 17. Auto-approving safe commands
 
 An orbit session runs read-only and idempotent subcommands (`context` / `repos` / `info` / `status`, plus workspace-writes like `add` / `memo` / `jot`) constantly, so per-command confirmation prompts add up. Those safe tiers can run without a prompt; destructive or externally-visible commands (`done` `prune` `clone` `config` `new`) always keep prompting.
 
@@ -420,7 +508,7 @@ An orbit session runs read-only and idempotent subcommands (`context` / `repos` 
 
 The exact command tiers, the ready-to-paste allowlist snippet, and the rationale for each tier all live in [`skills/CONSTRAINTS.md`](skills/CONSTRAINTS.md#permission-and-auto-execution-policy).
 
-## 17. Command Reference
+## 18. Command Reference
 
 ```text
 # Repo management

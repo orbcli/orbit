@@ -1,0 +1,45 @@
+name: Publish opencode-orbit
+
+# Publishes the opencode-orbit npm package when a version tag is pushed.
+# GitHub does not sync to npm on its own — this workflow runs `npm publish`
+# with an NPM_TOKEN secret (create an Automation token on npmjs.com and add it
+# under Settings → Secrets and variables → Actions as NPM_TOKEN).
+#
+# Tag scheme is unified: one `v<version>` tag drives release. The job fails
+# unless the tag version matches .opencode-plugin/package.json — npm forbids
+# republishing an existing version, so the tag must always name a fresh one.
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Verify tag matches package version
+        working-directory: .opencode-plugin
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "tag version ($tag_version) != .opencode-plugin/package.json version ($pkg_version)" >&2
+            echo "bump the package version to match the tag, or re-tag." >&2
+            exit 1
+          fi
+          echo "publishing opencode-orbit@$pkg_version"
+
+      - name: Publish to npm
+        working-directory: .opencode-plugin
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

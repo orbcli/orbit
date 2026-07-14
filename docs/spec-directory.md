@@ -8,6 +8,7 @@
 project-root/
   .repos/
     .orbit                    # global index (git-config format)
+    README.md                 # pool marker: "infrastructure, do not access directly" (auto-written on init, idempotent)
     .backend.md               # per-repo memo (markdown)
     .frontend.md
     backend/                  # source pool repo
@@ -26,6 +27,7 @@ project-root/
 
 - **Top level directly exposes multiple workspaces**: when users open the project root, they see their task list
 - **`.repos/` is the internal source pool**: does not occupy the main interaction surface; agents do not touch it directly
+- **`.repos/README.md` is a passive guardrail**: written idempotently when the pool is initialized, it warns an agent that stumbles into `.repos/` (e.g. by listing it) that the directory is infrastructure and points back to orbit commands. It is defense-in-depth, not the isolation guarantee — the guarantee is keeping `.repos/` out of the agent's writable roots. It is a plain file, so every `.repos/*/` repo scan skips it.
 - **Project root does not depend on extra config files**: no manifest or registry needed to define workspace combinations
 - **`.repos/` determines root ownership**: serves as a convention-based structural anchor, similar to `.git/`
 - **Metadata (`.orbit`, `.md`) is cache**: disposable and rebuildable, see [spec-metadata](./spec-metadata.md)
