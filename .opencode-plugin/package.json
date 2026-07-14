@@ -1,0 +1,33 @@
+{
+  "name": "orbit",
+  "version": "0.1.0",
+  "description": "Multi-repo Git workspaces for OpenCode — one agent across many repos",
+  "type": "module",
+  "main": "index.ts",
+  "files": [
+    "index.ts",
+    "plugin.ts",
+    "skills/"
+  ],
+  "scripts": {
+    "prepublishOnly": "mkdir -p skills/orbit && cp ../skills/orbit/SKILL.md skills/orbit/SKILL.md"
+  },
+  "keywords": [
+    "opencode-plugin",
+    "worktree",
+    "multi-repo",
+    "polyrepo",
+    "workspace",
+    "coding-agent"
+  ],
+  "author": "orbcli contributors",
+  "license": "MIT",
+  "homepage": "https://github.com/orbcli/orbit",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/orbcli/orbit"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "^1.0.0"
+  }
+}

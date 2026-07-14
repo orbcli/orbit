@@ -1,6 +1,6 @@
 # Orbit Skills — Unified Constraints and Design Principles
 
-> This document defines the unified constraints that all agents (Claude, Qoder, and future additions) must follow when implementing or maintaining orbit skills, and how those skills are packaged into agent plugins.
+> This document defines the unified constraints that all agents (Claude, Codex, OpenCode, Qoder, and future additions) must follow when implementing or maintaining orbit skills, and how those skills are packaged into agent plugins.
 
 ## Packaging and Layout
 
@@ -9,17 +9,23 @@ Orbit ships one shared runtime plus a per-agent skill and hook. Repo layout → 
 | Path | Role | Wired by |
 |------|------|----------|
 | `orbit.sh` | The runtime (all commands) | `install.sh` / curl bootstrap installs it to PATH |
-| `skills/orbit/SKILL.md` | Claude Code skill | `.claude-plugin/plugin.json` → `"skills": ["./skills/orbit"]` (explicit allowlist so the Qoder skill nested under `skills/` is not also discovered) |
-| `skills/qoder/orbit/SKILL.md` | Qoder skill | `.qoder-plugin/plugin.json` → `"skills": "./skills/qoder/"` |
+| `skills/orbit/SKILL.md` | Shared skill | All three plugins point at it explicitly: `.claude-plugin/plugin.json` → `"skills": ["./skills/orbit"]`; `.codex-plugin/plugin.json` and `.qoder-plugin/plugin.json` → `"skills": "./skills/orbit"` |
 | `skills/CONSTRAINTS.md` | This doc — shared constraints, not shipped as a skill | — |
-| `hooks/session-start.sh` | Shared `SessionStart` script (context injection) | Referenced by both `hooks.json` |
-| `hooks/auto-approve.sh` | Shared `PreToolUse` script (auto-approve safe orbit commands) | Referenced by both `hooks.json` |
-| `hooks/claude/hooks.json` | Claude hook wiring | `.claude-plugin/plugin.json` → `"hooks"` |
-| `hooks/qoder/hooks.json` | Qoder hook wiring | `.qoder-plugin/plugin.json` → `"hooks"` |
+| `hooks/session-start.sh` | Shared `SessionStart` script (context injection) | Referenced by Claude/Qoder `hooks.json` and `hooks/codex/session-start.sh` wrapper |
+| `hooks/auto-approve.sh` | Shared `PreToolUse` script (auto-approve safe orbit commands) | Referenced by Claude/Qoder `hooks.json` and `hooks/codex/auto-approve.sh` wrapper |
+| `hooks/stop.sh` | Shared `Stop` script (memo nudge) | Referenced by Claude/Qoder `hooks.json` and `hooks/codex/stop.sh` wrapper |
 | `.claude-plugin/` | Claude plugin + marketplace manifest | Claude marketplace |
+| `hooks/claude/hooks.json` | Claude hook wiring (SessionStart, PreToolUse, Stop) | `.claude-plugin/plugin.json` → `"hooks"` |
+| `.codex-plugin/` | Codex plugin manifest | Codex marketplace — resolved from `.agents/plugins/marketplace.json` (plugin entry `codex-orbit`); install with `./install.sh --codex` |
+| `hooks/codex/hooks.json` | Codex hook wiring (SessionStart, PermissionRequest, Stop) | `.codex-plugin/plugin.json` → `"hooks"` (same convention as Claude/Qoder) |
+| `hooks/codex/session-start.sh` | Codex SessionStart wrapper | Delegates to `hooks/session-start.sh` |
+| `hooks/codex/auto-approve.sh` | Codex PermissionRequest wrapper | Wraps `hooks/auto-approve.sh`; exit 0 = allow |
+| `hooks/codex/stop.sh` | Codex Stop wrapper | Wraps `hooks/stop.sh`; strips JSON, prints plain text |
+| `.opencode-plugin/plugin.ts` | OpenCode plugin (context injection, auto-approve, memo nudge) | Installed to `~/.config/opencode/plugins/` |
 | `.qoder-plugin/` | Qoder plugin manifest | Qoder marketplace |
+| `hooks/qoder/hooks.json` | Qoder hook wiring | `.qoder-plugin/plugin.json` → `"hooks"` |
 
-The two `SKILL.md` files are kept in sync — content is identical, so edit both together when changing skill behavior.
+There is one `SKILL.md` (`skills/orbit/SKILL.md`), shared by Claude, Qoder, and Codex. All three point at it explicitly — Claude via `"skills": ["./skills/orbit"]`, Codex and Qoder via `"skills": "./skills/orbit"` — so the loose `CONSTRAINTS.md` at the top of `skills/` is never mistaken for a skill dir.
 
 ## Permission and Auto-Execution Policy
 
@@ -41,7 +47,7 @@ The tiers below are the contract. Anything not in the first two tiers must keep 
 
 ### Two ways to enable it
 
-**1. Bundled auto-approve hook (zero config, recommended).** Both plugins ship `hooks/auto-approve.sh`, wired as a `PreToolUse` / `Bash` matcher in each `hooks.json`. It inspects the pending Bash command and emits an `allow` decision only when the command is a **single, un-chained** invocation of `orbit` whose subcommand is in the two safe tiers. It is fail-safe by construction — if `jq` is missing, the tool is not Bash, the command contains any shell chaining/redirection/substitution (`;` `&` `|` `` ` `` `$(` `>` `<`, newline), or the leading binary is not `orbit`, it prints nothing and the normal confirmation prompt happens. Nothing to configure; installing the plugin is enough.
+**1. Bundled auto-approve hook (zero config, recommended).** All three plugins (Claude, Codex, Qoder) ship the shared `hooks/auto-approve.sh`, wired as a `PreToolUse` / `Bash` (Claude/Qoder) or `PermissionRequest` / `Bash` (Codex) matcher. It inspects the pending Bash command and auto-approves only when the command is a **single, un-chained** invocation of `orbit` whose subcommand is in the two safe tiers. For Claude and Qoder, the hook emits an `allow` decision JSON; for Codex, the `hooks/codex/auto-approve.sh` wrapper converts the same logic to exit-code semantics (0 = allow). Fail-safe by construction — if `jq` is missing, the tool is not Bash, the command contains any shell chaining/redirection/substitution (`;` `&` `|` `` ` `` `$(` `>` `<`, newline), or the leading binary is not `orbit`, it prints nothing (or exits non-zero for Codex) and the normal confirmation prompt happens. Nothing to configure; installing the plugin is enough.
 
 **2. Static allowlist in agent settings (opt-in, for users who prefer explicit config or run skill-only without the plugin hook).** Plugins cannot declare a permission allowlist — only the user's own settings can — so this path is manual. Mirror the two safe tiers:
 
@@ -71,12 +77,52 @@ The tiers below are the contract. Anything not in the first two tiers must keep 
 
 *Other vendors (Qoder, Codex, Cursor, …)* — the same tier mapping applies; only the config dialect differs. Community contributions welcome: add the vendor's allowlist snippet here when its integration is verified.
 
+*opencode* — the bundled `permission.ask` hook in `.opencode-plugin/plugin.ts` handles auto-approval automatically (no config needed). For skill-only users, add to `opencode.json`:
+
+```json
+{
+  "permission": {
+    "bash": {
+      "orbit repos": "allow",
+      "orbit repos *": "allow",
+      "orbit info": "allow",
+      "orbit info *": "allow",
+      "orbit status": "allow",
+      "orbit status *": "allow",
+      "orbit context": "allow",
+      "orbit context *": "allow",
+      "orbit goal": "allow",
+      "orbit goal *": "allow",
+      "orbit jot": "allow",
+      "orbit jot *": "allow",
+      "orbit memo": "allow",
+      "orbit memo *": "allow",
+      "orbit add": "allow",
+      "orbit add *": "allow",
+      "orbit switch": "allow",
+      "orbit switch *": "allow",
+      "orbit sync --force *": "ask",
+      "orbit sync": "allow",
+      "orbit sync *": "allow",
+      "orbit version": "allow",
+      "orbit version *": "allow",
+      "orbit doctor": "allow",
+      "orbit doctor *": "allow",
+      "orbit completion": "allow",
+      "orbit completion *": "allow"
+    }
+  }
+}
+```
+
 ### Maintainer contract
 
-If you change the tier of any subcommand, or add/remove a subcommand, update **all three** in the same change so they never drift:
+If you change the tier of any subcommand, or add/remove a subcommand, update **all** in the same change so they never drift:
 1. the tier table above,
 2. the `case` allowlist in `hooks/auto-approve.sh`,
-3. the example allowlist snippet(s) above.
+3. the `SAFE_SUBCOMMANDS` set in `.opencode-plugin/plugin.ts`,
+4. the example allowlist snippet(s) above.
+5. the Codex wrapper `hooks/codex/auto-approve.sh` — it delegates to the shared `hooks/auto-approve.sh` (covered by item 2), but verify the exit-code translation (0 = allow, non-zero = prompt) still works after any change to the shared script's output format.
 
 ## Product Design Principles (Must Be Enforced)
 
@@ -121,7 +167,7 @@ Detection granularity is **workspace-level only**. Project root path is never ex
 
 ### Startup Detection (Required)
 
-**Two layers.** In the Claude Code and Qoder plugins, a bundled `SessionStart` hook (startup / resume / compact) detects the workspace and injects its state deterministically, at zero user effort — so the agent knows it is inside a workspace. The hook branches on whether the workspace is a cold start: with **no repos yet** it runs `orbit context --prime` to inject the full preflight (goal, status, done banner, pending jots, and the pool roster — the repos available to `orbit add`) so the agent can orient and choose repos; with **repos already present** it treats the session as a resume and injects only a brief nudge to continue the prior task (goal + status + on-demand pointers), rather than re-dumping the repo roster. Loading the skill's full conventions is still model-driven, so the launch phrase (`orbit start`) remains the reliable way to activate them. In skill-only setups (no plugin hook), that phrase is the only entry point. The detection logic below is identical regardless of layer.
+**Two layers.** In the Claude Code, OpenCode and Qoder plugins, a bundled `SessionStart` / `system.transform` hook (startup / resume / compact) detects the workspace and injects its state deterministically, at zero user effort — so the agent knows it is inside a workspace. The hook branches on whether the workspace is a cold start: with **no repos yet** it runs `orbit context --prime` to inject the full preflight (goal, status, done banner, pending jots, and the pool roster — the repos available to `orbit add`) so the agent can orient and choose repos; with **repos already present** it treats the session as a resume and injects only a brief nudge to continue the prior task (goal + status + on-demand pointers), rather than re-dumping the repo roster. Loading the skill's full conventions is still model-driven, so the launch phrase (`orbit start`) remains the reliable way to activate them. In skill-only setups (no plugin hook), that phrase is the only entry point. The detection logic below is identical regardless of layer.
 
 **An injected block is the completed preflight — do not re-fetch it (Required).** When the hook has injected a block — the cold-start `=== PRIME — <name> ===` block or the populated-workspace `Resuming` nudge — the startup preflight has *already run*; its output is in context (the cold-start block **is** the output of `orbit context --prime`, and the resume nudge already carries goal + status). The skill must direct the agent to read that block and proceed straight to the workflow decision (done-check, then goal), and must NOT re-run `orbit context`, `orbit context --prime`, or `orbit repos` to reload what it already holds. Reaching for **plain `orbit context`** at startup is a compounded defect, not a fallback: it dumps every worktree's full memo, a mid-work lookup that is never a session-start action. The agent fetches context itself only when *no* block was injected and the user signals to start (below). **Escalation boundary:** the prime roster already carries every pool repo's name + one-line brief, so any judgment that needs only a name or brief (does repo X exist? what is its rough purpose?) is answered from the block itself — the skill must forbid running `orbit repos` to "confirm" it. Escalation to `orbit repos` / `orbit info <repo>` is warranted only when a field the brief lacks is needed (URL, staleness, memo, entry points).
 

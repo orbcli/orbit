@@ -50,17 +50,21 @@ run_install() {
 # --- args -----------------------------------------------------------------
 # Optionally fold the agent-plugin install into this run so the user skips a
 # separate step. Qoder is an IDE — for a CLI try-out use its CLI, qodercli.
-AGENT=""            # "" | claude | qodercli
+AGENT=""            # "" | claude | codex | opencode | qodercli
 AGENT_INSTALL=""    # install.sh flag for the chosen agent
 for arg in "$@"; do
   case "$arg" in
     --claude)           AGENT=claude;   AGENT_INSTALL=--claude ;;
+    --codex)            AGENT=codex;    AGENT_INSTALL=--codex ;;
+    --opencode)         AGENT=opencode; AGENT_INSTALL=--opencode ;;
     --qoder|--qodercli) AGENT=qodercli; AGENT_INSTALL=--qoder ;;
     -h|--help)
       printf '%s\n' \
-        "Usage: try.sh [--claude | --qodercli]" \
+        "Usage: try.sh [--claude | --codex | --opencode | --qodercli]" \
         "  (no flag)    seed the demo; print launch options for you to pick" \
         "  --claude     also install the Claude Code plugin, then launch-ready" \
+        "  --codex      also install the Codex plugin, then launch-ready" \
+        "  --opencode   also install the OpenCode plugin, then launch-ready" \
         "  --qodercli   also install the Qoder CLI plugin, then launch-ready"
       exit 0 ;;
     *) warn "ignoring unknown arg: $arg" ;;
@@ -324,6 +328,19 @@ if [ "$AGENT" = claude ]; then
 
     ${ORBIT_PATH}cd $TRY_DIR/mission && claude start
 "
+elif [ "$AGENT" = codex ]; then
+  AGENT_SECTION="── Let your agent fly it (Codex plugin installed) ─────────────────────
+    # The session hook detects this workspace — no magic phrase needed.
+    # On first run, review and trust the bundled hooks in /hooks.
+
+    ${ORBIT_PATH}cd $TRY_DIR/mission && codex
+"
+elif [ "$AGENT" = opencode ]; then
+  AGENT_SECTION="── Let your agent fly it (OpenCode plugin installed) ──────────────────
+    # The system.transform hook detects this workspace — no magic phrase needed.
+
+    ${ORBIT_PATH}cd $TRY_DIR/mission && opencode
+"
 elif [ "$AGENT" = qodercli ]; then
   AGENT_SECTION="── Let your agent fly it (Qoder CLI plugin installed) ─────────────────
     # The session hook detects this workspace — no magic phrase needed.
@@ -345,6 +362,8 @@ else
     #   $SKILL_DIR
     # Prefer a plugin + auto-detecting hook? Install one:
     #   curl -sL $INSTALL_URL | bash -s -- --claude      # Claude Code
+    #   curl -sL $INSTALL_URL | bash -s -- --codex       # Codex
+    #   curl -sL $INSTALL_URL | bash -s -- --opencode    # OpenCode
     #   curl -sL $INSTALL_URL | bash -s -- --qodercli    # Qoder CLI
     ${ORBIT_PATH}cd $TRY_DIR/mission
     <agent> \"orbit start\"        # your CLI/IDE Agent: claude, qodercli, …"
@@ -354,6 +373,10 @@ fi
 #     `rm -rf $TRY_DIR` can't reach it — name its removal explicitly ---
 if [ "$AGENT" = claude ]; then
   PLUGIN_UNINSTALL="    claude plugin uninstall orbit                     # Orbit plugin (lives in Claude Code)"
+elif [ "$AGENT" = codex ]; then
+  PLUGIN_UNINSTALL="    codex plugin remove orbit@orbcli                  # Orbit plugin (lives in Codex)"
+elif [ "$AGENT" = opencode ]; then
+  PLUGIN_UNINSTALL="    rm ~/.config/opencode/plugins/orbit.ts ~/.config/opencode/skills/orbit/SKILL.md   # Orbit plugin (lives in OpenCode)"
 elif [ "$AGENT" = qodercli ]; then
   PLUGIN_UNINSTALL="    qodercli plugins uninstall orbit@orbcli -s user   # Orbit plugin (lives in Qoder)"
 else
@@ -390,5 +413,7 @@ $AGENT_SECTION
 
 ── When you're done exploring ────────────────────────────────────────
     rm -rf $TRY_DIR${ORBIT_LOCAL:+          # repos, workspace, and the orbit runtime}
-$PLUGIN_UNINSTALL
+${PLUGIN_UNINSTALL:+$PLUGIN_UNINSTALL
+    # or nuke everything at once:}
+    #   ./install.sh --uninstall --all
 GUIDE
