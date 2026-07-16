@@ -30,6 +30,7 @@ TARGET_HELPER="$TARGET_BIN_DIR/orbit"
 PATH_EXPORT_LINE='export PATH="$HOME/.local/bin:$PATH"'
 
 FORCE=0
+REPLACE_MP=0
 UNINSTALL=0
 UNINSTALL_CLI=0
 UNINSTALL_ALL=0
@@ -73,6 +74,7 @@ classify_source() {
 usage() {
   cat <<'EOF'
 usage: ./install.sh [--claude] [--codex] [--opencode] [--qoder|--qodercli] [--zsh] [--bash] [--force]
+                    [--replace-marketplace]
                     [--uninstall [--cli] [--all] [--claude] [--codex] [--opencode] [--qoder] [--zsh] [--bash]]
 
 Always installs the global `orbit` command to ~/.local/bin and ensures it is on
@@ -90,6 +92,14 @@ options:
               agent supports it, otherwise remove and reinstall. Without --force,
               install only adds/refreshes the marketplace and installs — it never
               removes an existing plugin.
+  --replace-marketplace
+              re-point the orbit marketplace at the current source before installing.
+              Removes the plugin and the existing 'orbcli' marketplace, then re-adds
+              the marketplace from $SOURCE (honoring $ORBIT_REF) and reinstalls the
+              plugin. Use this to switch an install from a local path to a git repo
+              (or vice versa) — plain --force only refreshes content within the
+              already-configured source and does not change where it points.
+              Implies the remove-then-reinstall behavior of --force.
   --help      show this message
 
 uninstall:
@@ -105,6 +115,7 @@ environment:
 examples:
   ./install.sh
   ./install.sh --claude --zsh
+  ORBIT_SOURCE=orbcli/orbit ./install.sh --codex --replace-marketplace
   ./install.sh --uninstall --claude --codex
   ./install.sh --uninstall --all
   curl -sL REMOTE/install.sh | bash
@@ -127,6 +138,7 @@ while [ "$#" -gt 0 ]; do
     --zsh)      INSTALL_ZSH=1; shift ;;
     --bash)     INSTALL_BASH=1; shift ;;
     --force)    FORCE=1; shift ;;
+    --replace-marketplace) REPLACE_MP=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     --cli)      UNINSTALL_CLI=1; shift ;;
     --all)      UNINSTALL_ALL=1; shift ;;
@@ -195,13 +207,22 @@ install_claude_plugin() {
   command -v claude >/dev/null 2>&1 || fail "claude CLI not found; install Claude Code first"
   [ "$SOURCE_TYPE" != "path" ] || [ -f "$SOURCE/.claude-plugin/marketplace.json" ] \
     || fail "marketplace manifest not found: $SOURCE/.claude-plugin/marketplace.json"
+  # --replace-marketplace: tear down plugin + existing marketplace, then re-point
+  # 'orbcli' at $SOURCE. This is the only way to switch the source (e.g. local
+  # path -> git repo): a plain `marketplace add` collides with the existing name
+  # and falls back to `update`, which refreshes the OLD source, never re-points it.
+  if [ "$REPLACE_MP" -eq 1 ]; then
+    claude plugin uninstall claude-orbit -y >/dev/null 2>&1 || true
+    claude plugin marketplace remove orbcli >/dev/null 2>&1 || true
+  fi
   # Point the marketplace at $SOURCE (fresh add) or refresh an existing snapshot.
   claude plugin marketplace add "$SOURCE" >/dev/null 2>&1 \
     || claude plugin marketplace update orbcli >/dev/null 2>&1 || true
   # Claude has no `plugin update`, so --force is a remove-then-install; a refreshed
   # marketplace snapshot (above) is what actually carries new content. Plain install
   # never removes — it just (re)installs, which is a no-op if already present.
-  if [ "$FORCE" -eq 1 ]; then
+  # --replace-marketplace implies the same remove-then-install (source changed).
+  if [ "$FORCE" -eq 1 ] || [ "$REPLACE_MP" -eq 1 ]; then
     claude plugin uninstall claude-orbit -y >/dev/null 2>&1 || true
   fi
   claude plugin install "claude-orbit@orbcli"
@@ -212,14 +233,21 @@ install_qoder_plugin() {
   command -v qodercli >/dev/null 2>&1 || fail "qodercli not found; install the Qoder CLI first"
   [ "$SOURCE_TYPE" != "path" ] || [ -f "$SOURCE/.qoder-plugin/plugin.json" ] \
     || fail "plugin manifest not found: $SOURCE/.qoder-plugin/plugin.json"
+  # --replace-marketplace: tear down plugin + existing marketplace before re-adding
+  # from $SOURCE (see install_claude_plugin for why plain add can't switch source).
+  if [ "$REPLACE_MP" -eq 1 ]; then
+    qodercli plugins uninstall "qoder-orbit@orbcli" -s user >/dev/null 2>&1 || true
+    qodercli plugins marketplace remove orbcli >/dev/null 2>&1 || true
+  fi
   # Point the marketplace at $SOURCE (fresh add) or refresh an existing snapshot.
   qodercli plugins marketplace add "$SOURCE" >/dev/null 2>&1 \
     || qodercli plugins marketplace update orbcli >/dev/null 2>&1 || true
-  if [ "$FORCE" -eq 1 ]; then
+  if [ "$FORCE" -eq 1 ] || [ "$REPLACE_MP" -eq 1 ]; then
     # qodercli has a real `plugins update`, so --force updates in place first;
     # only fall back to remove-then-install if the update path does not apply
-    # (e.g. the plugin is not installed yet).
-    if qodercli plugins update "qoder-orbit@orbcli" -s user >/dev/null 2>&1; then
+    # (e.g. the plugin is not installed yet). For --replace-marketplace we skip
+    # the in-place update (the source changed) and force a clean reinstall.
+    if [ "$REPLACE_MP" -eq 0 ] && qodercli plugins update "qoder-orbit@orbcli" -s user >/dev/null 2>&1; then
       printf '%s\n' "Updated Orbit plugin via qodercli"
       return 0
     fi
@@ -239,13 +267,29 @@ install_codex_plugin() {
   # collide.
   [ "$SOURCE_TYPE" != "path" ] || [ -f "$SOURCE/.agents/plugins/marketplace.json" ] \
     || fail "marketplace manifest not found: $SOURCE/.agents/plugins/marketplace.json"
-  # Point the marketplace at $SOURCE (fresh add) or refresh an existing snapshot.
-  codex plugin marketplace add "$SOURCE" >/dev/null 2>&1 \
-    || codex plugin marketplace upgrade orbcli >/dev/null 2>&1 || true
+  # --replace-marketplace: tear down plugin + existing marketplace, then re-add
+  # 'orbcli' from $SOURCE. Needed to switch source (e.g. local path -> git repo):
+  # a plain `marketplace add` collides on the existing name and falls back to
+  # `upgrade`, which refreshes the OLD source rather than re-pointing it. For a
+  # git/repo source the re-add honors $ORBIT_REF via --ref (verified codex flag).
+  if [ "$REPLACE_MP" -eq 1 ]; then
+    codex plugin remove "codex-orbit@orbcli" >/dev/null 2>&1 || true
+    codex plugin marketplace remove orbcli >/dev/null 2>&1 || true
+    if [ "$SOURCE_TYPE" = "path" ]; then
+      codex plugin marketplace add "$SOURCE" >/dev/null 2>&1 || true
+    else
+      codex plugin marketplace add "$SOURCE" --ref "$ORBIT_REF" >/dev/null 2>&1 || true
+    fi
+  else
+    # Point the marketplace at $SOURCE (fresh add) or refresh an existing snapshot.
+    codex plugin marketplace add "$SOURCE" >/dev/null 2>&1 \
+      || codex plugin marketplace upgrade orbcli >/dev/null 2>&1 || true
+  fi
   # Codex has no `plugin update`, so --force is a remove-then-install; the refreshed
   # marketplace snapshot (above) is what carries new content. Plain install never
   # removes — `plugin add` is a no-op if already present.
-  if [ "$FORCE" -eq 1 ]; then
+  # --replace-marketplace implies the same clean reinstall (source changed).
+  if [ "$FORCE" -eq 1 ] || [ "$REPLACE_MP" -eq 1 ]; then
     codex plugin remove "codex-orbit@orbcli" >/dev/null 2>&1 || true
   fi
   codex plugin add "codex-orbit@orbcli"
@@ -285,11 +329,13 @@ install_opencode_plugin() {
   # install vs --force policy of the CLI agents:
   #   plain install : skip if already present (never delete), else copy in.
   #   --force        : remove the old file, then copy the current one (reinstall).
-  if [ -f "$plugin_dir/orbit.ts" ] && [ "$FORCE" -eq 0 ]; then
+  # OpenCode has no marketplace, so --replace-marketplace has nothing to re-point;
+  # treat it like --force (reinstall the copied file) rather than erroring out.
+  if [ -f "$plugin_dir/orbit.ts" ] && [ "$FORCE" -eq 0 ] && [ "$REPLACE_MP" -eq 0 ]; then
     printf '%s\n' "OpenCode plugin already installed at $plugin_dir/orbit.ts — skipping (use --force to reinstall)"
     return 0
   fi
-  if [ "$FORCE" -eq 1 ]; then
+  if [ "$FORCE" -eq 1 ] || [ "$REPLACE_MP" -eq 1 ]; then
     rm -f "$plugin_dir/orbit.ts"
   fi
 
@@ -440,6 +486,14 @@ uninstall_completion_bash() {
 }
 
 # --- Run ---
+# --replace-marketplace only makes sense while installing an agent plugin.
+if [ "$REPLACE_MP" -eq 1 ]; then
+  [ "$UNINSTALL" -eq 0 ] || fail "--replace-marketplace cannot be combined with --uninstall"
+  if [ "$INSTALL_CLAUDE" -eq 0 ] && [ "$INSTALL_CODEX" -eq 0 ] \
+    && [ "$INSTALL_OPENCODE" -eq 0 ] && [ "$INSTALL_QODER" -eq 0 ]; then
+    fail "--replace-marketplace requires an agent target: --claude, --codex, --opencode, or --qoder"
+  fi
+fi
 if [ "$UNINSTALL" -eq 1 ]; then
   # --all expands to every target
   if [ "$UNINSTALL_ALL" -eq 1 ]; then

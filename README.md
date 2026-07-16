@@ -93,7 +93,7 @@ curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh \
   | bash -s -- --claude --zsh
 ```
 
-`install.sh` installs the runtime to `~/.local/bin` and puts it on your PATH. Add `--force` to reinstall an existing plugin. To uninstall: `./install.sh --uninstall --all` (or pick targets: `--uninstall --claude --codex`, `--uninstall --cli` for just the runtime, etc.).
+`install.sh` installs the runtime to `~/.local/bin` and puts it on your PATH. Add `--force` to reinstall an existing plugin (refreshes content from the already-configured source). Add `--replace-marketplace` to switch where a plugin's marketplace points — e.g. moving an install from a local checkout to the public git repo (`ORBIT_SOURCE=orbcli/orbit ./install.sh --codex --replace-marketplace`); plain `--force` cannot re-point the source. To uninstall: `./install.sh --uninstall --all` (or pick targets: `--uninstall --claude --codex`, `--uninstall --cli` for just the runtime, etc.).
 
 Codex plugin hooks require a one-time trust review (`/hooks` in the CLI) before they run.
 

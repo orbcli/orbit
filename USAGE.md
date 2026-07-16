@@ -39,7 +39,7 @@ The following assumes `orbit` as the command name. For global installation:
 ./install.sh --zsh
 ```
 
-If you use bash, change to `--bash`. To overwrite an existing installation, add `--force`.
+If you use bash, change to `--bash`. To overwrite an existing installation, add `--force`. To switch where a plugin's marketplace points (for example from a local checkout to the public git repo), add `--replace-marketplace` — e.g. `ORBIT_SOURCE=orbcli/orbit ./install.sh --codex --replace-marketplace`. Plain `--force` only refreshes content from the already-configured source; it does not change where the source points.
 
 ## 3. Adding Repos to the Pool
 
