@@ -460,30 +460,38 @@ orbit_repo_upstream_behind() {
 }
 
 # Per-repo status for a workspace, one line per worktree repo (unfiltered):
-#   <name>|<jot_count>|<jot_level>|<behind>|<memo_state>|<branch>
+#   <name>|<jot_count>|<jot_level>|<behind>|<memo_state>|<branch>|<is_scoped>
 # jot_level: building|overflow (empty when count <= bufferSize/2);
 # behind: commits behind the worktree branch's @{upstream}, "untracked" when
 # no upstream (raw-mode), or empty when tracked and up-to-date;
 # memo_state: ok|thin|over (see orbit_memo_state);
-# branch: the worktree's current branch name (for the untracked hint).
+# branch: the worktree's current branch name (for the untracked hint);
+# is_scoped: 1 when branch name starts with ws/<workspace>/ (scoped mode),
+# 0 otherwise (raw mode — recommend orbit switch -c to convert).
 # Shared by `orbit context` (cruise/reignite blocks) and `orbit done`.
 orbit_collect_repo_status() {
   local root="$1" ws_dir="$2"
   local orbit_file="$ws_dir/.orbit"
   local buf
   buf=$(orbit_jot_buffer_size "$root")
-  local d name branch count level behind mstate
+  local ws_name
+  ws_name=$(basename "$ws_dir")
+  local d name branch count level behind mstate is_scoped
   for d in "$ws_dir"/*/; do
     [ -d "$d" ] || continue
     [ -d "$d/.git" ] || [ -f "$d/.git" ] || continue
     name=$(basename "$d")
     branch=$(git -C "$d" branch --show-current 2>/dev/null || echo "detached")
+    case "$branch" in
+      ws/"$ws_name"/*) is_scoped=1 ;;
+      *) is_scoped=0 ;;
+    esac
     count=$(git config --file "$orbit_file" --get-all "jot.$name" 2>/dev/null | grep -c . || true)
     [ -n "$count" ] || count=0
     level=$(orbit_jot_level "$count" "$buf")
     behind=$(orbit_repo_upstream_behind "$d")
     mstate=$(orbit_memo_state "$root/.repos/.$name.md" "$root")
-    printf '%s|%s|%s|%s|%s|%s\n' "$name" "$count" "$level" "$behind" "$mstate" "$branch"
+    printf '%s|%s|%s|%s|%s|%s|%s\n' "$name" "$count" "$level" "$behind" "$mstate" "$branch" "$is_scoped"
   done
 }
 
@@ -697,6 +705,18 @@ orbit_new() {
     orbit_fail "invalid workspace name: $name"
   fi
 
+  # Workspace name must be valid for scoped-mode branch names (ws/<workspace>/<name>).
+  # git branch ref rules: no space, ~, ^, :, ?, *, [, \; no leading/trailing dot or slash;
+  # no consecutive dots or slashes; no control chars; length limit (leave room for
+  # ws/<workspace>/ prefix + branch name, keep total < 255).
+  if [ "${#name}" -gt 50 ]; then
+    orbit_fail "workspace name too long (${#name} chars, max 50): $name"
+  fi
+  case "$name" in
+    *[[:space:]~^:?*[\\]]* | .* | */ | *..* | *//* )
+      orbit_fail "invalid workspace name (git branch ref rules): $name" ;;
+  esac
+
   local ws_dir="$root/$name"
   [ ! -e "$ws_dir" ] || orbit_fail "workspace already exists: $name"
 
@@ -896,9 +916,8 @@ orbit_switch() {
   local_branch=$(orbit_tracking_branch "$ws" "$branch_name") || return 1
 
   if [ "$create_mode" -eq 1 ]; then
-    if orbit_remote_branch_exists "$repo_dir" "$branch_name"; then
-      orbit_fail "branch already exists on remote: origin/$branch_name (use 'orbit switch $branch_name' without -c)"
-    fi
+    # No pre-creation remote check — git switch -c doesn't check remote either.
+    # Push conflict is handled by git when it happens.
     local current
     current=$(git -C "$wt_path" branch --show-current)
     if [ "$current" = "$local_branch" ]; then
@@ -911,6 +930,21 @@ orbit_switch() {
     # refs/remotes/origin/<branch> (status/@{upstream} work under single-branch pool).
     orbit_add_fetch_refspec "$repo_dir" "$branch_name"
     printf 'created %s (upstream: origin/%s)\n' "$local_branch" "$branch_name"
+
+    # Post-creation conflict check: remote already has <name> with different
+    # commits → push will conflict. Exempt when transferring a raw-mode branch
+    # (current branch name = <name> and no upstream — agent already knows).
+    local remote_head local_head current_branch current_upstream
+    remote_head=$(git ls-remote --heads origin "$branch_name" 2>/dev/null | awk '{print $1}')
+    if [ -n "$remote_head" ]; then
+      local_head=$(git -C "$wt_path" rev-parse "refs/heads/$local_branch" 2>/dev/null || true)
+      current_branch=$(git -C "$wt_path" branch --show-current 2>/dev/null || true)
+      current_upstream=$(git -C "$wt_path" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+      if [ -n "$local_head" ] && [ "$remote_head" != "$local_head" ] && \
+         { [ "$current_branch" != "$branch_name" ] || [ -n "$current_upstream" ]; }; then
+        printf 'orbit: note: remote already has %s with different commits — push will conflict\n' "$branch_name" >&2
+      fi
+    fi
   else
     if git -C "$repo_dir" rev-parse --verify --quiet "refs/heads/$local_branch" >/dev/null 2>&1; then
       if orbit_branch_is_checked_out_elsewhere "$repo_dir" "$local_branch"; then
@@ -1076,13 +1110,17 @@ orbit_status() {
   status_val=$(git config --file "$ws_dir/.orbit" --get workspace.status 2>/dev/null || true)
   [ -n "$status_val" ] || status_val="active"
 
-  local d name branch upstream ahead behind dirty
+  local d name branch upstream ahead behind dirty is_scoped
   local repo_entries=()
   for d in "$ws_dir"/*/; do
     [ -d "$d" ] || continue
     [ -d "$d/.git" ] || [ -f "$d/.git" ] || continue
     name=$(basename "$d")
     branch=$(git -C "$d" branch --show-current 2>/dev/null || echo "detached")
+    case "$branch" in
+      ws/"$ws"/*) is_scoped=1 ;;
+      *) is_scoped=0 ;;
+    esac
     upstream=$(git -C "$d" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || printf '-')
     if [ "$upstream" = '-' ]; then
       ahead='0'; behind='0'
@@ -1091,7 +1129,7 @@ orbit_status() {
       behind=$(git -C "$d" rev-list --count "HEAD..${upstream}" 2>/dev/null || echo '0')
     fi
     dirty=$(git -C "$d" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-    repo_entries+=("$name|$branch|$ahead|$behind|$dirty")
+    repo_entries+=("$name|$branch|$ahead|$behind|$dirty|$is_scoped")
   done
 
   if [ "$json_mode" -eq 1 ]; then
@@ -1102,7 +1140,7 @@ orbit_status() {
     out+='"worktrees":['
     local first=1
     for entry in "${repo_entries[@]+${repo_entries[@]}}"; do
-      IFS='|' read -r name branch ahead behind dirty <<< "$entry"
+      IFS='|' read -r name branch ahead behind dirty is_scoped <<< "$entry"
       local dirty_bool="false"
       [ "$dirty" = "0" ] || dirty_bool="true"
       [ "$first" -eq 1 ] || out+=','
@@ -1112,7 +1150,8 @@ orbit_status() {
       out+="$(orbit_json_kv branch "$branch"),"
       out+="$(orbit_json_kv_raw ahead "$ahead"),"
       out+="$(orbit_json_kv_raw behind "$behind"),"
-      out+="$(orbit_json_kv_raw dirty "$dirty_bool")"
+      out+="$(orbit_json_kv_raw dirty "$dirty_bool"),"
+      out+="$(orbit_json_kv_raw scoped "$is_scoped")"
       out+='}'
     done
     out+=']}'
@@ -1130,10 +1169,12 @@ orbit_status() {
   printf '\n'
 
   for entry in "${repo_entries[@]+${repo_entries[@]}}"; do
-    IFS='|' read -r name branch ahead behind dirty <<< "$entry"
-    local upstream_display
+    IFS='|' read -r name branch ahead behind dirty is_scoped <<< "$entry"
+    local upstream_display raw_mark
     upstream_display=$(git -C "$ws_dir/$name" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || printf '-')
-    printf '  %-16s %-28s upstream:%-20s +%-3s -%-3s dirty:%s\n' "$name" "$branch" "$upstream_display" "$ahead" "$behind" "$dirty"
+    raw_mark=""
+    [ "$is_scoped" = "0" ] && raw_mark=" raw"
+    printf '  %-16s %-28s upstream:%-20s +%-3s -%-3s dirty:%s%s\n' "$name" "$branch" "$upstream_display" "$ahead" "$behind" "$dirty" "$raw_mark"
   done
 }
 
@@ -1351,8 +1392,8 @@ orbit_done() {
   # (explore + write), over-budget card (curate once). bufferSize does not apply
   # here: any leftover jot counts, done is the final backstop.
   local budget_hint=0 any_warn=0
-  local rs_name rs_count rs_mstate rs_msg
-  while IFS='|' read -r rs_name rs_count _ _ rs_mstate _; do
+  local rs_name rs_count rs_mstate rs_msg rs_branch rs_scoped
+  while IFS='|' read -r rs_name rs_count _ _ rs_mstate rs_branch rs_scoped; do
     [ -n "$rs_name" ] || continue
     rs_msg=""
     if [ "$rs_count" -gt 0 ]; then
@@ -1365,6 +1406,10 @@ orbit_done() {
       [ -n "$rs_msg" ] && rs_msg="$rs_msg, "
       rs_msg="${rs_msg}memo over budget (curate once)"
       budget_hint=1
+    fi
+    if [ "$rs_scoped" = "0" ]; then
+      [ -n "$rs_msg" ] && rs_msg="$rs_msg, "
+      rs_msg="${rs_msg}raw mode branch (orbit switch -c $rs_branch to convert to scoped)"
     fi
     if [ -n "$rs_msg" ]; then
       printf 'orbit: %s: %s\n' "$rs_name" "$rs_msg" >&2
@@ -2260,7 +2305,7 @@ orbit_context() {
   # Cheap durables (path/goal/state — compaction may have wiped them) plus
   # conditional per-repo status (only repos with something pending). No memos,
   # no roster, no fetch — heavy durables live in --startup.
-  local n c l b m
+  local n c l b m br sc
   if [ "$json_mode" -eq 1 ]; then
     local out='{' first=1
     out+="$(orbit_json_kv workspace "$ws"),"
@@ -2268,9 +2313,9 @@ orbit_context() {
     out+="$(orbit_json_kv goal "$goal"),"
     out+="$(orbit_json_kv state "$state_val"),"
     out+='"mode":"cruise","worktrees":['
-    while IFS='|' read -r n c l b m _; do
+    while IFS='|' read -r n c l b m br sc; do
       [ -n "$n" ] || continue
-      [ "$c" -gt 0 ] || [ -n "$b" ] || [ "$m" != "ok" ] || continue
+      [ "$c" -gt 0 ] || [ -n "$b" ] || [ "$m" != "ok" ] || [ "$sc" = "0" ] || continue
       [ "$first" -eq 1 ] || out+=','
       first=0
       out+='{'
@@ -2278,7 +2323,9 @@ orbit_context() {
       out+="$(orbit_json_kv_raw jots "$c"),"
       out+="$(orbit_json_kv jotLevel "$l"),"
       out+="$(orbit_json_kv behind "$b"),"
-      out+="$(orbit_json_kv memoState "$m")"
+      out+="$(orbit_json_kv memoState "$m"),"
+      out+="$(orbit_json_kv branch "$br"),"
+      out+="$(orbit_json_kv_raw scoped "$sc")"
       out+='}'
     done < <(orbit_collect_repo_status "$root" "$ws_dir")
     out+=']}'
@@ -2294,9 +2341,9 @@ orbit_context() {
   fi
 
   local first_line=1 parts
-  while IFS='|' read -r n c l b m br; do
+  while IFS='|' read -r n c l b m br sc; do
     [ -n "$n" ] || continue
-    [ "$c" -gt 0 ] || [ -n "$b" ] || [ "$m" != "ok" ] || continue
+    [ "$c" -gt 0 ] || [ -n "$b" ] || [ "$m" != "ok" ] || [ "$sc" = "0" ] || continue
     [ "$first_line" -eq 1 ] && { printf '\n'; first_line=0; }
     parts=""
     if [ "$c" -gt 0 ]; then
@@ -2312,6 +2359,10 @@ orbit_context() {
     if [ "$m" != "ok" ]; then
       [ -n "$parts" ] && parts="$parts | "
       if [ "$m" = "over" ]; then parts="${parts}memo over budget"; else parts="${parts}memo thin"; fi
+    fi
+    if [ "$sc" = "0" ]; then
+      [ -n "$parts" ] && parts="$parts | "
+      parts="${parts}raw mode branch (orbit switch -c $br to convert to scoped)"
     fi
     printf 'repo %s: %s\n' "$n" "$parts"
   done < <(orbit_collect_repo_status "$root" "$ws_dir")
@@ -2489,6 +2540,11 @@ orbit_context_reignite() {
     level=$(orbit_jot_level "$count" "$buf")
     behind=$(orbit_repo_upstream_behind "$d")
     mstate=$(orbit_memo_state "$md_file" "$root")
+    local is_scoped
+    case "$branch" in
+      ws/"$ws"/*) is_scoped=1 ;;
+      *) is_scoped=0 ;;
+    esac
 
     printf -- '--- %s (branch: %s) ---\n' "$name" "$branch"
     staleness=""
@@ -2512,6 +2568,10 @@ orbit_context_reignite() {
     if [ "$mstate" != "ok" ]; then
       [ -n "$parts" ] && parts="$parts | "
       if [ "$mstate" = "over" ]; then parts="${parts}memo over budget"; else parts="${parts}memo thin"; fi
+    fi
+    if [ "$is_scoped" = "0" ]; then
+      [ -n "$parts" ] && parts="$parts | "
+      parts="${parts}raw mode branch (orbit switch -c $branch to convert to scoped)"
     fi
     [ -n "$parts" ] && printf 'status: %s\n' "$parts"
     if [ "$count" -gt 0 ]; then
