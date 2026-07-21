@@ -58,9 +58,12 @@ Calls a lightweight agent based on goal text to generate a semantic directory na
 
 `orbit done` writes to the workspace's `.orbit` file (format described in [spec-metadata](./spec-metadata.md) "Workspace Metadata" section).
 
-Pre-completion warnings (stderr, non-blocking — `done` still succeeds): before marking complete, `orbit done` emits two reminders so knowledge is not lost on the subsequent `prune`:
-- **Jot entries remain** — if any repo still has jot entries (of any kind, including `[seed]` placeholders), it lists them: `orbit: jot entries remain for <repos>: run jot --pop, read info, then merge into the memo before done`.
-- **No real memo (gap gate)** — for repos that are still gaps (thin memo AND no non-`[seed]` jot; the same set as `orbit context gaps`), it warns: `orbit: no memo yet for <repos>: explore and write a memo before done or the next session inherits nothing`. This is the CLI backstop for the memo-guarantee model when the `Stop`/`SessionStart` hooks are absent.
+Pre-completion warnings (stderr, non-blocking — `done` still succeeds): before marking complete, `orbit done` emits per-repo reminders so knowledge is not lost on the subsequent `prune`. Each repo with remaining work gets one merged line, combining any of the conditions that apply to it (e.g. `orbit: backend: 3 jots remain (pop + merge), memo over budget (curate once)`):
+- **Jot entries remain** — any un-popped jots, however few: `N jots remain (pop + merge)`. When jots are present the `memo thin` branch is skipped (the queue implies the card will be reassessed at aggregation time, not now).
+- **Thin memo with no capture** — the memo is thin (missing, or fewer than `memo.minLines` non-blank lines, default 4) and the repo has no leftover jots: `memo thin (explore + write)`. This is the CLI backstop for the memo-surfacing model when hooks are absent.
+- **Over-budget card** — the card exceeds `memo.maxLines + memo.minLines`: `memo over budget (curate once)` (best-effort, never blocks; may combine with the `jots remain` branch above).
+
+When jots remain or a card is over budget, it also prints the `card budget is <min>~<max> lines` reminder. When any per-repo warning fired, it prints one closing line — `orbit: only memo survives done` — because session working memory and the jot queue do not survive done; the memo is the only durable artifact.
 
 Idempotent semantics: executing `orbit done` again on an already `status=done` workspace overwrites `done-at`/`done-date` with the current time; `--pr` appends to the existing PR list (no deduplication, allowing multiple additions). This supports scenarios where multiple repos submit PRs in batches.
 

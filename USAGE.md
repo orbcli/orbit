@@ -303,9 +303,9 @@ orbit jot backend "role: owns the public /auth API"   # Explicit repo name
 orbit jot backend --pop                          # Pop all entries (outputs + clears)
 ```
 
-Jot is a lightweight queue — push discoveries as you find them, pop and merge into memo at natural breakpoints. When entries exceed 10, a warning suggests aggregation.
+Jot is a lightweight queue — push discoveries as you find them, pop and merge into memo at natural breakpoints. Per repo, when entries pass half of `jot.bufferSize` (default 4) a `building` note counts them; past the buffer an `overflow` warning suggests aggregation.
 
-When `orbit add` pulls in a repo whose memo is thin or missing, it auto-seeds one `[seed] ...` jot entry (once per repo) as a durable, compaction-proof reminder to explore and write a memo before `done`. A `[seed]` entry is a system instruction, not a discovery — act on it, but drop it at aggregation (never merge it into the memo). It surfaces on `--pop` like any other entry, and keeps the repo flagged by `orbit context gaps` until you add a real jot or write a memo.
+When `orbit add` pulls in a repo whose memo is thin or missing, it prints a one-shot stderr naming the `explore.paths` scope — explore and write a memo before `done`. The same state resurfaces automatically via per-repo status (bare `orbit context`, the session-start block) and at `orbit done`.
 
 ## 10. Completion and Cleanup
 
@@ -319,7 +319,7 @@ orbit done --pr https://github.com/org/frontend/pull/43     # Can append multipl
 
 Running `orbit done --pr <url>` again on an already-done workspace appends the PR (`done-at` updates to current time).
 
-`orbit done` prints non-blocking stderr warnings before completing: one if any repo still has jot entries to aggregate, and one listing repos that still lack a real memo (the `orbit context gaps` set). It still marks the workspace done — the warnings just flag knowledge that would be lost on the next `prune`.
+`orbit done` prints non-blocking per-repo stderr warnings before completing: leftover jots (`pop + merge`), a thin memo with no capture (`explore + write`), or an over-budget card (`curate once`). It still marks the workspace done — the warnings just flag knowledge that would be lost on the next `prune`.
 
 Reclaim completed workspaces:
 
@@ -438,9 +438,8 @@ orbit status --json           # Workspace status
 orbit repos --json            # Repos list (includes memoBehind field)
 orbit info backend --json     # Repo details
 orbit done --json             # Mark done and output JSON
-orbit context --json          # Workspace context (complete)
-orbit context path            # Single key query (workspace/path/goal/status/gaps)
-orbit context gaps --json     # Repos with no real memo, as a JSON array
+orbit context --json          # Cruise block (per-repo status, no memos)
+orbit context path            # Single key query (workspace/path/goal/state)
 orbit jot backend --pop --json  # Pop jot entries as JSON
 ```
 
@@ -448,19 +447,20 @@ orbit jot backend --pop --json  # Pop jot entries as JSON
 
 ## 14. Workspace Context
 
-Get the complete context of the current workspace in one call (goal, status, all repo branches and memos):
+`orbit context` is the model-facing context command — its stdout is a readable markdown block:
 
 ```bash
-orbit context                 # Full context
-orbit context --json          # Structured JSON
+orbit context --startup       # Session-start block: cold start → pool roster; populated → memos + per-repo status
+orbit context                 # Cruise block: durables + conditional per-repo status (no memos)
 orbit context path            # Single key: workspace directory absolute path
 orbit context workspace       # Single key: workspace name
 orbit context goal            # Single key: workspace goal
-orbit context status          # Single key: active / done
-orbit context gaps            # Single key: repos with no real memo (thin + no non-[seed] jot); supports --json
+orbit context state           # Single key: active / done
 ```
 
-Full mode outputs workspace summary and each repo's full memo text; `--json` outputs structured data; single-key queries output single-line values for scripts and agents to quickly determine their position.
+`--startup` is what the session hooks inject (agent plugins wrap it in `<orbit-context>` tags); it doubles as workspace detection — it fails fast outside a workspace. The bare form is the **cruise block** — the in-session recovery view for compaction/resume: cheap durables plus one status line per repo that has pending jots, is behind upstream, or has a thin/over-budget memo. Full memos are pulled on demand via `orbit info <repo>`.
+
+**Workspace scope best practice**: keep workspaces task-scoped (small — on the order of 1~6 worktrees). The startup block injects every worktree's memo, which stays cheap only at that scale. A workspace holding dozens of repos is a scope signal, not something to cap with truncation: split it (create a new task-scoped workspace and `orbit prune` the old one).
 
 Must be executed within a workspace (workspace inferred from CWD).
 
@@ -531,7 +531,7 @@ orbit prune [workspace] [--older <dur>] [--verify] [--dry-run] [--force]
 # Status and context
 orbit status [workspace]
 orbit goal ["text" / --clear]
-orbit context [<key>] [--prime] [--json]  # key: workspace, path, goal, status, gaps; --prime = startup preflight
+orbit context [<key>] [--startup|--prime|--reignite] [--json]  # key: workspace, path, goal, state; bare = cruise block; --startup = session-start block
 
 # Configuration
 orbit config [<key> [<value> | --unset]]

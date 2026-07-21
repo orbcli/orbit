@@ -59,28 +59,6 @@ ORBIT_GOAL_CLEAR_FAREWELLS=(
   "Signal lost. Standing by."
 )
 
-# context: empty workspace with goal (agent takes over discovery)
-# shellcheck disable=SC2034
-ORBIT_CONTEXT_DISCOVER_FAREWELLS=(
-  "The navigator hums to life."
-  "Engaging long-range scanners."
-  "Probes away."
-  "Autopilot plotting course."
-  "A quiet whir — discovery begins."
-  "Copilot at the helm."
-)
-
-# context: empty workspace without goal (human exploring)
-# shellcheck disable=SC2034
-ORBIT_CONTEXT_EXPLORE_FAREWELLS=(
-  "Scanning the void."
-  "Awaiting coordinates."
-  "Uncharted territory."
-  "The pool awaits."
-  "Drifting. Listening."
-  "Open sky ahead."
-)
-
 # done: farewells (after marking done)
 # shellcheck disable=SC2034
 ORBIT_DONE_FAREWELLS=(
@@ -121,7 +99,7 @@ Usage:
   $ORBIT_CMD jot [<repo>] ["text"] [--pop] [--json]
   $ORBIT_CMD prune [workspace] [--older <dur>] [--dry-run] [--force] [--verify]
   $ORBIT_CMD config [<key> [<value> | --unset]]
-  $ORBIT_CMD context [<key>] [--prime] [--json]
+  $ORBIT_CMD context [<key>] [--startup|--prime|--reignite] [--json]
   $ORBIT_CMD doctor
   $ORBIT_CMD completion <zsh|bash>
   $ORBIT_CMD version
@@ -130,8 +108,9 @@ Usage:
 
 Config keys (project-level, via '$ORBIT_CMD config <key> <value>'):
   agent.recommend       Launch command recommended after 'new' (e.g. 'claude "orbit start"')
-  memo.minLines         Memo card soft lower bound / gap floor (default: 4)
+  memo.minLines         Memo card soft lower bound / thin floor (default: 4)
   memo.maxLines         Memo card hard upper bound / compress + README-fallback cap (default: 16)
+  jot.bufferSize        Jot entries per repo before aggregation is nudged (default: memo.minLines = 4)
   explore.paths         Cold-start memo exploration scope: comma-delimited <path>:<depth>
                         list, e.g. '.:1,src:1,docs:2' (default: .:1)
 
@@ -382,7 +361,7 @@ orbit_memo_max() {
   printf '%s' "$v"
 }
 
-# Over-length seed threshold = maxLines + minLines. A card past the hard ceiling
+# Over-budget threshold = maxLines + minLines. A card past the hard ceiling
 # by more than the min-floor buffer is genuinely bloated; best-effort curation
 # that lands slightly over the ceiling stays under this line and is left alone.
 orbit_memo_overlong_threshold() {
@@ -431,33 +410,80 @@ orbit_explore_paths_human() {
   printf '%s' "$out"
 }
 
-# A jot entry is a system-generated seed placeholder (not a real discovery) when
-# it starts with the [seed] sentinel. Used to keep seeds from closing the gap.
-orbit_jot_seed_prefix() { printf '[seed] '; }
-orbit_repo_has_seed() {
-  local orbit_file="$1" repo_name="$2"
-  git config --file "$orbit_file" --get-all "jot.$repo_name" 2>/dev/null \
-    | grep -q '^\[seed\] '
-}
-orbit_repo_has_real_jot() {
-  local orbit_file="$1" repo_name="$2"
-  git config --file "$orbit_file" --get-all "jot.$repo_name" 2>/dev/null \
-    | grep -qv '^\[seed\] '
+# Jot aggregation buffer (project config on .repos/.orbit): a repo that has
+# accumulated enough jots to fill a minimum memo should aggregate them into the
+# card. Defaults to memo.minLines; follows it unless explicitly set.
+orbit_jot_buffer_size() {
+  local root="$1" v
+  v=$(git config --file "$root/.repos/.orbit" --get jot.bufferSize 2>/dev/null || true)
+  case "$v" in ''|*[!0-9]*) v=$(orbit_memo_min "$root") ;; esac
+  printf '%s' "$v"
 }
 
-# Print gap repos (one per line) for a workspace: worktrees whose memo is thin
-# AND which have no real (non-seed) jot capture yet. Shared by context + done.
-orbit_list_gaps() {
+# Jot warn level for a count given the buffer size: building | overflow | none.
+# Silent at or below bufferSize/2; building up to bufferSize; overflow past it.
+orbit_jot_level() {
+  local count="$1" buf="$2"
+  local half=$(( buf / 2 ))
+  if [ "$count" -gt "$buf" ]; then printf 'overflow'
+  elif [ "$count" -gt "$half" ]; then printf 'building'; fi
+}
+
+# Memo state for context/status purposes: thin | ok | over.
+# thin = missing or fewer than memo.minLines non-blank lines (no real card yet);
+# over = more than maxLines+minLines non-blank lines (over budget, curate once).
+orbit_memo_state() {
+  local md_file="$1" root="$2" n min over_t
+  [ -f "$md_file" ] || { printf 'thin'; return; }
+  n=$(grep -c '[^[:space:]]' "$md_file" 2>/dev/null || echo 0)
+  min=$(orbit_memo_min "$root")
+  over_t=$(orbit_memo_overlong_threshold "$root")
+  if [ "$n" -lt "$min" ]; then printf 'thin'
+  elif [ "$n" -gt "$over_t" ]; then printf 'over'
+  else printf 'ok'; fi
+}
+
+# Print the worktree's upstream tracking state: "untracked" when the branch has
+# no upstream (raw-mode branch pushed without `git fetch origin <branch>` —
+# cruise block surfaces this so the agent knows to fetch), a number when behind,
+# or empty when tracked and up-to-date. Uses local refs only — never fetches.
+orbit_repo_upstream_behind() {
+  local wt_dir="$1" upstream behind
+  upstream=$(git -C "$wt_dir" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+  if [ -z "$upstream" ]; then
+    printf 'untracked'
+    return 0
+  fi
+  behind=$(git -C "$wt_dir" rev-list --count "HEAD..${upstream}" 2>/dev/null || echo 0)
+  [ "$behind" = "0" ] && behind=""
+  printf '%s' "$behind"
+}
+
+# Per-repo status for a workspace, one line per worktree repo (unfiltered):
+#   <name>|<jot_count>|<jot_level>|<behind>|<memo_state>|<branch>
+# jot_level: building|overflow (empty when count <= bufferSize/2);
+# behind: commits behind the worktree branch's @{upstream}, "untracked" when
+# no upstream (raw-mode), or empty when tracked and up-to-date;
+# memo_state: ok|thin|over (see orbit_memo_state);
+# branch: the worktree's current branch name (for the untracked hint).
+# Shared by `orbit context` (cruise/reignite blocks) and `orbit done`.
+orbit_collect_repo_status() {
   local root="$1" ws_dir="$2"
   local orbit_file="$ws_dir/.orbit"
-  local d name
+  local buf
+  buf=$(orbit_jot_buffer_size "$root")
+  local d name branch count level behind mstate
   for d in "$ws_dir"/*/; do
     [ -d "$d" ] || continue
     [ -d "$d/.git" ] || [ -f "$d/.git" ] || continue
     name=$(basename "$d")
-    orbit_memo_is_thin "$root/.repos/.$name.md" "$root" || continue
-    orbit_repo_has_real_jot "$orbit_file" "$name" && continue
-    printf '%s\n' "$name"
+    branch=$(git -C "$d" branch --show-current 2>/dev/null || echo "detached")
+    count=$(git config --file "$orbit_file" --get-all "jot.$name" 2>/dev/null | grep -c . || true)
+    [ -n "$count" ] || count=0
+    level=$(orbit_jot_level "$count" "$buf")
+    behind=$(orbit_repo_upstream_behind "$d")
+    mstate=$(orbit_memo_state "$root/.repos/.$name.md" "$root")
+    printf '%s|%s|%s|%s|%s|%s\n' "$name" "$count" "$level" "$behind" "$mstate" "$branch"
   done
 }
 
@@ -797,18 +823,8 @@ orbit_add() {
 
   printf 'added %s → %s/%s (branch: %s, upstream: origin/%s)\n' "$repo_name" "$ws" "$repo_name" "$local_branch" "$default_branch"
 
-  # Seed a placeholder jot when the repo has no/low-quality memo. The seed is a
-  # durable tripwire: it survives compaction (lives in ws/.orbit, not context) and
-  # keeps the jot queue non-empty so wrap-up/done still force a memo even if the
-  # agent never jots. The [seed] sentinel keeps it from closing the gap (it is not
-  # a real capture) and marks it as an instruction to drop, not merge, into memo.
   local explore_paths
   explore_paths=$(orbit_explore_paths_human "$root")
-  if orbit_memo_is_thin "$root/.repos/.$repo_name.md" "$root" \
-     && ! orbit_repo_has_seed "$ws_dir/.orbit" "$repo_name"; then
-    git config --file "$ws_dir/.orbit" --add "jot.$repo_name" \
-      "$(orbit_jot_seed_prefix)no/low memo: explore $explore_paths and write a pull-decision card (roles + how to use) before done"
-  fi
 
   # Surface the memo so agents that skipped `orbit info` still get repo context.
   # A well-behaved agent that already ran `orbit info` passes -s to suppress this.
@@ -822,8 +838,14 @@ orbit_add() {
     if [ -f "$md_file" ]; then
       printf -- '--- memo: %s (pass -s to suppress) ---\n' "$repo_name" >&2
       cat "$md_file" >&2
+      # Thin card: nudge a proper exploration at this high-attention moment.
+      # This stderr is the explore.paths carrier (bounded cold-start scope).
+      if orbit_memo_is_thin "$md_file" "$root"; then
+        printf 'orbit: memo for %s is thin: explore %s and expand it into a pull-decision card (roles + how to use) with memo %s before done (pass -s to suppress)\n' \
+          "$repo_name" "$explore_paths" "$repo_name" >&2
+      fi
     else
-      printf 'orbit: no memo for %s: explore %s and write a pull-decision card (roles + how to use), then write it with memo %s (pass -s to suppress)\n' "$repo_name" "$explore_paths" "$repo_name" >&2
+      printf 'orbit: no memo for %s: explore %s and write a pull-decision card (roles + how to use), then write it with memo %s before done (pass -s to suppress)\n' "$repo_name" "$explore_paths" "$repo_name" >&2
     fi
   fi
 }
@@ -1194,20 +1216,6 @@ orbit_goal() {
     git config --file "$orbit_file" --unset workspace.done-at 2>/dev/null || true
     git config --file "$orbit_file" --unset workspace.done-date 2>/dev/null || true
     git config --file "$orbit_file" --remove-section pr 2>/dev/null || true
-    # Reset per-repo Stop-hook nudge throttles so a new work cycle re-nudges
-    # any repo still in the gap set, and over-length throttles so a still-bloated
-    # memo gets re-seeded for curation this cycle.
-    local nkey nsub
-    while IFS= read -r nkey; do
-      [ -n "$nkey" ] || continue
-      nsub="${nkey#nudge.}"; nsub="${nsub%.seen}"
-      git config --file "$orbit_file" --remove-section "nudge.$nsub" 2>/dev/null || true
-    done < <(git config --file "$orbit_file" --name-only --get-regexp '^nudge\.' 2>/dev/null || true)
-    while IFS= read -r nkey; do
-      [ -n "$nkey" ] || continue
-      nsub="${nkey#overlong.}"; nsub="${nsub%.seen}"
-      git config --file "$orbit_file" --remove-section "overlong.$nsub" 2>/dev/null || true
-    done < <(git config --file "$orbit_file" --name-only --get-regexp '^overlong\.' 2>/dev/null || true)
   fi
 
   git config --file "$orbit_file" workspace.goal "$goal"
@@ -1220,7 +1228,6 @@ orbit_goal() {
 
 orbit_jot() {
   local root ws repo_name="" text="" pop=false json_mode=0
-  local JOT_WARN_THRESHOLD=10
 
   root=$(orbit_require_root) || return 1
   ws=$(orbit_infer_workspace "$root") || return 1
@@ -1308,11 +1315,15 @@ orbit_jot() {
 
   git config --file "$orbit_file" --add "jot.$repo_name" "$text"
 
-  local count
-  count=$(git config --file "$orbit_file" --get-all "jot.$repo_name" 2>/dev/null | wc -l | tr -d ' ')
-  if [ "$count" -gt "$JOT_WARN_THRESHOLD" ]; then
-    printf 'orbit: %s has %s jot entries: run jot --pop, read info, then rewrite the memo card in %s~%s lines\n' \
-      "$repo_name" "$count" "$(orbit_memo_min "$root")" "$(orbit_memo_max "$root")" >&2
+  local count buf half
+  count=$(git config --file "$orbit_file" --get-all "jot.$repo_name" 2>/dev/null | grep -c . || true)
+  buf=$(orbit_jot_buffer_size "$root")
+  half=$(( buf / 2 ))
+  if [ "$count" -gt "$buf" ]; then
+    printf 'orbit: %s has %s jots (overflow): jot %s --pop, then merge into memo\n' \
+      "$repo_name" "$count" "$repo_name" >&2
+  elif [ "$count" -gt "$half" ]; then
+    printf 'orbit: %s has %s jots (building)\n' "$repo_name" "$count" >&2
   fi
 }
 
@@ -1335,27 +1346,41 @@ orbit_done() {
 
   orbit_ensure_workspace_orbit "$ws_dir"
 
-  # Warn if jot entries remain (knowledge would be lost after prune)
-  local jot_repos=()
-  while IFS= read -r key; do
-    [ -n "$key" ] || continue
-    local rname="${key#jot.}"
-    jot_repos+=("$rname")
-  done < <(git config --file "$orbit_file" --get-regexp '^jot\.' 2>/dev/null | awk '{print $1}' | sort -u)
-  if [ "${#jot_repos[@]}" -gt 0 ]; then
-    printf 'orbit: jot entries remain for %s: run jot --pop, read info, then merge into the memo before done\n' "${jot_repos[*]}" >&2
-  fi
+  # Per-repo wrap-up gate (advisory, never blocks done): for each repo surface
+  # what remains — residual jots (pop + merge), thin memo with no capture
+  # (explore + write), over-budget card (curate once). bufferSize does not apply
+  # here: any leftover jot counts, done is the final backstop.
+  local budget_hint=0 any_warn=0
+  local rs_name rs_count rs_mstate rs_msg
+  while IFS='|' read -r rs_name rs_count _ _ rs_mstate _; do
+    [ -n "$rs_name" ] || continue
+    rs_msg=""
+    if [ "$rs_count" -gt 0 ]; then
+      rs_msg="$rs_count jots remain (pop + merge)"
+      budget_hint=1
+    elif [ "$rs_mstate" = "thin" ]; then
+      rs_msg="memo thin (explore + write)"
+    fi
+    if [ "$rs_mstate" = "over" ]; then
+      [ -n "$rs_msg" ] && rs_msg="$rs_msg, "
+      rs_msg="${rs_msg}memo over budget (curate once)"
+      budget_hint=1
+    fi
+    if [ -n "$rs_msg" ]; then
+      printf 'orbit: %s: %s\n' "$rs_name" "$rs_msg" >&2
+      any_warn=1
+    fi
+  done < <(orbit_collect_repo_status "$root" "$ws_dir")
 
-  # Sharper gate: repos still lacking a real memo (thin + no real capture).
-  local gap_repos=()
-  while IFS= read -r g; do [ -n "$g" ] && gap_repos+=("$g"); done < <(orbit_list_gaps "$root" "$ws_dir")
-  if [ "${#gap_repos[@]}" -gt 0 ]; then
-    printf 'orbit: no memo yet for %s: explore and write a memo before done or the next session inherits nothing\n' "${gap_repos[*]}" >&2
-  fi
-
-  if [ "${#jot_repos[@]}" -gt 0 ] || [ "${#gap_repos[@]}" -gt 0 ]; then
+  if [ "$budget_hint" -eq 1 ]; then
     printf 'orbit: card budget is %s~%s lines: curate the memo to roles + how to use, don'\''t just append\n' \
       "$(orbit_memo_min "$root")" "$(orbit_memo_max "$root")" >&2
+  fi
+
+  # Any per-repo debt above means session knowledge is still outside the memo.
+  # done ends the session; working memory and the jot queue do not survive it.
+  if [ "$any_warn" -eq 1 ]; then
+    printf 'orbit: only memo survives done\n' >&2
   fi
 
   local now now_date
@@ -1693,29 +1718,18 @@ orbit_memo() {
   git config --file "$index" "repos.$repo_name.brief" "$brief"
   git config --file "$index" "repos.$repo_name.head" "$head"
 
-  # Over-length surplus (not a gap): if this write left the card well past the
-  # ceiling, seed the queue once so the reliable jot machinery (done / overflow /
-  # session-start) forces a curation pass. Consume-on-pop plus a per-repo throttle
-  # keep it from re-nagging when best-effort curation lands slightly over budget;
-  # the throttle re-arms once the card drops back under the buffer. Only when run
-  # from inside a workspace (there is a jot queue to seed).
+  # Over-budget advisory: one-shot stderr when this write left the card well
+  # past the ceiling (maxLines + minLines buffer, so best-effort curation that
+  # lands slightly over the ceiling is left alone). No loop: the same state
+  # resurfaces via per-repo status (context/done), computed inline each time.
   local ws
   if ws=$(orbit_infer_workspace "$root" 2>/dev/null) && [ -n "$ws" ]; then
-    local ws_dir="$root/$ws" orbit_file="$root/$ws/.orbit"
-    orbit_ensure_workspace_orbit "$ws_dir"
     local n threshold
     n=$(grep -c '[^[:space:]]' "$md_file" 2>/dev/null || echo 0)
     threshold=$(orbit_memo_overlong_threshold "$root")
     if [ "$n" -gt "$threshold" ]; then
-      if ! git config --file "$orbit_file" --get "overlong.$repo_name.seen" >/dev/null 2>&1; then
-        git config --file "$orbit_file" --add "jot.$repo_name" \
-          "$(orbit_jot_seed_prefix)memo over budget ($n lines): pop, curate the card to $(orbit_memo_min "$root")~$(orbit_memo_max "$root") lines, don't just append"
-        git config --file "$orbit_file" "overlong.$repo_name.seen" 1
-        printf 'orbit: %s memo is over budget (%s lines): curate the card back to %s~%s lines, don'\''t just append\n' \
-          "$repo_name" "$n" "$(orbit_memo_min "$root")" "$(orbit_memo_max "$root")" >&2
-      fi
-    else
-      git config --file "$orbit_file" --remove-section "overlong.$repo_name" 2>/dev/null || true
+      printf 'orbit: %s memo is over budget (%s lines): curate the card back to %s~%s lines, don'\''t just append\n' \
+        "$repo_name" "$n" "$(orbit_memo_min "$root")" "$(orbit_memo_max "$root")" >&2
     fi
   fi
 
@@ -2154,24 +2168,41 @@ orbit_config() {
 
 # --- Context ---
 
+# `orbit context` is the model-facing context aggregation command — its stdout
+# is a readable markdown block for agents/humans, not machine data (the machine
+# channel is --json). Three purpose-scoped entries:
+#   --startup   session-start block; routes to prime (empty) / reignite (repos)
+#   (bare)      cruise block: cheap durables + conditional per-repo status
+#   <key>       single-value query: workspace|path|goal|state
+# --prime / --reignite are explicit routing targets for humans and debugging;
+# the skill exposes only --startup and the bare form. Fails fast outside a
+# workspace (hooks treat failure as no-op).
 orbit_context() {
-  local json_mode=0 prime_mode=0 query_key=""
+  local json_mode=0 startup_mode=0 prime_mode=0 reignite_mode=0 query_key=""
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json_mode=1; shift ;;
+      --startup) startup_mode=1; shift ;;
       --prime) prime_mode=1; shift ;;
-      -*) orbit_fail "usage: orbit context [<key>] [--prime] [--json]" ;;
+      --reignite) reignite_mode=1; shift ;;
+      -*) orbit_fail "usage: orbit context [<key>] [--startup|--prime|--reignite] [--json]" ;;
       *)
         if [ -z "$query_key" ]; then
           query_key="$1"
         else
-          orbit_fail "usage: orbit context [<key>] [--prime] [--json]"
+          orbit_fail "usage: orbit context [<key>] [--startup|--prime|--reignite] [--json]"
         fi
         shift
         ;;
     esac
   done
+
+  local mode_count=$(( startup_mode + prime_mode + reignite_mode ))
+  [ "$mode_count" -le 1 ] || orbit_fail "--startup, --prime and --reignite are mutually exclusive"
+  if [ -n "$query_key" ] && [ "$mode_count" -gt 0 ]; then
+    orbit_fail "a key cannot be combined with --startup/--prime/--reignite"
+  fi
 
   local root
   root=$(orbit_require_root) || return 1
@@ -2188,217 +2219,319 @@ orbit_context() {
       workspace) printf '%s\n' "$ws" ;;
       path)      printf '%s\n' "$ws_dir" ;;
       goal)      printf '%s\n' "$(git config --file "$ws_dir/.orbit" --get workspace.goal 2>/dev/null || true)" ;;
-      status)    local s; s=$(git config --file "$ws_dir/.orbit" --get workspace.status 2>/dev/null || true); printf '%s\n' "${s:-active}" ;;
-      gaps)
-        local gaps=()
-        while IFS= read -r g; do [ -n "$g" ] && gaps+=("$g"); done < <(orbit_list_gaps "$root" "$ws_dir")
-        if [ "$json_mode" -eq 1 ]; then
-          local gout='[' gf=1
-          for g in "${gaps[@]+${gaps[@]}}"; do
-            [ "$gf" -eq 1 ] || gout+=','
-            gf=0
-            gout+="\"$(orbit_json_escape "$g")\""
-          done
-          gout+=']'
-          printf '%s\n' "$gout"
-        else
-          for g in "${gaps[@]+${gaps[@]}}"; do printf '%s\n' "$g"; done
-        fi
-        ;;
-      *)         orbit_fail "unknown key: $query_key (available: workspace, path, goal, status, gaps)" ;;
+      state)     local s; s=$(git config --file "$ws_dir/.orbit" --get workspace.status 2>/dev/null || true); printf '%s\n' "${s:-active}" ;;
+      *)         orbit_fail "unknown key: $query_key (available: workspace, path, goal, state)" ;;
     esac
     return 0
   fi
 
-  local goal
+  local goal state_val
   goal=$(git config --file "$ws_dir/.orbit" --get workspace.goal 2>/dev/null || true)
-
-  local created
-  created=$(git config --file "$ws_dir/.orbit" --get workspace.created 2>/dev/null || true)
-
-  local status_val
-  status_val=$(git config --file "$ws_dir/.orbit" --get workspace.status 2>/dev/null || true)
-  [ -n "$status_val" ] || status_val="active"
+  state_val=$(git config --file "$ws_dir/.orbit" --get workspace.status 2>/dev/null || true)
+  [ -n "$state_val" ] || state_val="active"
 
   local index="$root/.repos/.orbit"
 
-  # Collect repo data
-  local repo_names=() repo_branches=() repo_urls=() repo_briefs=() repo_memos=()
-  for d in "$ws_dir"/*/; do
-    [ -d "$d" ] || continue
-    [ -d "$d/.git" ] || [ -f "$d/.git" ] || continue
-    local name branch url brief memo_content
-    name=$(basename "$d")
-    branch=$(git -C "$d" branch --show-current 2>/dev/null || echo "detached")
-    url=$(git config --file "$index" --get "repos.$name.url" 2>/dev/null || true)
-    [ -n "$url" ] || url=$(git -C "$d" remote get-url origin 2>/dev/null || echo "-")
-    brief=$(git config --file "$index" --get "repos.$name.brief" 2>/dev/null || echo "-")
-
-    local md_file="$root/.repos/.$name.md"
-    if [ -f "$md_file" ]; then
-      memo_content=$(cat "$md_file")
-    elif [ "$json_mode" -eq 1 ]; then
-      memo_content=""
-    else
-      memo_content="(no memo; run 'orbit memo $name --scaffold' or 'orbit memo $name')"
-    fi
-
-    repo_names+=("$name")
-    repo_branches+=("$branch")
-    repo_urls+=("$url")
-    repo_briefs+=("$brief")
-    repo_memos+=("$memo_content")
-  done
-
-  # --prime: read-only scan of residual jot entries (do NOT consume; agent pops explicitly)
-  local jot_repos=() jot_entries_joined=()
-  if [ "$prime_mode" -eq 1 ]; then
-    local jr
-    while IFS= read -r jr; do
-      [ -n "$jr" ] || continue
-      jot_repos+=("$jr")
-      jot_entries_joined+=("$(git config --file "$ws_dir/.orbit" --get-all "jot.$jr" 2>/dev/null || true)")
-    done < <(git config --file "$ws_dir/.orbit" --get-regexp '^jot\.' 2>/dev/null | awk '{print $1}' | sort -u | sed 's/^jot\.//')
-  fi
-
-  # --prime: collect the pool roster — the "add menu". Prime is cold-start
-  # orientation, so it surfaces what the agent can pull in (pool name + Level-0
-  # brief), not the workspace worktrees (empty at cold start). Full memos stay
-  # on demand via orbit info (progressive loading).
-  local pool_names=() pool_briefs=()
-  if [ "$prime_mode" -eq 1 ]; then
-    local pd pname pbrief
-    for pd in "$root/.repos"/*/; do
-      [ -d "$pd" ] || continue
-      pname=$(basename "$pd")
-      pbrief=$(git config --file "$index" --get "repos.$pname.brief" 2>/dev/null || true)
-      [ -n "$pbrief" ] || pbrief="-"
-      pool_names+=("$pname")
-      pool_briefs+=("$pbrief")
+  # --startup routes on worktree presence: empty -> prime, populated -> reignite.
+  if [ "$startup_mode" -eq 1 ]; then
+    prime_mode=1
+    local d
+    for d in "$ws_dir"/*/; do
+      [ -d "$d" ] || continue
+      if [ -d "$d/.git" ] || [ -f "$d/.git" ]; then
+        prime_mode=0
+        reignite_mode=1
+        break
+      fi
     done
   fi
 
+  if [ "$prime_mode" -eq 1 ]; then
+    orbit_context_prime "$root" "$ws" "$ws_dir" "$goal" "$state_val" "$index" "$json_mode"
+    return 0
+  fi
+
+  if [ "$reignite_mode" -eq 1 ]; then
+    orbit_context_reignite "$root" "$ws" "$ws_dir" "$goal" "$state_val" "$index" "$json_mode"
+    return 0
+  fi
+
+  # --- bare: cruise block (compact/resume recovery) ---
+  # Cheap durables (path/goal/state — compaction may have wiped them) plus
+  # conditional per-repo status (only repos with something pending). No memos,
+  # no roster, no fetch — heavy durables live in --startup.
+  local n c l b m
   if [ "$json_mode" -eq 1 ]; then
-    local out='{'
+    local out='{' first=1
     out+="$(orbit_json_kv workspace "$ws"),"
     out+="$(orbit_json_kv path "$ws_dir"),"
     out+="$(orbit_json_kv goal "$goal"),"
-    out+="$(orbit_json_kv_raw created "${created:-null}"),"
-    out+="$(orbit_json_kv status "$status_val"),"
-    out+='"worktrees":['
-    local first=1 i
-    for i in "${!repo_names[@]}"; do
+    out+="$(orbit_json_kv state "$state_val"),"
+    out+='"mode":"cruise","worktrees":['
+    while IFS='|' read -r n c l b m _; do
+      [ -n "$n" ] || continue
+      [ "$c" -gt 0 ] || [ -n "$b" ] || [ "$m" != "ok" ] || continue
       [ "$first" -eq 1 ] || out+=','
       first=0
       out+='{'
-      out+="$(orbit_json_kv name "${repo_names[$i]}"),"
-      out+="$(orbit_json_kv branch "${repo_branches[$i]}"),"
-      out+="$(orbit_json_kv url "${repo_urls[$i]}"),"
-      out+="$(orbit_json_kv brief "${repo_briefs[$i]}"),"
-      out+="$(orbit_json_kv memo "${repo_memos[$i]}")"
+      out+="$(orbit_json_kv name "$n"),"
+      out+="$(orbit_json_kv_raw jots "$c"),"
+      out+="$(orbit_json_kv jotLevel "$l"),"
+      out+="$(orbit_json_kv behind "$b"),"
+      out+="$(orbit_json_kv memoState "$m")"
       out+='}'
-    done
-    out+=']'
-    if [ "$prime_mode" -eq 1 ]; then
-      out+=',"jots":['
-      local jf=1 k line
-      for k in "${!jot_repos[@]}"; do
-        [ "$jf" -eq 1 ] || out+=','
-        jf=0
-        out+='{'
-        out+="$(orbit_json_kv repo "${jot_repos[$k]}"),"
-        out+='"entries":['
-        local ef=1
-        while IFS= read -r line; do
-          [ -n "$line" ] || continue
-          [ "$ef" -eq 1 ] || out+=','
-          ef=0
-          out+="\"$(orbit_json_escape "$line")\""
-        done <<< "${jot_entries_joined[$k]}"
-        out+=']}'
-      done
-      out+=']'
-      out+=',"repos":['
-      local pf=1 p
-      for p in "${!pool_names[@]}"; do
-        [ "$pf" -eq 1 ] || out+=','
-        pf=0
-        out+='{'
-        out+="$(orbit_json_kv name "${pool_names[$p]}"),"
-        out+="$(orbit_json_kv brief "${pool_briefs[$p]}")"
-        out+='}'
-      done
-      out+=']'
-    fi
-    out+='}'
+    done < <(orbit_collect_repo_status "$root" "$ws_dir")
+    out+=']}'
     printf '%s\n' "$out"
     return 0
   fi
 
-  if [ "$prime_mode" -eq 1 ]; then
-    printf '=== PRIME — %s ===\n' "$ws"
-    printf '⚙ systems primed\n'
-  else
-    printf '=== workspace: %s ===\n' "$ws"
-  fi
   printf 'path: %s\n' "$ws_dir"
-  if [ -n "$goal" ]; then
-    printf 'goal: %s\n' "$goal"
-  fi
-  printf 'status: %s\n\n' "$status_val"
-
-  if [ "$prime_mode" -eq 1 ]; then
-    if [ "$status_val" = "done" ]; then
-      printf '[!] this workspace is marked DONE — ask the user before continuing (reopen / prune / start elsewhere)\n\n'
-    fi
-    if [ "${#jot_repos[@]}" -gt 0 ]; then
-      printf '[!] pending jots (residual discoveries from a prior session — merge into memo, then pop to consume):\n'
-      local k line cnt
-      for k in "${!jot_repos[@]}"; do
-        cnt=$(printf '%s\n' "${jot_entries_joined[$k]}" | grep -c . || true)
-        printf '  %s (%s):\n' "${jot_repos[$k]}" "$cnt"
-        while IFS= read -r line; do
-          [ -n "$line" ] || continue
-          printf '    - %s\n' "$line"
-        done <<< "${jot_entries_joined[$k]}"
-        printf '  pop with: orbit jot %s --pop\n' "${jot_repos[$k]}"
-      done
-      printf '\n'
-    fi
+  [ -n "$goal" ] && printf 'goal: %s\n' "$goal"
+  printf 'state: %s\n' "$state_val"
+  if [ "$state_val" = "done" ]; then
+    printf '\n[!] this workspace is marked DONE — ask the user before continuing (reopen / prune / start elsewhere)\n'
   fi
 
-  if [ "$prime_mode" -eq 1 ]; then
-    # Pool roster — the "add menu" (see collection note above). Consistent
-    # regardless of worktree state: prime always shows what's available to pull.
-    if [ "${#pool_names[@]}" -eq 0 ]; then
-      printf 'pool is empty — clone a repo into the pool first: orbit clone <url>\n'
-    else
-      printf 'available in pool (orbit add <repo> to pull source; orbit info <repo> for detail):\n'
-      for i in "${!pool_names[@]}"; do
-        printf '  %-16s %s\n' "${pool_names[$i]}" "${pool_briefs[$i]}"
-      done
+  local first_line=1 parts
+  while IFS='|' read -r n c l b m br; do
+    [ -n "$n" ] || continue
+    [ "$c" -gt 0 ] || [ -n "$b" ] || [ "$m" != "ok" ] || continue
+    [ "$first_line" -eq 1 ] && { printf '\n'; first_line=0; }
+    parts=""
+    if [ "$c" -gt 0 ]; then
+      if [ -n "$l" ]; then parts="$c jots ($l)"; else parts="$c jots"; fi
     fi
-  elif [ "${#repo_names[@]}" -eq 0 ]; then
-    if [ -n "$goal" ]; then
-      printf 'no repos in workspace\n\n' >&2
-      printf 'your agent can take it from here, or:\n' >&2
-      printf '\n  orbit repos\n' >&2
-      orbit_random_msg ORBIT_CONTEXT_DISCOVER_FAREWELLS
-    else
-      printf 'no repos in workspace\n\n' >&2
-      printf 'set a mission:\n' >&2
-      printf '\n  orbit goal\n' >&2
-      printf '\nor explore freely:\n' >&2
-      printf '\n  orbit repos\n' >&2
-      orbit_random_msg ORBIT_CONTEXT_EXPLORE_FAREWELLS
+    if [ "$b" = "untracked" ]; then
+      [ -n "$parts" ] && parts="$parts | "
+      parts="${parts}no upstream (fetch origin $br to track)"
+    elif [ -n "$b" ]; then
+      [ -n "$parts" ] && parts="$parts | "
+      parts="${parts}${b} behind upstream"
     fi
+    if [ "$m" != "ok" ]; then
+      [ -n "$parts" ] && parts="$parts | "
+      if [ "$m" = "over" ]; then parts="${parts}memo over budget"; else parts="${parts}memo thin"; fi
+    fi
+    printf 'repo %s: %s\n' "$n" "$parts"
+  done < <(orbit_collect_repo_status "$root" "$ws_dir")
+}
+
+# prime: cold start with an empty workspace — orientation block: durables plus
+# the pool roster (the "add menu"). No per-repo status (no worktrees), no memos.
+orbit_context_prime() {
+  local root="$1" ws="$2" ws_dir="$3" goal="$4" state_val="$5" index="$6" json_mode="$7"
+
+  local pool_names=() pool_briefs=()
+  local pd pname pbrief
+  for pd in "$root/.repos"/*/; do
+    [ -d "$pd" ] || continue
+    pname=$(basename "$pd")
+    pbrief=$(git config --file "$index" --get "repos.$pname.brief" 2>/dev/null || true)
+    [ -n "$pbrief" ] || pbrief="-"
+    pool_names+=("$pname")
+    pool_briefs+=("$pbrief")
+  done
+
+  if [ "$json_mode" -eq 1 ]; then
+    local out='{' first=1 p
+    out+="$(orbit_json_kv workspace "$ws"),"
+    out+="$(orbit_json_kv path "$ws_dir"),"
+    out+="$(orbit_json_kv goal "$goal"),"
+    out+="$(orbit_json_kv state "$state_val"),"
+    out+='"mode":"prime","repos":['
+    for p in "${!pool_names[@]}"; do
+      [ "$first" -eq 1 ] || out+=','
+      first=0
+      out+='{'
+      out+="$(orbit_json_kv name "${pool_names[$p]}"),"
+      out+="$(orbit_json_kv brief "${pool_briefs[$p]}")"
+      out+='}'
+    done
+    out+=']}'
+    printf '%s\n' "$out"
+    return 0
+  fi
+
+  printf 'path: %s\n' "$ws_dir"
+  [ -n "$goal" ] && printf 'goal: %s\n' "$goal"
+  printf 'state: %s\n' "$state_val"
+  if [ "$state_val" = "done" ]; then
+    printf '[!] this workspace is marked DONE — ask the user before continuing (reopen / prune / start elsewhere)\n'
+  fi
+  printf '\n'
+  if [ "${#pool_names[@]}" -eq 0 ]; then
+    printf 'pool is empty — clone a repo into the pool first: orbit clone <url>\n'
   else
-    for i in "${!repo_names[@]}"; do
-      printf -- '--- %s (%s) ---\n' "${repo_names[$i]}" "${repo_urls[$i]}"
-      printf 'branch: %s\n\n' "${repo_branches[$i]}"
-      printf '%s\n\n' "${repo_memos[$i]}"
+    printf 'available in pool (orbit add <repo> to pull source; orbit info <repo> for detail):\n'
+    local i
+    for i in "${!pool_names[@]}"; do
+      printf '  %-16s %s\n' "${pool_names[$i]}" "${pool_briefs[$i]}"
     done
   fi
+}
+
+# reignite: session (re)start with worktrees present — rebuilds what the ignite
+# phase had read: each repo's memo card + two-layer staleness (memoBehind +
+# remoteAhead; fetches like `orbit info`, advisory only — sync stays on-demand),
+# conditional per-repo status, and small jot queues inlined. No roster, no source.
+orbit_context_reignite() {
+  local root="$1" ws="$2" ws_dir="$3" goal="$4" state_val="$5" index="$6" json_mode="$7"
+  local buf
+  buf=$(orbit_jot_buffer_size "$root")
+
+  local d name branch md_file default_branch stored current local_head remote_head
+  local memo_behind remote_ahead count level upstream behind mstate staleness parts jline
+
+  if [ "$json_mode" -eq 1 ]; then
+    local out='{' first=1
+    out+="$(orbit_json_kv workspace "$ws"),"
+    out+="$(orbit_json_kv path "$ws_dir"),"
+    out+="$(orbit_json_kv goal "$goal"),"
+    out+="$(orbit_json_kv state "$state_val"),"
+    out+='"mode":"reignite","worktrees":['
+    for d in "$ws_dir"/*/; do
+      [ -d "$d" ] || continue
+      [ -d "$d/.git" ] || [ -f "$d/.git" ] || continue
+      name=$(basename "$d")
+      branch=$(git -C "$d" branch --show-current 2>/dev/null || echo "detached")
+      default_branch=$(orbit_default_branch "$root/.repos/$name" 2>/dev/null || true)
+      memo_behind=0 remote_ahead=0
+      if [ -n "$default_branch" ]; then
+        git -C "$root/.repos/$name" fetch origin "$default_branch" 2>/dev/null || true
+        local_head=$(git -C "$root/.repos/$name" rev-parse "refs/heads/$default_branch" 2>/dev/null || true)
+        remote_head=$(git -C "$root/.repos/$name" rev-parse "refs/remotes/origin/$default_branch" 2>/dev/null || true)
+        if [ -n "$local_head" ] && [ -n "$remote_head" ] && [ "$local_head" != "$remote_head" ]; then
+          remote_ahead=$(git -C "$root/.repos/$name" rev-list "$local_head".."$remote_head" --count 2>/dev/null || echo 0)
+        fi
+      fi
+      md_file="$root/.repos/.$name.md"
+      stored=$(git config --file "$index" --get "repos.$name.head" 2>/dev/null || true)
+      if [ -n "$stored" ] && [ -f "$md_file" ]; then
+        current=$(git -C "$root/.repos/$name" rev-parse HEAD 2>/dev/null || true)
+        if [ -n "$current" ] && [ "$stored" != "$current" ]; then
+          memo_behind=$(git -C "$root/.repos/$name" rev-list "$stored".."$current" --count 2>/dev/null || echo 0)
+        fi
+      fi
+      count=$(git config --file "$ws_dir/.orbit" --get-all "jot.$name" 2>/dev/null | grep -c . || true)
+      [ -n "$count" ] || count=0
+      level=$(orbit_jot_level "$count" "$buf")
+      behind=$(orbit_repo_upstream_behind "$d")
+      mstate=$(orbit_memo_state "$md_file" "$root")
+
+      [ "$first" -eq 1 ] || out+=','
+      first=0
+      out+='{'
+      out+="$(orbit_json_kv name "$name"),"
+      out+="$(orbit_json_kv branch "$branch"),"
+      out+="$(orbit_json_kv_raw memoBehind "$memo_behind"),"
+      out+="$(orbit_json_kv_raw remoteAhead "$remote_ahead"),"
+      out+="$(orbit_json_kv_raw jots "$count"),"
+      out+="$(orbit_json_kv jotLevel "$level"),"
+      out+="$(orbit_json_kv behind "$behind"),"
+      out+="$(orbit_json_kv memoState "$mstate"),"
+      out+='"jotEntries":['
+      local ef=1
+      while IFS= read -r jline; do
+        [ -n "$jline" ] || continue
+        [ "$ef" -eq 1 ] || out+=','
+        ef=0
+        out+="\"$(orbit_json_escape "$jline")\""
+      done < <(git config --file "$ws_dir/.orbit" --get-all "jot.$name" 2>/dev/null || true)
+      out+='],'
+      if [ -f "$md_file" ]; then
+        out+="$(orbit_json_kv memo "$(cat "$md_file")")"
+      else
+        out+="$(orbit_json_kv memo "")"
+      fi
+      out+='}'
+    done
+    out+=']}'
+    printf '%s\n' "$out"
+    return 0
+  fi
+
+  printf 'path: %s\n' "$ws_dir"
+  [ -n "$goal" ] && printf 'goal: %s\n' "$goal"
+  printf 'state: %s\n\n' "$state_val"
+  if [ "$state_val" = "done" ]; then
+    printf '[!] this workspace is marked DONE — ask the user before continuing (reopen / prune / start elsewhere)\n\n'
+  fi
+
+  for d in "$ws_dir"/*/; do
+    [ -d "$d" ] || continue
+    [ -d "$d/.git" ] || [ -f "$d/.git" ] || continue
+    name=$(basename "$d")
+    branch=$(git -C "$d" branch --show-current 2>/dev/null || echo "detached")
+
+    # Two-layer staleness (fetch like orbit info; advisory only, no sync).
+    default_branch=$(orbit_default_branch "$root/.repos/$name" 2>/dev/null || true)
+    memo_behind=0 remote_ahead=0
+    if [ -n "$default_branch" ]; then
+      git -C "$root/.repos/$name" fetch origin "$default_branch" 2>/dev/null || true
+      local_head=$(git -C "$root/.repos/$name" rev-parse "refs/heads/$default_branch" 2>/dev/null || true)
+      remote_head=$(git -C "$root/.repos/$name" rev-parse "refs/remotes/origin/$default_branch" 2>/dev/null || true)
+      if [ -n "$local_head" ] && [ -n "$remote_head" ] && [ "$local_head" != "$remote_head" ]; then
+        remote_ahead=$(git -C "$root/.repos/$name" rev-list "$local_head".."$remote_head" --count 2>/dev/null || echo 0)
+      fi
+    fi
+    md_file="$root/.repos/.$name.md"
+    stored=$(git config --file "$index" --get "repos.$name.head" 2>/dev/null || true)
+    if [ -n "$stored" ] && [ -f "$md_file" ]; then
+      current=$(git -C "$root/.repos/$name" rev-parse HEAD 2>/dev/null || true)
+      if [ -n "$current" ] && [ "$stored" != "$current" ]; then
+        memo_behind=$(git -C "$root/.repos/$name" rev-list "$stored".."$current" --count 2>/dev/null || echo 0)
+      fi
+    fi
+
+    count=$(git config --file "$ws_dir/.orbit" --get-all "jot.$name" 2>/dev/null | grep -c . || true)
+    [ -n "$count" ] || count=0
+    level=$(orbit_jot_level "$count" "$buf")
+    behind=$(orbit_repo_upstream_behind "$d")
+    mstate=$(orbit_memo_state "$md_file" "$root")
+
+    printf -- '--- %s (branch: %s) ---\n' "$name" "$branch"
+    staleness=""
+    [ "$memo_behind" != "0" ] && staleness="memo is $memo_behind commits behind HEAD"
+    if [ "$remote_ahead" != "0" ]; then
+      [ -n "$staleness" ] && staleness="$staleness | "
+      staleness="${staleness}${remote_ahead} new commits on origin/$default_branch"
+    fi
+    [ -n "$staleness" ] && printf 'staleness: %s\n' "$staleness"
+    parts=""
+    if [ "$count" -gt 0 ]; then
+      if [ -n "$level" ]; then parts="$count jots ($level)"; else parts="$count jots"; fi
+    fi
+    if [ "$behind" = "untracked" ]; then
+      [ -n "$parts" ] && parts="$parts | "
+      parts="${parts}no upstream (fetch origin $branch to track)"
+    elif [ -n "$behind" ]; then
+      [ -n "$parts" ] && parts="$parts | "
+      parts="${parts}${behind} behind upstream"
+    fi
+    if [ "$mstate" != "ok" ]; then
+      [ -n "$parts" ] && parts="$parts | "
+      if [ "$mstate" = "over" ]; then parts="${parts}memo over budget"; else parts="${parts}memo thin"; fi
+    fi
+    [ -n "$parts" ] && printf 'status: %s\n' "$parts"
+    if [ "$count" -gt 0 ]; then
+      if [ "$count" -le "$buf" ]; then
+        printf 'jots (pop with: orbit jot %s --pop):\n' "$name"
+        while IFS= read -r jline; do
+          [ -n "$jline" ] || continue
+          printf '  - %s\n' "$jline"
+        done < <(git config --file "$ws_dir/.orbit" --get-all "jot.$name" 2>/dev/null || true)
+      else
+        printf 'jots: %s entries queued — pop to view: orbit jot %s --pop\n' "$count" "$name"
+      fi
+    fi
+    printf '\n'
+    if [ -f "$md_file" ]; then
+      printf '%s\n\n' "$(cat "$md_file")"
+    else
+      printf '(no memo yet — explore and write one with: orbit memo %s)\n\n' "$name"
+    fi
+  done
 }
 
 # --- Completion ---
@@ -2546,13 +2679,15 @@ _orbit() {
           ;;
         context)
           _arguments \
-            '1:key:(workspace path goal status gaps)' \
-            '--prime[Preflight: full context + done banner + pending jots]' \
+            '1:key:(workspace path goal state)' \
+            '--startup[Session-start block (routes prime/reignite)]' \
+            '--prime[Cold-start block: durables + pool roster]' \
+            '--reignite[Restart block: memos + per-repo status]' \
             '--json[Output as JSON]'
           ;;
         config)
           _arguments \
-            '1:key:(agent.recommend memo.minLines memo.maxLines explore.paths)' \
+            '1:key:(agent.recommend memo.minLines memo.maxLines explore.paths jot.bufferSize)' \
             '2:value:'
           ;;
         completion)
@@ -2724,16 +2859,16 @@ _orbit_completions() {
       ;;
     context)
       if [[ "$cur" == -* ]]; then
-        COMPREPLY=($(compgen -W "--prime --json" -- "$cur"))
+        COMPREPLY=($(compgen -W "--startup --prime --reignite --json" -- "$cur"))
       else
-        COMPREPLY=($(compgen -W "workspace path goal status gaps" -- "$cur"))
+        COMPREPLY=($(compgen -W "workspace path goal state" -- "$cur"))
       fi
       ;;
     config)
       if [[ "$cur" == --* ]]; then
         COMPREPLY=($(compgen -W "--unset" -- "$cur"))
       else
-        COMPREPLY=($(compgen -W "agent.recommend memo.minLines memo.maxLines explore.paths" -- "$cur"))
+        COMPREPLY=($(compgen -W "agent.recommend memo.minLines memo.maxLines explore.paths jot.bufferSize" -- "$cur"))
       fi
       ;;
     completion)

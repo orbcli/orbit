@@ -150,32 +150,14 @@ All commands that write to workspace `.orbit` (`orbit add`, `orbit done`, `orbit
 
 ```ini
 [jot]
-	backend = [seed] no/low memo — explore <explore.paths> and write a pull-decision card (roles + how to use) before done
 	backend = entry point: cmd/server/main.go — start here to trace startup
 	backend = role: owns the public /auth API — add for any login/accounts task
 	frontend = entry point: src/main.tsx — app bootstrap
 ```
 
-Entries are card-scoped: a role or an MVP/VIP entry point the card needs (jot only feeds the card). Deep structure (framework choice, module internals) is out of card scope and is not jotted.
+Entries are card-scoped: a role or an MVP/VIP entry point the card needs (jot only feeds the card). Deep structure (framework choice, module internals) is out of card scope and is not jotted. Every entry is a real discovery — orbit writes no system placeholders into the queue.
 
 `orbit jot <repo> --pop` outputs all values for the specified repo key, then removes them via `git config --unset-all`. Pop is consume-on-read — entries are deleted after retrieval.
-
-**`[seed]` sentinel**: an entry prefixed with `[seed] ` is a system-generated instruction, not a discovery. Two commands write one:
-- `orbit add` writes `[seed] no/low memo ...` for a thin/missing-memo repo (once per repo) — explore and write a card.
-- `orbit memo` writeback writes `[seed] memo over budget ...` when the card it just wrote exceeds `memo.maxLines + memo.minLines` — pop and curate the card back under budget (best-effort). This reuses the reliable jot machinery (done / overflow / session-start) to force a curation pass; it is *surplus*, not a gap.
-
-Either way the entry must be dropped (never merged) at aggregation, and the gap model (`orbit context gaps`) counts only non-`[seed]` entries as real capture. Note the two are distinct conditions: a thin memo is a **gap** (absence, flagged by `orbit context gaps`); an over-budget memo is **surplus** (present but un-curated) and is *not* a gap — its `[seed]` never marks the repo a gap because the memo is well above `memo.minLines`. See [spec-knowledge](./spec-knowledge.md).
-
-Two per-repo throttle markers keep the seeds from re-firing:
-
-```ini
-[nudge "backend"]
-	seen = 1
-[overlong "backend"]
-	seen = 1
-```
-
-`[nudge]` is hook-local (the `Stop` hook nudges about each gap at most once; not read by the CLI; persists until the gap closes). `[overlong]` is CLI-local: `orbit memo` sets it when it seeds an over-budget card and clears it once the card drops back under the buffer, so best-effort curation that lands slightly over the ceiling is not re-seeded forever. `orbit goal` reactivation clears both so a new work cycle re-forces any still-open gap or still-bloated memo. The repo name is a case-sensitive subsection (so names with dots or mixed case key correctly).
 
 After `orbit done` writes:
 

@@ -55,16 +55,17 @@ in [spec-knowledge.md](spec-knowledge.md)).
 | new commits on origin | staleness check; local pool branch behind `origin/<branch>` | `orbit_upstream_check` | `sync <repo>` before add/rely | skill step 5 (cold-start sync) |
 | workspace done + prune-eligible | `orbit add` in a `status=done` workspace | `orbit_add` | `goal "<text>"` to reactivate first | skill (reactivation rules), spec-lifecycle |
 | raw-mode branch untracked | `orbit add` (non-silent) | `orbit_add` | `git fetch origin <branch>` after push, or `switch -c <name>` up front | skill step 8, spec-branching |
-| no memo for repo (add) | `orbit add` (non-silent), memo missing | `orbit_add` | explore `explore.paths`, then `memo <repo>` | seed jot, gap warnings, skill step 7 |
-| seed jot (durable) | `orbit add`, thin/absent memo | `orbit_add` (jot seed) | explore + write a pull-decision card before done | done gate, hook memo-debt, `context gaps` |
-| memo over budget | `orbit memo` writeback (in a workspace), card exceeds `maxLines`+`minLines` | `orbit_memo` (jot seed) | `jot <repo> --pop`, curate the card back to `<min>~<max>` lines | done jot-remain, jot overflow, session-start debt |
+| no memo for repo (add) | `orbit add` (non-silent), memo missing | `orbit_add` | explore `explore.paths`, then `memo <repo>` | per-repo status (context), done gate, skill step 7 |
+| memo thin for repo (add) | `orbit add` (non-silent), memo below `minLines` | `orbit_add` | explore `explore.paths`, expand via `memo <repo>` before done | per-repo status (context), done gate, skill step 7 |
+| memo over budget | `orbit memo` writeback (in a workspace), card exceeds `maxLines`+`minLines` | `orbit_memo` | curate the card back to `<min>~<max>` lines | done gate, per-repo status (context) |
 | worktree behind after sync | `orbit sync`; workspace worktree tracks the advanced branch | `orbit_sync` | `git pull` in the worktree if you want the new commits | — (informational, native git) |
-| jot overflow | `orbit jot` past threshold (10 entries) | `orbit_jot` | `jot --pop`, `info`, rewrite card in `<min>~<max>` lines | done jot-remain warning |
-| done: jot entries remain | `orbit done`, un-popped jots exist | `orbit_done` | `jot --pop`, `info`, merge into memo before done | jot overflow, hook memo-debt |
-| done: no memo yet (gap) | `orbit done`, repo still a gap | `orbit_done` | explore + write a memo before done | seed jot, hook memo-debt, `context gaps` |
-| done: card budget | `orbit done`, when a jot/gap warning fired | `orbit_done` | curate memo to `<min>~<max>` lines (roles + how to use), don't append | skill "keep it tight" rule |
+| jot overflow | `orbit jot` past `jot.bufferSize` (default 4) | `orbit_jot` | `jot <repo> --pop`, then merge into memo | done gate, per-repo status (context) |
+| done: jot entries remain | `orbit done`, un-popped jots exist (any count) | `orbit_done` | `jot --pop`, `info`, merge into memo before done | jot overflow, per-repo status (context) |
+| done: memo thin | `orbit done`, thin memo + no leftover jots | `orbit_done` | explore + write a memo before done | per-repo status (context) |
+| done: memo over budget | `orbit done`, card exceeds `maxLines`+`minLines` | `orbit_done` | curate once, back to `<min>~<max>` lines | per-repo status (context) |
+| done: card budget | `orbit done`, when a jot/over-budget warning fired | `orbit_done` | curate memo to `<min>~<max>` lines (roles + how to use), don't append | skill "keep it tight" rule |
+| done: only memo survives | `orbit done`, when any per-repo warning fired | `orbit_done` | (closing line — session working memory and the jot queue do not survive done; memo is the only durable artifact) | — (no named action; reinforces the debt above) |
 | index out of sync | `orbit repos`, index brief missing but memo has one | `orbit_repos` | `memo <repo> --refresh` (repairs an existing memo's cache; no add/exploration needed) | — |
-| session-start memo debt | SessionStart hook, resume path; **already-added** repos are gaps | `hooks/session-start.sh` | explore, jot, then write a memo before done | done gate, `context gaps` |
 
 ## Informational notes (not steering — no named action)
 
@@ -75,29 +76,20 @@ next command:
 
 | Note | Command + condition | Source |
 |:-----|:--------------------|:-------|
+| `<repo> has N jots (building)` | `orbit jot`, queue above half of `jot.bufferSize` but not past it | `orbit_jot` |
 | `<repo> has no memo, using README instead` | `orbit repos`, memo absent, README present | `orbit_repos` |
 | `<repo> has no memo or README` | `orbit repos`, both absent | `orbit_repos` |
 | `<repo> has no memo, showing README` | `orbit info`, memo absent, README present | `orbit_info` |
 | `<repo> README truncated to <N> lines, no memo yet` | `orbit info` README fallback exceeds `memo.maxLines` | `orbit_info` |
 | `<repo> has no memo` | `orbit info`, both absent | `orbit_info` |
 
-Naming `memo <repo>` here would be wrong: you cannot write an accurate memo for a repo you have
-not added and explored, and a README stand-in is explicitly **not** enough context to write one
-(that is the "README ≠ enough" anti-pattern). The memo-writing action belongs where the repo is
-actually in hand — the **add note** (`orbit_add`, after add) and the **`orbit done` gap gate**
-(before finishing) — both of which are in the steering registry above. These screening notes just
-supply the fact those later steps act on.
+The `building` note is a count without a named action — the queue is filling but has not hit the aggregation threshold; the `overflow` steering warning (registry above) fires when it does. Naming an action at `building` would cry wolf.
+
+Naming `memo <repo>` on the screening notes would be wrong: you cannot write an accurate memo for a repo you have not added and explored, and a README stand-in is explicitly **not** enough context to write one (that is the "README ≠ enough" anti-pattern). The memo-writing action belongs where the repo is actually in hand — the **add note** (`orbit_add`, after add) and the **`orbit done`** per-repo warnings (before finishing) — both of which are in the steering registry above. These screening notes just supply the fact those later steps act on.
 
 ## Backstop layers
 
-The memo-guarantee warnings are deliberately redundant — no single missed step loses the
-knowledge. The same "this repo has no real memo" signal surfaces at: the durable **seed jot**
-(`orbit add`), the **SessionStart hook** (resume path), the **jot-overflow** and **`orbit done`**
-warnings, and the **`orbit context gaps`** query. This layering is the gap guarantee described in
-[spec-knowledge.md](spec-knowledge.md); it is one instance of the broader steering-channel
-principle. The **card budget** warning has no hook backstop — it fires only at jot-overflow and
-`done` — and staleness/tracking/sync notes are single-shot advisories with no backstop by design
-(they inform a decision rather than guard an invariant).
+The memo-surfacing warnings are deliberately redundant — no single missed step loses the knowledge. The same per-repo state (thin memo / over-budget card / leftover jots) is **computed inline on every read** and surfaces at: the **add-time stderr** (`orbit add`, the high-attention moment), the **cruise block** (bare `orbit context` and the `--startup`/reignite block — after compaction and at every session start), and the **`orbit done`** per-repo warnings (the final backstop). There is no durable sentinel to lose: the condition lives in the memo file and the jot queue, so it persists until fixed. This layering is the surfacing model described in [spec-knowledge.md](spec-knowledge.md); it is one instance of the broader steering-channel principle. Staleness/tracking/sync notes are single-shot advisories with no backstop by design (they inform a decision rather than guard an invariant).
 
 ## Maintenance rule
 

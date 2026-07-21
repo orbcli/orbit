@@ -3,10 +3,20 @@ import { dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Plugin } from "@opencode-ai/plugin"
 
-// Orbit OpenCode plugin — three hooks mirroring the Claude/Qoder plugin:
-//   experimental.chat.system.transform  →  SessionStart  (inject workspace context)
-//   permission.ask                     →  PreToolUse    (auto-approve safe orbit commands)
-//   event(session.idle)                →  Stop          (nudge to write memos before finishing)
+// Orbit OpenCode plugin — hooks mirroring the Claude/Qoder/Codex plugins:
+//   experimental.chat.system.transform  →  SessionStart (startup)
+//   event(session.compacted)            →  SessionStart:compact
+//   permission.ask                      →  PreToolUse   (auto-approve safe orbit commands)
+//
+// TODO(opencode resume routing): OpenCode has no SessionStart source — resume
+// (`--continue`/`--session`) is a UI navigation that fires no event and does
+// not re-run transform, so this plugin cannot distinguish a resumed session
+// from a fresh one. Until upstream lands a SessionStart hook
+// (anomalyco/opencode#5409), the first transform of every session injects
+// the full startup block (`orbit context --startup`); the skill is the
+// documented fallback for resume (agent runs bare `orbit context` itself).
+// Cache refreshes and post-compaction injections always use the light cruise
+// block — never re-inject the full startup block mid-session (token discipline).
 //
 // Supports dual distribution:
 //   Local:  install.sh --opencode  →  copies plugin.ts + SKILL.md to ~/.config/opencode/
@@ -26,13 +36,28 @@ const SAFE_SUBCOMMANDS = new Set([
   "version", "doctor", "completion",
 ])
 
-// Tracks sessions that received a memo-debt nudge to avoid re-sending.
-const nudgedSessions = new Set<string>()
-
 export default (async ({ client, $ }) => {
   // Per-session cache for injected system context. Invalidated when a bash
   // tool that runs an orbit command executes (workspace state may have changed).
   const ctxCache = new Map<string, string>()
+
+  // Run an orbit context command and wrap its markdown in <orbit-context>
+  // tags so the agent can tell hook-injected context from self-invoked output.
+  // Returns "" on any failure (orbit missing / not in a workspace — the
+  // command fails fast in both cases).
+  const buildContext = async (startup: boolean): Promise<string> => {
+    try {
+      const res = startup
+        ? await $`orbit context --startup`.nothrow().quiet()
+        : await $`orbit context`.nothrow().quiet()
+      if (res.exitCode !== 0) return ""
+      const text = res.text().trim()
+      if (!text) return ""
+      return `<orbit-context>\n${text}\n</orbit-context>`
+    } catch {
+      return ""
+    }
+  }
 
   return {
     // ── Config ────────────────────────────────────────────────────────────
@@ -50,8 +75,11 @@ export default (async ({ client, $ }) => {
 
     // ── SessionStart equivalent ──────────────────────────────────────────
     // Appends workspace context to the system prompt so the agent knows it is
-    // inside an orbit workspace from its first reply. Branches on cold start
-    // (no repos → prime) vs resume (repos present → brief nudge).
+    // inside an orbit workspace from its first reply. The first transform of
+    // every session injects the full startup block (see TODO above — resume
+    // routing is blocked on anomalyco/opencode#5409); refreshes after cache
+    // invalidation always use the light cruise block — never re-inject the
+    // full startup block mid-session (token discipline).
     "experimental.chat.system.transform": async (input, output) => {
       const sid = input.sessionID
       if (sid && ctxCache.has(sid)) {
@@ -60,41 +88,10 @@ export default (async ({ client, $ }) => {
         return
       }
 
-      try {
-        const pathRes = await $`orbit context path`.nothrow().quiet()
-        if (pathRes.exitCode !== 0) {
-          if (sid) ctxCache.set(sid, "")
-          return
-        }
-        const ws = pathRes.text().trim()
-        if (!ws) {
-          if (sid) ctxCache.set(sid, "")
-          return
-        }
+      const ctx = await buildContext(true)
 
-        let ctx = `Detected an orbit workspace (${ws}) — treat this as an "orbit start" / "orbit启动" session.\nYou MUST invoke the orbit skill (via the Skill tool) as your first action, before replying — then apply Orbit conventions for the whole session.\n\n`
-
-        const statusRes = await $`orbit status --json`.nothrow().quiet()
-        if (statusRes.text().includes('"worktrees":[{')) {
-          const goalRes = await $`orbit context goal`.nothrow().quiet()
-          ctx += "Resuming — repos already in this workspace. Continue the prior task; do not re-survey the repos.\n"
-          const goal = goalRes.text().trim()
-          if (goal) ctx += `goal: ${goal}\n`
-          ctx += "Detail on demand: orbit status (branches / dirty state) · orbit context (full repo memos) · orbit info <repo> (one repo) · orbit context --prime (residual jots from last session).\n"
-
-          const gapsRes = await $`orbit context gaps`.nothrow().quiet()
-          const gaps = gapsRes.text().trim()
-          if (gaps) ctx += `Orbit memo debt: no real memo yet for ${gaps}. Explore, jot, then write a memo for these before done.\n`
-        } else {
-          const primeRes = await $`orbit context --prime`.nothrow().quiet()
-          ctx += primeRes.text()
-        }
-
-        if (sid) ctxCache.set(sid, ctx)
-        output.system.push(ctx)
-      } catch {
-        // orbit not installed or workspace detection failed — no-op
-      }
+      if (sid) ctxCache.set(sid, ctx)
+      if (ctx) output.system.push(ctx)
     },
 
     // ── PreToolUse/Bash equivalent ──────────────────────────────────────
@@ -135,64 +132,43 @@ export default (async ({ client, $ }) => {
       }
     },
 
-    // ── Stop equivalent ──────────────────────────────────────────────────
-    // On session.idle, checks for repos with no real memo (only [seed]
-    // placeholders) and sends a one-time nudge per repo to write memos before
-    // finishing. Throttled via git-config flags in the workspace .orbit file,
-    // same as the Claude Stop hook.
     "tool.execute.after": async (input) => {
       // Invalidate the system-context cache when an orbit bash command runs,
-      // so the next LLM call sees fresh workspace state.
+      // rebuilding it with the LIGHT cruise block (never the full startup
+      // block — mid-session refreshes must not re-inject full memos).
+      // Only update on a successful rebuild — if the rebuild fails (orbit
+      // missing, CWD left the workspace) keep the previous cache so the
+      // next transform still sees context rather than a permanent hole.
       if (input.tool === "bash" && input.sessionID) {
         const args = input.args as Record<string, unknown> | undefined
         const cmd = typeof args?.command === "string" ? args.command : ""
-        if (cmd.includes("orbit")) ctxCache.delete(input.sessionID)
+        if (cmd.includes("orbit") && ctxCache.has(input.sessionID)) {
+          const fresh = await buildContext(false)
+          if (fresh) ctxCache.set(input.sessionID, fresh)
+        }
       }
     },
 
     event: async ({ event }) => {
       try {
-        if (event.type !== "session.idle") return
+        // ── SessionStart:compact equivalent ────────────────────────────
+        // After compaction, inject the light cruise block two ways: as an
+        // immediate prompt (the compacted history is gone), and into the
+        // cache so subsequent transforms re-inject the light block rather
+        // than the full startup block compaction was meant to avoid.
+        if (event.type !== "session.compacted") return
         const sessionID = (event.properties as { sessionID?: string }).sessionID
-        if (!sessionID || nudgedSessions.has(sessionID)) return
+        if (!sessionID) return
 
-        const pathRes = await $`orbit context path`.nothrow().quiet()
-        if (pathRes.exitCode !== 0) return
-        const ws = pathRes.text().trim()
-        if (!ws) return
-
-        const gapsRes = await $`orbit context gaps --json`.nothrow().quiet()
-        const repos = JSON.parse(gapsRes.text().trim() || "[]") as string[]
-
-        // Collect gap repos not yet nudged (throttle: once per repo).
-        const pending: string[] = []
-        for (const repo of repos) {
-          if (!repo) continue
-          const seenRes = await $`git config --file ${ws}/.orbit --get nudge.${repo}.seen`.nothrow().quiet()
-          if (seenRes.text().trim()) continue
-          pending.push(repo)
-        }
-        if (pending.length === 0) return
-
-        // Mark so we don't nag every turn.
-        for (const repo of pending) {
-          await $`git config --file ${ws}/.orbit nudge.${repo}.seen 1`.nothrow().quiet()
-        }
-        nudgedSessions.add(sessionID)
-
-        const list = pending.join(", ")
-        const msg =
-          `Before you finish: these repos still have no real memo (only a [seed] placeholder) — ${list}. ` +
-          `For each, explore entry points/structure/build, capture findings with 'orbit jot <repo> "...", ` +
-          `then write the memo via 'orbit memo <repo>' (drop the [seed] line — it is an instruction, not memo content). ` +
-          `One-time reminder per repo.`
-
+        const ctx = await buildContext(false)
+        if (!ctx) return
+        ctxCache.set(sessionID, ctx)
         await client.session.prompt({
           path: { id: sessionID },
-          body: { parts: [{ type: "text", text: msg }] },
+          body: { parts: [{ type: "text", text: ctx }] },
         })
       } catch {
-        // fail-safe: no nudge on error
+        // fail-safe: no injection on error
       }
     },
   }

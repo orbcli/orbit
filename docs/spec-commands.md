@@ -63,7 +63,7 @@ orbit status <workspace> [--json]            # Specify which workspace to view w
 orbit goal                               # Modify goal (interactively opens editor, pre-fills current value; also supports stdin pipe)
 orbit goal "new goal"                    # Set goal directly
 orbit goal --clear                       # Delete goal (free exploration mode)
-orbit context [<key>] [--prime] [--json] # Full context or single key query (workspace/path/goal/status/gaps); --prime = startup preflight; gaps = repos with no real memo (thin memo + no non-[seed] jot)
+orbit context [<key>] [--startup|--prime|--reignite] [--json] # Context blocks or single key query (workspace/path/goal/state); bare = cruise block (durables + conditional per-repo status); --startup = session-start block (cold start → pool roster; populated → memos + per-repo status)
 
 # Project configuration
 orbit config                             # List all project configuration
@@ -153,9 +153,9 @@ Typical use case: agent needs to verify API compatibility against a specific ver
 
 ## orbit add Memo Echo and `-s|--silent`
 
-By default `orbit add` echoes the repo's memo to **stderr** after creating the worktree (stdout keeps only the parseable `added <repo> → ...` line). This is a safety net: an agent that jumped straight to `add` without any context still gets repo context, and seeing the memo dump signals it added blind. A well-behaved agent that already holds enough context — from `orbit info`, the memo surfaced at prime, or a prior session — passes `-s` (curl-style) to suppress the echo. When no memo exists, the echo becomes a hint to explore and run `orbit memo`.
+By default `orbit add` echoes the repo's memo to **stderr** after creating the worktree (stdout keeps only the parseable `added <repo> → ...` line). This is a safety net: an agent that jumped straight to `add` without any context still gets repo context, and seeing the memo dump signals it added blind. A well-behaved agent that already holds enough context — from `orbit info`, the memo surfaced in the startup block, or a prior session — passes `-s` (curl-style) to suppress the echo. The thin/missing-memo nudge below is part of the same stderr block, so `-s` suppresses it too — only pass `-s` when you already know the repo's memo state.
 
-**Seed jot on thin/missing memo**: when the added repo's memo is thin (missing, or fewer than `memo.minLines` non-blank lines, default 4), `orbit add` appends a single `[seed] ...` entry to the repo's jot queue (once per repo — skipped if a `[seed]` entry already exists). The seed is a durable, compaction-proof reminder to explore the repo (within `explore.paths`) and write a real card before `done`; it is a system instruction, **not** a discovery, and must never be merged into a memo. Because it lives in the workspace `.orbit` file (not agent context), it survives context loss. See the `[seed]` sentinel in [spec-metadata](./spec-metadata.md) and the gap model in [spec-knowledge](./spec-knowledge.md).
+**No/low-memo nudge**: when the added repo's memo is thin (missing, or fewer than `memo.minLines` non-blank lines, default 4), `orbit add` additionally prints a one-shot stderr naming the `explore.paths` scope — explore the repo and write a real card before `done`. The same state resurfaces automatically via per-repo status (bare `orbit context` and the `--startup`/reignite block) and via the `orbit done` gate, so the reminder survives context loss without any durable placeholder.
 
 **Delegation**: `orbit add` is *guarded creation* — it fails cleanly on collision (worktree exists / branch checked out elsewhere), not a read-modify-write. It is therefore safe to delegate to a worker sub-agent that follows a cross-repo thread on its own (see PRINCIPLES.md Principle 7).
 
@@ -176,14 +176,14 @@ orbit jot [<repo>] --pop [--json]  # pop all entries (consume + delete)
 	backend = uses Echo router
 ```
 
-**`[seed]` sentinel**: entries prefixed with `[seed] ` are system-generated placeholders written by `orbit add` for thin/missing-memo repos, not real discoveries. Only non-`[seed]` entries count as a "real" jot for the gap model (see `orbit context gaps` and [spec-knowledge](./spec-knowledge.md)). Pop surfaces seed entries verbatim like any other; drop them at aggregation rather than folding them into the memo.
+Jot entries are real discoveries only — orbit writes no system placeholders into the queue. Every entry counts as real capture.
 
 **Push mode** (default):
 - `orbit jot <repo> "text"` — append one entry
 - Repo can be omitted when CWD is inside a worktree (inferred, same as `orbit switch`)
 - Text can be omitted → opens editor (same rules as `orbit goal`)
 - Stdin non-TTY + no text argument → reads from stdin
-- After push: count entries for this repo; if > 10, stderr warning: `"orbit: <repo> has N jot entries: run jot --pop, read info, then rewrite the memo card in <min>~<max> lines"`
+- After push: count entries for this repo against `jot.bufferSize` (default `memo.minLines` = 4). At or below half → silent; above half up to the buffer → stderr `orbit: <repo> has N jots (building)` (informational); past the buffer → stderr `orbit: <repo> has N jots (overflow): jot <repo> --pop, then merge into memo`
 
 **Pop mode** (`--pop`):
 - Outputs all entries for the repo (one per line), then deletes them from `.orbit`
@@ -197,24 +197,16 @@ orbit jot [<repo>] --pop [--json]  # pop all entries (consume + delete)
 
 ## orbit context
 
-Outputs the complete context of the current workspace, for agents to load in one shot at startup.
+`orbit context` is the model-facing context aggregation command: its stdout is a readable markdown block for agents and humans, not machine data (the machine channel is `--json`). It has three purpose-scoped entries:
 
-- Must be executed within a workspace (workspace inferred from CWD); errors when executed at project root
-- **Single key query**: `orbit context <key>` outputs a single value and exits. Supported keys:
-  - `workspace` — workspace name
-  - `path` — absolute path of the workspace directory
-  - `goal` — workspace goal
-  - `status` — workspace status (active/done)
-  - `gaps` — names of repos in this workspace that still lack a real memo: the memo is thin (missing, or fewer than `memo.minLines` non-blank lines, default 4) **and** the repo has no non-`[seed]` jot entry. One name per line; empty output means no gaps. Supports `--json` (a JSON string array, e.g. `["backend"]`), used by the `Stop` hook to nudge before the agent finishes. Read-only.
-- **Full mode** (no key): outputs workspace name, path, goal, status, then for each repo outputs branch + full memo text
-- **`--prime` (startup preflight)**: used by the `SessionStart` hook for context pre-injection on **cold-start (no-repo) workspaces** and by the skill's startup detection. (When a workspace already holds repos, the hook treats the session as a resume and injects a brief continue-the-task nudge instead of running `--prime` — see the hook, not this flag; the flag's own behavior is unconditional.) It is a **lean orientation view, not a superset of full mode** — the deliberate difference is that it does *not* dump full memos, keeping session-start context economical (progressive loading). Read-only. Differences from full mode:
-  - Human header becomes `=== PRIME — <workspace> ===` / `⚙ systems primed` (plain full mode uses `=== workspace: <workspace> ===`)
-  - If `status: done`, prints a banner: `[!] this workspace is marked DONE — ask the user before continuing (reopen / prune / start elsewhere)`
-  - Lists **pending jots** (residual jot entries from a prior session) per repo with counts and a `pop with: orbit jot <repo> --pop` hint. `--prime` only *reads* the jot queue; it never consumes — the agent pops explicitly during wrap-up
-  - **Repo section is the pool roster (the "add menu"), not workspace worktrees.** Prime is cold-start orientation, so it lists the repos *available to pull in* — `available in pool (orbit add <repo> ...):` followed by `  <name>  <one-line brief>` per pool repo. This is deliberate: at cold start the workspace has no worktrees, so listing worktrees is always empty; the useful orientation is what the agent can `orbit add`. Level-0 briefs only (no memos) — full memo on demand via `orbit info <repo>`. Behavior is consistent regardless of worktree state (prime always shows the pool). When the pool is empty it prints `pool is empty — clone a repo into the pool first: orbit clone <url>`. Plain `orbit context` (non-prime) still lists the workspace *worktrees* with full memos.
-  - Combinable with `--json`. JSON `--prime` keeps the workspace `worktrees` array (including `memo`) and adds two top-level arrays: `jots` (`[{ "repo": ..., "entries": [...] }]`) and `repos` (`[{ "name": ..., "brief": ... }]`, the pool add menu); programmatic consumers are not context-constrained. Plain `orbit context --json` omits both `jots` and `repos` (backward-compatible)
-- `--json`: outputs structured data (format in the "JSON Output Format" section below)
-- Repo without memo: human mode shows hint text guiding generation; JSON mode outputs empty string `""`
+- **`--startup` (session-start block)**: used by the `SessionStart` hook and by the skill's startup detection; one call doubles as workspace detection (fails fast outside a workspace). Routes internally on worktree presence: empty → **prime**, populated → **reignite**. `--prime` / `--reignite` select the block explicitly (human/debug use; the skill exposes only `--startup` and the bare form).
+  - **prime** (cold start, empty workspace): outputs `path` / `goal` (if set) / `state` (with a DONE banner when the workspace is `done`), then the **pool roster** — the "add menu": `available in pool (orbit add <repo> ...):` followed by `  <name>  <one-line brief>` per pool repo. Level-0 briefs only (no memos) — full memo on demand via `orbit info <repo>` (progressive loading). Empty pool prints `pool is empty — clone a repo into the pool first: orbit clone <url>`.
+  - **reignite** (worktrees present): outputs the same durables, then per worktree repo: `--- <name> (branch: <branch>) ---` + two-layer staleness (memoBehind + remoteAhead — fetches like `orbit info`, advisory only; sync stays on-demand) + conditional `status:` line (jot count and level / commits behind upstream / `memo thin` / `memo over budget` — only repos with something pending) + small jot queues inlined (up to `jot.bufferSize` entries; larger queues collapse to a count + pop hint) + the full memo card. No roster, no source.
+- **Bare `orbit context` (cruise block)**: the in-session counterpart of the startup block, for compact/resume recovery — cheap durables (`path` / `goal` if set / `state`, with DONE banner) plus **conditional per-repo status** (only repos with pending jots, commits behind upstream, an untracked raw-mode branch, or a non-ok memo state), one line each: `repo <name>: 3 jots (building) | 2 behind upstream | memo thin`. Never fetches (uses local refs; behind is measured against the worktree branch's `@{upstream}` — a raw-mode branch without upstream shows `no upstream (fetch origin <branch> to track)` instead of a count, so the agent knows to materialize the ref). Does **not** dump memos — pull a repo's memo on demand with `orbit info <repo>`.
+- **Single key query**: `orbit context <key>` outputs a single value and exits. Supported keys: `workspace` (name), `path` (absolute path), `goal`, `state` (active/done).
+- Must be executed within a workspace (inferred from CWD); errors at project root or outside a project — hooks treat failure as a silent no-op.
+- A key cannot be combined with `--startup`/`--prime`/`--reignite`; the three mode flags are mutually exclusive.
+- `--json`: structured output for debug/scripting (format in the "JSON Output Format" section below). The bare form's JSON mirrors the cruise block (no memos); `--startup --json` follows the same worktree routing — empty workspace emits the prime JSON shape, populated workspace emits the reignite JSON shape.
 
 ## orbit info Auto-fetch
 
@@ -393,21 +385,17 @@ Field descriptions:
 
 ### `orbit context --json`
 
+Bare form (cruise block — only worktrees with something pending are listed):
+
 ```json
 {
   "workspace": "feat-auth",
   "path": "/path/to/project/feat-auth",
   "goal": "Implement OAuth2 login flow",
-  "created": 1700000000,
-  "status": "active",
+  "state": "active",
+  "mode": "cruise",
   "worktrees": [
-    {
-      "name": "backend",
-      "branch": "feat/oauth2",
-      "url": "git@github.com:org/backend.git",
-      "brief": "Go REST API, sqlc-generated DB layer",
-      "memo": "Go REST API, sqlc-generated DB layer\n\n## When to add (roles)\n- Owns the HTTP API — add for endpoint work\n..."
-    }
+    { "name": "backend", "jots": 3, "jotLevel": "building", "behind": "", "memoState": "thin" }
   ]
 }
 ```
@@ -416,33 +404,55 @@ Field descriptions:
 - `workspace`: string, workspace name
 - `path`: string, absolute path of the workspace directory
 - `goal`: string, workspace goal (empty string when not set)
-- `created`: number | null, Unix timestamp (seconds) when workspace was created; `null` if not recorded
-- `status`: string, workspace status (`"active"` | `"done"`)
-- `worktrees`: array, context of all worktrees in the workspace
+- `state`: string, workspace lifecycle state (`"active"` | `"done"`)
+- `mode`: string, `"cruise"` — present in JSON only; the markdown cruise block omits it (machine-facing marker, not context for the agent or human reader)
+- `worktrees`: array, per-worktree status for worktrees with pending work only (empty when all are fine) — the slim cruise-block view, a subset of the `--reignite` worktrees schema
   - `name`: string, repo name
-  - `branch`: string, current branch
-  - `url`: string, remote URL
-  - `brief`: string, one-line description
-  - `memo`: string, full memo content (newlines encoded as `\n`; empty string `""` when no memo)
+  - `jots`: number, unpopped jot entries
+  - `jotLevel`: string, `"building"` | `"overflow"` | `""` (silent band)
+  - `behind`: string, commits behind the worktree branch's upstream (`""` when none, `"untracked"` when no upstream — raw-mode branch pushed without `git fetch origin <branch>`)
+  - `memoState`: string, `"ok"` | `"thin"` | `"over"`
 
-With `--prime`, two top-level arrays are added (present only in prime mode; plain `orbit context --json` omits both):
+`--prime` adds `"mode": "prime"` and a `repos` array (the pool roster — distinct from the bare form's `worktrees`):
 
 ```json
 {
-  "...": "... same fields as above ...",
-  "jots": [
-    { "repo": "backend", "entries": ["cross-repo call: auth → billing via gRPC", "config loaded from env before flags"] }
-  ],
+  "...": "... durables as above ...",
+  "mode": "prime",
   "repos": [
-    { "name": "backend", "brief": "Go REST API, sqlc-generated DB layer" },
-    { "name": "frontend", "brief": "React web client" }
+    { "name": "backend", "brief": "Go REST API, sqlc-generated DB layer" }
   ]
 }
 ```
 
-- `jots`: array, residual jot entries per repo (read-only preview; not consumed). Present only under `--prime`
-  - `repo`: string, repo name
-  - `entries`: array of string, unpopped jot entries for that repo
-- `repos`: array, the pool roster (repos available to `orbit add`) — the cold-start "add menu". Present only under `--prime`; empty pool outputs `[]`
+- `repos`: array, the pool roster (repos available to `orbit add`) — the cold-start "add menu"; empty pool outputs `[]`. This is the project-root `.repos/` directory listing, not workspace worktrees.
   - `name`: string, repo identity in the pool
   - `brief`: string, one-line brief (`"-"` when no memo/brief recorded)
+
+`--reignite` adds `"mode": "reignite"` and a full worktrees array:
+
+```json
+{
+  "...": "... durables as above ...",
+  "mode": "reignite",
+  "worktrees": [
+    {
+      "name": "backend",
+      "branch": "feat/oauth2",
+      "memoBehind": 3,
+      "remoteAhead": 5,
+      "jots": 2,
+      "jotLevel": "building",
+      "behind": "",
+      "memoState": "ok",
+      "jotEntries": ["entry point: cmd/server/main.go"],
+      "memo": "Go REST API, sqlc-generated DB layer\n\n## When to add (roles)\n..."
+    }
+  ]
+}
+```
+
+- `worktrees`: array, one entry per worktree repo (unfiltered, unlike the bare form)
+  - `memoBehind` / `remoteAhead`: numbers, two-layer staleness distances (reignite fetches, like `orbit info`)
+  - `jotEntries`: array of string, unpopped jot entries (full list; the markdown block inlines only up to `jot.bufferSize`)
+  - `memo`: string, full memo content (`""` when no memo)
