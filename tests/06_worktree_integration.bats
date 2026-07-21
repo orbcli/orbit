@@ -256,14 +256,17 @@ teardown() {
   [ "$status" -ne 0 ]
 }
 
-@test "switch: -c with existing remote branch name fails" {
+@test "switch: -c with existing remote branch name succeeds (no remote check)" {
   local proj="$SANDBOX/switch-test8"
   clone_project "$proj" "$SHARED_PROJECT_WITH_BRANCH"
   cd "$proj" && orbit new "switch test" --name dev >/dev/null 2>&1
   cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
 
+  # orbit switch -c no longer checks remote — creates from HEAD regardless.
+  # stderr notes the conflict when remote already has the branch with different commits.
   run bash -c "cd '$proj/dev/myrepo' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' switch -c feature-x"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "created ws/dev/feature-x"
 }
 
 @test "switch: explicit repo argument from workspace root" {

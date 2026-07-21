@@ -54,7 +54,7 @@ in [spec-knowledge.md](spec-knowledge.md)).
 | memo behind HEAD | any command running staleness check; stored memo commit ≠ repo HEAD | `orbit_memo_staleness` | `memo <repo>` (update) or `memo <repo> --refresh` (reset counter if unchanged) | skill workflow step 7 |
 | new commits on origin | staleness check; local pool branch behind `origin/<branch>` | `orbit_upstream_check` | `sync <repo>` before add/rely | skill step 5 (cold-start sync) |
 | workspace done + prune-eligible | `orbit add` in a `status=done` workspace | `orbit_add` | `goal "<text>"` to reactivate first | skill (reactivation rules), spec-lifecycle |
-| raw-mode branch untracked | `orbit add` (non-silent) | `orbit_add` | `git fetch origin <branch>` after push, or `switch -c <name>` up front | skill step 8, spec-branching |
+| raw-mode branch (not scoped) | `orbit add` (non-silent), or per-repo status (context/status/done) | `orbit_add`, `orbit_collect_repo_status` | `orbit switch -c <name>` to convert to scoped mode | skill step 8, spec-branching |
 | no memo for repo (add) | `orbit add` (non-silent), memo missing | `orbit_add` | explore `explore.paths`, then `memo <repo>` | per-repo status (context), done gate, skill step 7 |
 | memo thin for repo (add) | `orbit add` (non-silent), memo below `minLines` | `orbit_add` | explore `explore.paths`, expand via `memo <repo>` before done | per-repo status (context), done gate, skill step 7 |
 | memo over budget | `orbit memo` writeback (in a workspace), card exceeds `maxLines`+`minLines` | `orbit_memo` | curate the card back to `<min>~<max>` lines | done gate, per-repo status (context) |

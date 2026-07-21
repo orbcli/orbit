@@ -396,18 +396,20 @@ The skill must give the agent a basic rule for picking a branch mode:
 
 Skill documentation must inform the agent of the push differences between the two modes:
 
-**Raw mode (default)**:
-- After `orbit add`, manage branches with plain git
-- Branch name is your choice, no prefix needed
-- Push: `git push origin <branch-name>` (explicit target required)
-
-**Scoped mode (when branch isolation is needed)**:
+**Scoped mode (default, most cases)**:
 - Created using `orbit switch -c <name>`
 - Local branch: `ws/<workspace>/<name>` (managed by orbit)
 - Remote branch: `origin/<name>` (clean, no prefix)
 - Push: `git push` works directly (upstream auto-configured)
+- Cleaned up by `orbit prune`
 
-Skill does not need to explain internal mechanics (prefix stripping, push.default configuration), only inform the agent of behavioral differences.
+**Raw mode (advanced, not recommended for most work)**:
+- After `orbit add`, manage branches with plain git
+- Branch name is your choice, no prefix needed
+- Push: `git push origin <branch-name>` (explicit target required)
+- Not cleaned up by `orbit prune` (branch leak)
+
+Skill does not need to explain internal mechanics (prefix stripping, push.default configuration), only inform the agent of behavioral differences. A raw-mode branch can be converted to scoped mode at any time with `orbit switch -c <same-name>` (lossless — preserves all local commits and staged changes).
 
 ## Anti-Pattern Checklist (Must Be Warned in Skill)
 

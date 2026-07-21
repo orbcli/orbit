@@ -103,16 +103,27 @@ git config branch.ws/<ws>/feat-x.merge refs/heads/feat-x
 ```bash
 orbit switch -c feat-x              # Within worktree
 orbit switch -c backend feat-x      # At workspace root
-# 1. git ls-remote --heads origin feat-x checks if the branch already exists on remote
-#    → Already exists → error: "already exists on remote, use switch without -c"
-# 2. Create ws/<ws>/feat-x from HEAD
-# 3. Set upstream config (same as above, purely local)
+# 1. Create ws/<ws>/feat-x from HEAD (no remote check — git switch -c doesn't check either)
+# 2. Set upstream config (same as above, purely local)
+# 3. Pre-register fetch refspec so first push materializes refs/remotes/origin/<name>
 # 4. No push — the remote branch is created when the agent first runs git push
 ```
 
-## Raw Mode (Default, Pure Git)
+**Post-creation conflict note**: if the remote already has `<name>` with different commits, a stderr note warns about the push conflict. When transferring a raw-mode branch (same name, no upstream — the agent already knows the remote has it), this warning is suppressed.
 
-Suitable for scenarios where the agent self-manages branches; `orbit switch` is not needed:
+## Raw Mode (Advanced — not recommended for most work)
+
+Raw mode is suitable only when you explicitly want pure git with no orbit branch management. For most work, use scoped mode (`orbit switch -c`) — it wires upstream tracking automatically, avoids the "already used by worktree" trap, isolates branch names across workspaces, and is cleaned up by `orbit prune`.
+
+| Dimension | Raw mode + fetch | Scoped mode |
+|---|---|---|
+| upstream tracking | manual fetch | automatic wire |
+| multi-workspace isolation | no prefix, conflicts | `ws/<workspace>/` prefix, isolated |
+| `git checkout main` trap | hits it | avoids it |
+| `orbit prune` cleanup | not cleaned, leaks | automatic cleanup |
+| branch name | local short, remote same | local long, remote same |
+
+Raw mode workflow:
 
 ```
 1. orbit add backend
@@ -144,6 +155,22 @@ Remedies (agent's choice — orbit takes no stance):
 - Use scoped mode (`orbit switch -c`), which pre-registers the branch's fetch refspec so the first push materializes tracking automatically.
 
 `orbit add` emits a stderr note describing this so both agents and humans perceive it. `push.autoSetupRemote=true` (git ≥ 2.37, recommend git ≥ 2.42) still sets the *local* tracking config on first bare push; the limitation is only the remote-tracking ref under the single-branch refspec.
+
+### Converting a raw-mode branch to scoped mode
+
+A raw-mode branch (created with `git checkout -b`, no `ws/<workspace>/` prefix) can be converted to scoped mode at any time:
+
+```bash
+# Currently on feature/api-refactor (raw mode, any local commits/staged preserved)
+orbit switch -c feature/api-refactor
+# → Creates ws/<workspace>/feature/api-refactor from current HEAD
+# → Wires upstream tracking to origin/feature/api-refactor
+# → Working tree and staged changes are fully preserved
+git branch -d feature/api-refactor
+# → Delete the raw branch (safe — the scoped branch points to the same commit)
+```
+
+This is the recommended path when the agent realizes a raw-mode branch should be managed by orbit (e.g. for `orbit prune` cleanup, multi-workspace isolation, or upstream tracking). The conversion is lossless: all local commits and staged changes are preserved, and the old branch can be deleted immediately after the switch.
 
 ## Scoped Mode (orbit switch, Prefix Isolation)
 
