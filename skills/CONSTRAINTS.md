@@ -11,17 +11,17 @@ Orbit ships one shared runtime plus a per-agent skill and hook. Repo layout → 
 | `orbit.sh` | The runtime (all commands) | `install.sh` / curl bootstrap installs it to PATH |
 | `skills/orbit/SKILL.md` | Shared skill | All three plugins point at it explicitly: `.claude-plugin/plugin.json` → `"skills": ["./skills/orbit"]`; `.codex-plugin/plugin.json` and `.qoder-plugin/plugin.json` → `"skills": "./skills/orbit"` |
 | `skills/CONSTRAINTS.md` | This doc — shared constraints, not shipped as a skill | — |
-| `hooks/session-start.sh` | Shared `SessionStart` script (context injection) | Referenced by Claude/Qoder `hooks.json` and `hooks/codex/session-start.sh` wrapper |
+| `hooks/session-start.sh` | Shared `SessionStart` startup script (thin wrapper over `orbit context --startup`) | Referenced by Claude/Qoder `hooks.json` and `hooks/codex/session-start.sh` wrapper |
+| `hooks/session-resume.sh` | Shared `SessionStart` resume/compact script (thin wrapper over bare `orbit context`) | Referenced by Claude/Qoder `hooks.json` and `hooks/codex/session-resume.sh` wrapper |
 | `hooks/auto-approve.sh` | Shared `PreToolUse` script (auto-approve safe orbit commands) | Referenced by Claude/Qoder `hooks.json` and `hooks/codex/auto-approve.sh` wrapper |
-| `hooks/stop.sh` | Shared `Stop` script (memo nudge) | Referenced by Claude/Qoder `hooks.json` and `hooks/codex/stop.sh` wrapper |
 | `.claude-plugin/` | Claude plugin + marketplace manifest | Claude marketplace |
-| `hooks/claude/hooks.json` | Claude hook wiring (SessionStart, PreToolUse, Stop) | `.claude-plugin/plugin.json` → `"hooks"` |
+| `hooks/claude/hooks.json` | Claude hook wiring (SessionStart, PreToolUse) | `.claude-plugin/plugin.json` → `"hooks"` |
 | `.codex-plugin/` | Codex plugin manifest | Codex marketplace — resolved from `.agents/plugins/marketplace.json` (plugin entry `codex-orbit`); install with `./install.sh --codex` |
-| `hooks/codex/hooks.json` | Codex hook wiring (SessionStart, PermissionRequest, Stop) | `.codex-plugin/plugin.json` → `"hooks"` (same convention as Claude/Qoder) |
-| `hooks/codex/session-start.sh` | Codex SessionStart wrapper | Delegates to `hooks/session-start.sh` |
+| `hooks/codex/hooks.json` | Codex hook wiring (SessionStart, PermissionRequest) | `.codex-plugin/plugin.json` → `"hooks"` (same convention as Claude/Qoder) |
+| `hooks/codex/session-start.sh` | Codex SessionStart startup wrapper | Delegates to `hooks/session-start.sh` |
+| `hooks/codex/session-resume.sh` | Codex SessionStart resume/clear/compact wrapper | Delegates to `hooks/session-resume.sh` |
 | `hooks/codex/auto-approve.sh` | Codex PermissionRequest wrapper | Wraps `hooks/auto-approve.sh`; exit 0 = allow |
-| `hooks/codex/stop.sh` | Codex Stop wrapper | Wraps `hooks/stop.sh`; strips JSON, prints plain text |
-| `.opencode-plugin/plugin.ts` | OpenCode plugin (context injection, auto-approve, memo nudge) | Installed to `~/.config/opencode/plugins/` |
+| `.opencode-plugin/plugin.ts` | OpenCode plugin (context injection, auto-approve) | Installed to `~/.config/opencode/plugins/` |
 | `.qoder-plugin/` | Qoder plugin manifest | Qoder marketplace |
 | `hooks/qoder/hooks.json` | Qoder hook wiring | `.qoder-plugin/plugin.json` → `"hooks"` |
 
@@ -47,7 +47,7 @@ The tiers below are the contract. Anything not in the first two tiers must keep 
 
 ### Two ways to enable it
 
-**1. Bundled auto-approve hook (zero config, recommended).** All three plugins (Claude, Codex, Qoder) ship the shared `hooks/auto-approve.sh`, wired as a `PreToolUse` / `Bash` (Claude/Qoder) or `PermissionRequest` / `Bash` (Codex) matcher. It inspects the pending Bash command and auto-approves only when the command is a **single, un-chained** invocation of `orbit` whose subcommand is in the two safe tiers. For Claude and Qoder, the hook emits an `allow` decision JSON; for Codex, the `hooks/codex/auto-approve.sh` wrapper converts the same logic to exit-code semantics (0 = allow). Fail-safe by construction — if `jq` is missing, the tool is not Bash, the command contains any shell chaining/redirection/substitution (`;` `&` `|` `` ` `` `$(` `>` `<`, newline), or the leading binary is not `orbit`, it prints nothing (or exits non-zero for Codex) and the normal confirmation prompt happens. Nothing to configure; installing the plugin is enough.
+**1. Bundled auto-approve hook (zero config, recommended).** All three plugins (Claude, Codex, Qoder) ship the shared `hooks/auto-approve.sh`, wired as a `PreToolUse` / `Bash` (Claude/Qoder) or `PermissionRequest` / `Bash` (Codex) matcher; OpenCode uses the `permission.ask` hook in plugin.ts. The matching semantics (single un-chained invocation, safe tiers only, JSON allow vs exit-code translation, fail-safe to the normal prompt) are specified in [docs/spec-hooks.md](../docs/spec-hooks.md#auto-approve-semantics). Nothing to configure; installing the plugin is enough.
 
 **2. Static allowlist in agent settings (opt-in, for users who prefer explicit config or run skill-only without the plugin hook).** Plugins cannot declare a permission allowlist — only the user's own settings can — so this path is manual. Mirror the two safe tiers:
 
@@ -122,7 +122,7 @@ If you change the tier of any subcommand, or add/remove a subcommand, update **a
 2. the `case` allowlist in `hooks/auto-approve.sh`,
 3. the `SAFE_SUBCOMMANDS` set in `.opencode-plugin/plugin.ts`,
 4. the example allowlist snippet(s) above.
-5. the Codex wrapper `hooks/codex/auto-approve.sh` — it delegates to the shared `hooks/auto-approve.sh` (covered by item 2), but verify the exit-code translation (0 = allow, non-zero = prompt) still works after any change to the shared script's output format.
+5. the Codex wrapper `hooks/codex/auto-approve.sh` — it delegates to the shared `hooks/auto-approve.sh` (covered by item 2), but verify the exit-code translation (0 = allow, non-zero = prompt) still works after any change to the shared script's output format (see [docs/spec-hooks.md](../docs/spec-hooks.md#auto-approve-semantics)).
 
 ## Product Design Principles (Must Be Enforced)
 
@@ -156,31 +156,35 @@ If you change the tier of any subcommand, or add/remove a subcommand, update **a
 
 ### Environment Awareness (Required)
 
-Agent uses `orbit context path` to quickly determine whether it is inside a workspace:
+Agent uses `orbit context --startup` as the single workspace-detection call:
 
-- **Success (exit 0)** — inside a workspace; output is the workspace directory's absolute path
+- **Success (exit 0)** — inside a workspace; output is the session-start block (read it and proceed)
 - **Failure (exit != 0)** — not inside a workspace; do not trigger orbit conventions
 
-Run `orbit context` (full context: workspace name, goal, status, repos + memo) only when complete context is needed.
+`orbit context <key>` (`workspace` / `path` / `goal` / `state`) serves single-value lookups. Bare `orbit context` is the cruise block (cheap durables + conditional per-repo status) — the in-session counterpart of the startup block, for self-checks after compaction; it does not dump memos — pull a repo's memo on demand with `orbit info <repo>`.
 
 Detection granularity is **workspace-level only**. Project root path is never exposed (prevents agent from operating on `.repos/` infrastructure); no repo-level detection (use native `git` commands for positioning within a repo).
 
 ### Startup Detection (Required)
 
-**Two layers.** In the Claude Code, OpenCode and Qoder plugins, a bundled `SessionStart` / `system.transform` hook (startup / resume / compact) detects the workspace and injects its state deterministically, at zero user effort — so the agent knows it is inside a workspace. The hook branches on whether the workspace is a cold start: with **no repos yet** it runs `orbit context --prime` to inject the full preflight (goal, status, done banner, pending jots, and the pool roster — the repos available to `orbit add`) so the agent can orient and choose repos; with **repos already present** it treats the session as a resume and injects only a brief nudge to continue the prior task (goal + status + on-demand pointers), rather than re-dumping the repo roster. Loading the skill's full conventions is still model-driven, so the launch phrase (`orbit start`) remains the reliable way to activate them. In skill-only setups (no plugin hook), that phrase is the only entry point. The detection logic below is identical regardless of layer.
+**Two layers.** In the Claude Code, OpenCode and Qoder plugins, a bundled `SessionStart` / `system.transform` hook detects the workspace and injects its state deterministically, at zero user effort — so the agent knows it is inside a workspace. Injection comes in two tiers with decreasing token budgets: **startup** and **cruise** (the full injection contract, event routing matrix, and wrapper discipline live in [docs/spec-hooks.md](../docs/spec-hooks.md)). Hooks wrap the command's markdown output in `<orbit-context>` tags — the tag is how the agent distinguishes hook-injected context from its own command output. Loading the skill's full conventions is still model-driven, so the launch phrase (`orbit start`) remains the reliable way to activate them. In skill-only setups (no plugin hook), that phrase is the only entry point. The detection logic below is identical regardless of layer.
 
-**An injected block is the completed preflight — do not re-fetch it (Required).** When the hook has injected a block — the cold-start `=== PRIME — <name> ===` block or the populated-workspace `Resuming` nudge — the startup preflight has *already run*; its output is in context (the cold-start block **is** the output of `orbit context --prime`, and the resume nudge already carries goal + status). The skill must direct the agent to read that block and proceed straight to the workflow decision (done-check, then goal), and must NOT re-run `orbit context`, `orbit context --prime`, or `orbit repos` to reload what it already holds. Reaching for **plain `orbit context`** at startup is a compounded defect, not a fallback: it dumps every worktree's full memo, a mid-work lookup that is never a session-start action. The agent fetches context itself only when *no* block was injected and the user signals to start (below). **Escalation boundary:** the prime roster already carries every pool repo's name + one-line brief, so any judgment that needs only a name or brief (does repo X exist? what is its rough purpose?) is answered from the block itself — the skill must forbid running `orbit repos` to "confirm" it. Escalation to `orbit repos` / `orbit info <repo>` is warranted only when a field the brief lacks is needed (URL, staleness, memo, entry points).
+**An injected block is the completed preflight — do not re-fetch it (Required).** When an `<orbit-context>` block is present, the hook has *already run* the preflight; its output is in context. The skill must direct the agent to read that block and proceed straight to the workflow decision (done-check, then goal), and must NOT re-run `orbit context --startup`, `orbit context`, or `orbit repos` to reload what it already holds. The agent fetches context itself only when *no* block was injected and the user signals to start (below). **Escalation boundary:** the startup block's roster already carries every pool repo's name + one-line brief, so any judgment that needs only a name or brief (does repo X exist? what is its rough purpose?) is answered from the block itself — the skill must forbid running `orbit repos` to "confirm" it. Escalation to `orbit repos` / `orbit info <repo>` is warranted only when a field the brief lacks is needed (URL, staleness, memo, entry points).
 
-After the agent launches, **if no context was injected** and the user signals to start working (e.g. `orbit start`), the skill must detect whether it is inside a workspace via `orbit context path`:
+After the agent launches, **if no `<orbit-context>` block was injected** and the user signals to start working (e.g. `orbit start`), the skill must run `orbit context --startup` — a single call that doubles as workspace detection (success = in a workspace, read the block; failure = not in one, don't apply orbit conventions):
 
-1. Command succeeds → run `orbit context --prime` to load the workspace preflight (goal + done banner + pending jots + the pool roster). `--prime` is **lean by design**: the pool roster lists repos available to `orbit add` with a one-line brief each (the cold-start "add menu"), but it does not dump full memos — the agent pulls a repo's memo on demand via `orbit info <repo>` (progressive loading). Plain `orbit context` dumps every workspace worktree's full memo and is a mid-work lookup, not the session-start default
-2. **Workspace status is `done` → remind the user first**, before anything else: state that the workspace is already marked done and ask how to proceed (reopen, prune, or start elsewhere). Do not silently continue the workflow on a done workspace
+1. Success → read the startup block. It is **lean by design**: a cold start lists the pool by name + brief without dumping memos — the agent pulls a repo's memo on demand via `orbit info <repo>` (progressive loading)
+2. **Workspace state is `done` → remind the user first**, before anything else: state that the workspace is already marked done and ask how to proceed (reopen, prune, or start elsewhere). Do not silently continue the workflow on a done workspace
 3. Goal is non-empty → begin working based on the goal, entering the Discovery-First workflow
 4. Goal is empty → ask the user what to do
 
+**The pool is live (Required).** The startup block's roster is a starting menu, not a closed set: whenever the worktree set proves insufficient — on resume, after compaction, or when a thread crosses repos — `orbit repos` / `orbit info` / `orbit add` remain available, and the skill must say so.
+
+**Compaction recovery (Required).** After a compaction or resume, path/goal/state may be wiped from working memory. When the hook is present it re-injects the cruise block automatically; without it, the agent must self-recover by running bare `orbit context` (cheap durables + conditional per-repo status), or a single-key `orbit context goal` / `state` when only one value is in doubt.
+
 **Do NOT check whether `.orbit` files exist directly.** `.orbit` is a metadata cache that may be deleted; orbit commands auto-rebuild it when missing. Directly checking the file bypasses auto-maintenance capability, causing inconsistent behavior depending on whether `.orbit` exists.
 
-Skill description must include the startup trigger phrase (`orbit start`) and the `orbit context path` detection condition.
+Skill description must include the startup trigger phrase (`orbit start`) and the `orbit context --startup` detection condition.
 
 ### Communication Conventions (Required)
 
@@ -196,6 +200,12 @@ workflow>` (two colons, ASCII, `~` for ranges), the workflow clause names the ex
 with the `orbit` prefix dropped, and the warning guides without blocking. Hard errors that abort
 keep the `orbit: <context>: <message>` diagnostic form and stay out of the registry.
 
+**Heeding actionable stderr (Required).** `orbit:`-prefixed stderr splits into two classes in [docs/spec-warnings.md](../docs/spec-warnings.md) (steering registry vs informational notes), and the skill must direct the agent to treat them differently:
+- **Actionable** lines (those that name a next workflow — the registry's steering rows). The skill must instruct the agent that these are **procedure requirements, not suggestions** — every actionable item must be closed before `orbit done` marks the workspace complete. Most are immediate; jot overflow is the one deferrable case (aggregate at wrap-up instead of interrupting work).
+- **Informational** lines (those that just report state — the notes table). Read and note; no named workflow to execute.
+
+The skill must not blur the two classes by telling the agent to "act on all `orbit:` stderr" — that licenses the agent to treat actionable items as optional. The detailed instance wording lives in each agent's `skills/<agent>/orbit/SKILL.md`; this constraint exists to keep all of them aligned on the same split.
+
 ### Discovery-First Workflow (Required)
 
 Every skill must guide the agent to discover before acting:
@@ -204,23 +214,23 @@ Every skill must guide the agent to discover before acting:
 2. `orbit repos` — screen: view available repos (name + url + brief), identify potentially relevant candidates
 3. `orbit info <repo>` — assess: read the memo card for candidate repos (roles: when/why to add; entry points: where to start), also detects upstream freshness and memo staleness
    - **README fallback = no memo.** When `orbit info` falls back to the README, no memo exists. The README is the repo's unprocessed façade, not decision context — it must not be treated as "enough" to skip `orbit add` or the step 7 exploration
-   - **Shortcut:** `orbit context` loads goal + all repos + memo in one call, can replace steps 1–3
+   - Mid-work self-check: bare `orbit context` shows goal + per-repo status (jots / behind / memo state), not memos — it does not replace steps 1–3
 4. Decide: based on info, determine whether to add — card answers your question (which repo, where to start) → don't add; need to grep source, trace call chains, modify code → `orbit add`; not in pool → `orbit clone` then add; only need docs → web search. A README fallback is **not** "sufficient" and never justifies "don't add"
    - **Task type does not exempt exploration.** Release, ops, and pure-research tasks explore first too — the default is not "editing code". If full source is genuinely not needed, the agent states that reason explicitly at this step rather than skipping exploration by default
 5. **Cold-start sync** — if step 3 showed remoteAhead > 0, run `orbit sync <repo>` now (before add). Agent hasn't started relying on the code yet, so sync cost is lowest. This ensures `orbit add` creates the worktree from the latest pool HEAD
-6. `orbit add <repo>` — bring into workspace only repos confirmed in step 4 as needing full source. Worktree starts from pool's current HEAD (latest after sync). `-s` suppresses the memo echo only when context is already held (from step 3 `orbit info`, prime, or a prior session). **Hard rule:** if step 3 showed **no memo** (README fallback), `-s` is forbidden — no memo means zero inherited context, so add without `-s` and explore in step 7
-   - **Seed jot invariant:** when the added repo's memo is missing or thin, `orbit add` auto-appends a `[seed]` jot (a durable, compaction-proof placeholder that keeps the queue non-empty so wrap-up/done still force a memo). The `[seed]` prefix marks it as a system instruction, not a real capture — the skill must guide the agent to act on it and **never merge a `[seed]` line into the memo**. A repo stays flagged by `orbit context gaps` until it has a real (non-seed) jot or a real memo
+6. `orbit add <repo>` — bring into workspace only repos confirmed in step 4 as needing full source. Worktree starts from pool's current HEAD (latest after sync). `-s` suppresses the memo echo only when context is already held (from step 3 `orbit info`, the startup block, or a prior session). **Hard rule:** if step 3 showed **no memo** (README fallback), `-s` is forbidden — no memo means zero inherited context, so add without `-s` and explore in step 7
+    - **No/low-memo nudge at add:** when the added repo's memo is missing or thin, `orbit add` prints a one-shot stderr naming the scope to explore — explore and write the card before done. The skill must guide the agent to act on it in step 7 (the same state resurfaces via per-repo status in bare `orbit context` and at `orbit done`)
 7. **Memo check** — first, pop any residual jot entries from a prior session: `orbit jot <repo> --pop`. Then, based on staleness info from step 3 (recalculated after sync):
    - "memo is N commits behind HEAD" → memo is stale. Read existing memo as a base, check whether recent changes involve structural changes, only incrementally append or correct — don't rewrite. Merge any popped jot entries into the same write. If no structural changes and no jot entries, run `orbit memo <repo> --refresh` to reset the staleness counter (prevents re-evaluation in future sessions)
-   - No memo or thin card (doesn't answer both card questions) → `orbit memo <repo> --scaffold` to get template, explore repo (within `explore.paths`) then write. Include any popped jot entries
+    - No memo or thin card (doesn't answer both card questions) → first check what you already know from prior code work this session (grep/edit/commit/trace all count as exploring). If that context is sufficient, go straight to write. Only if context is still insufficient do you trigger explore, and only within the scope orbit names for you (the add-time stderr carries it). Use `orbit memo <repo> --scaffold` for the template, then write. Include any popped jot entries
    - **This step builds understanding *now*** (read code / draft the memo skeleton) — it cannot be deferred to wrap-up. Step 10 only aggregates incremental discoveries on top of it; it is not where first-time exploration happens
    - **Discovery gate:** for every added repo, no target action (edit / branch / push / release / tag) may begin until steps 3–7 are complete for that repo. Jumping from `add` straight to a target action is the failure this gate prevents
 8. Branch — raw mode `git checkout -b` (default, most scenarios) or scoped mode `orbit switch -c` (shared branches)
-9. Work: use native git commands inside worktrees for development. **jot feeds the card, so jot only what the card needs and lacks** — a role, or an MVP/VIP entry point the card misses or gets wrong → `orbit jot "one-liner"` from within the repo directory. Lightweight queue — no need to read or merge memo during work. If jot warns about accumulated entries (>10), consider aggregating now (see step 10)
+9. Work: use native git commands inside worktrees for development. **jot feeds the card, so jot only what the card needs and lacks** — a role, or an MVP/VIP entry point the card misses or gets wrong → `orbit jot "one-liner"` from within the repo directory. Lightweight queue — no need to read or merge memo during work. If jot warns the buffer is filling (`building` at half of the buffer orbit reports; `overflow` past it), consider aggregating now (see step 10)
    - **What to jot**: only information the card needs and doesn't yet have — a role (why a workspace would pull this repo in) or an MVP/VIP entry point (where to start, and why), about the repo's main branch. **Not**: deep code structure (module internals, conventions, pitfalls, call graphs — out of card scope, belongs in a code-doc); feature-branch changes; temporary debug info; anything the card already says
    - **Need a new repo during work** (e.g., tracing a cross-repo dependency) → return to the discovery flow of steps 2–7: `orbit repos` to screen → `orbit info` to assess → decide whether to add → sync if needed → add → memo check
 10. **Wrap-up** — before finishing, aggregate jot entries and assess PR impact. This step is **incremental aggregation only** — it folds discoveries onto the understanding built in step 7, never a place for first-time exploration skipped earlier:
-   - **Jot aggregation**: for each repo with jot entries, `orbit jot <repo> --pop` (consume entries) → `orbit info <repo>` (read card) → merge entries into card (stay within the card budget orbit reports: curate, don't append; merge-first rules) → `cat <<'EOF' | orbit memo <repo>` (write back). **Drop any `[seed]` line** — it is a system placeholder, never memo content. Before `orbit done`, `orbit context gaps` must be empty for repos the agent developed (no repo left with only a seed and no real memo)
+   - **Jot aggregation**: for each repo with jot entries, `orbit jot <repo> --pop` (consume entries) → `orbit info <repo>` (read card) → merge entries into card (stay within the card budget orbit reports: curate, don't append; merge-first rules) → `cat <<'EOF' | orbit memo <repo>` (write back). Before `orbit done`, no repo the agent developed may be left with a thin memo and no capture — bare `orbit context` shows the per-repo status (`memo thin`), and `orbit done` warns per repo as the final backstop
    - **Writeback is terminal**: the memo merge is the *last* action for that repo this session, so every capture (reflection plus any insight surfacing while reporting to the user) must precede the pop→merge. A jot produced *after* writeback is stranded — this session's aggregation is already closed, so it sits orphaned in the queue until a future session. If a real discovery surfaces post-writeback, re-run pop→merge to fold it in rather than leaving it queued
    - **PR impact assessment**: memo describes the pool repo's stable branch state, not the feature branch state. If the PR changes what the card reflects (a new entry point, or a new role for the repo), include a post-merge refresh suggestion: "`orbit sync <repo> && orbit info <repo>` — update the card if roles or entry points changed"
 11. `orbit done --pr <url>` — record PR and mark workspace as reclaimable (see Done Trigger Rules below)
@@ -282,7 +292,7 @@ Brand new project, `.repos/` just initialized with no repos. Agent uses the skil
 | `orbit done [--pr]` | Mark task complete | Workspace-level semantic, not a git concept |
 | `orbit status` | View workspace status | Aggregates multi-repo branch/ahead/behind |
 | `orbit goal` | Read/set workspace objective | Reads/writes workspace/.orbit goal field |
-| `orbit context [<key>] [--prime] [--json]` | Full context or single key query (workspace/path/goal/status/gaps; `gaps` = repos with no real memo — thin + no non-seed jot); `--prime` = lean startup preflight (pool roster + done banner + pending jots; full memos via `orbit info` on demand) | Aggregates goal + repos + memo, needs to read .repos/ |
+| `orbit context [<key>] [--startup|--prime|--reignite] [--json]` | Model-facing context blocks: bare = cruise block (durables + conditional per-repo status: jots / behind / memo state); `--startup` = session-start block (cold start → pool roster; populated → memos + staleness + per-repo status); key = single value (workspace/path/goal/state); `--prime`/`--reignite` are human/debug routing targets | Aggregates workspace durables + per-repo status, needs to read .repos/ |
 | `orbit prune` | Reclaim completed workspaces | Cross-workspace cleanup of worktrees + branches |
 | `orbit config [<key> [<value>]]` | Read/set project configuration | Needs to read/write .repos/.orbit |
 | `orbit doctor` | Environment health check | Checks git/bash version + .repos/ integrity |
@@ -367,7 +377,7 @@ Sync (`orbit sync`) advances pool HEAD, causing memoBehind to increase — there
 
 **Session ending**: if the session ends before done, agent aggregates remaining jot entries into memo and suggests the user run `orbit done` — do not auto-done, as work may be incomplete.
 
-**Gap gate**: `orbit done` warns (does not block) for repos still flagged by `orbit context gaps` — thin memo with only a `[seed]` placeholder and no real jot. This is the CLI backstop that fires even when hooks are absent and the agent skipped the wrap-up memo. The seed jot written at `orbit add` guarantees this warning triggers for any repo added no/low-memo.
+**Done gate**: `orbit done` does not block — but its per-repo stderr warnings (residual jots → `pop + merge`, thin memo with no capture → `explore + write`, over-budget card → `curate once`) are **actionable** class (see Heeding actionable stderr): the skill must instruct the agent to execute them before considering the workspace closed. The CLI does not enforce this; the skill must. This is the backstop that fires even when hooks are absent and the agent skipped the wrap-up memo; any leftover jot counts, however small.
 
 **Not a trigger**: pausing, switching topics, or intermediate work stages do not trigger done.
 
@@ -409,12 +419,11 @@ Skill does not need to explain internal mechanics (prefix stripping, push.defaul
 6. **Writing memo for repos you haven't touched** — memo writeback is on-demand; only manage repos you added and worked in
 7. **Copying README/PRD content into memo** — the card answers two questions (roles + how to use), not a documentation copy
 8. **`git checkout master`/`main` inside a worktree** — the pool holds the base branch, so this aborts with `already used by worktree`; use `orbit switch master` to sync the baseline, then branch
-9. **Merging a `[seed]` line into a memo** — `[seed]` jots are system placeholders/instructions written by `orbit add` for no/low-memo repos; act on them, then drop them, never paste them into memo content
 
 ## Skill Document Structure Requirements
 
 Each agent's SKILL.md must include:
-- Startup Detection logic (`orbit context path` → `orbit context --prime` → act based on goal)
+- Startup Detection logic (`<orbit-context>` tag check → `orbit context --startup` → act based on goal)
 - Discovery-First workflow (with command examples)
 - Two branch mode explanations (Raw + Scoped)
 - Anti-pattern warnings (covering at least the 5 items above)
@@ -456,5 +465,6 @@ When the command system changes, check in this order:
 - Metadata design: `docs/spec-metadata.md`
 - Knowledge system: `docs/spec-knowledge.md`
 - Lifecycle management: `docs/spec-lifecycle.md`
+- Hooks (context injection + auto-approve): `docs/spec-hooks.md`
 - Usage examples: `USAGE.md`
 - Tool comparison: `docs/comparison.md`

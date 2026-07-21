@@ -166,11 +166,11 @@ Orbit works best when the agent knows it's inside a workspace from its first tur
 
 A cold start loads progressively:
 
-1. **Prime** (`orbit context --prime`) — goal, status, prior notes, repo pool roster. No source loaded yet.
-2. **Ignition** (`orbit info` → `orbit add <repo>`) — agent assesses repos via memo, pulls what it needs as full worktrees.
+1. **Prime** (`orbit context --startup`) — goal, state, repo pool roster. No source loaded yet.
+2. **Ignite** (`orbit info` → `orbit add <repo>`) — agent assesses repos via memo, pulls what it needs as full worktrees.
 3. **Orbit** — grep, edit, commit, push. New repos pulled on demand.
 
-Resuming a workspace with repos already present skips priming.
+Resuming a workspace with repos already present skips priming — the same `--startup` call re-ignites it with each repo's memo + staleness instead.
 
 ## Auto-approving safe commands
 
@@ -199,7 +199,7 @@ orbit prune [workspace] [--older <dur>] [--verify] [--dry-run] [--force]
 # Status and context
 orbit status [workspace]
 orbit goal ["text" / --clear]
-orbit context [<key>] [--prime] [--json]
+orbit context [<key>] [--startup|--prime|--reignite] [--json]
 
 # Configuration
 orbit config [<key> [<value> | --unset]]
@@ -221,5 +221,5 @@ orbit completion <zsh|bash>
 | [`docs/comparison.md`](docs/comparison.md) | Tool comparison (workspace management + context/knowledge tools) |
 | [`PRINCIPLES.md`](PRINCIPLES.md) | Design principles and key decisions |
 | [`ROADMAP.md`](ROADMAP.md) | Roadmap and completion status |
-| [`docs/spec-*.md`](docs/) | Design specs (directory structure, branching strategy, command system, metadata, knowledge system, lifecycle) |
+| [`docs/spec-*.md`](docs/) | Design specs (directory structure, branching strategy, command system, metadata, knowledge system, lifecycle, hooks) |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Contribution workflow and development conventions |

@@ -40,7 +40,7 @@
     {
       "id": 7,
       "prompt": "I just cloned a new repo data-pipeline that has no description yet. Help me generate an initial description quickly.",
-      "expected_output": "Use `orbit memo data-pipeline --scaffold` to get the card template (stdout, not saved) — title + brief, `## When to add (roles)`, `## How to use`. Explore the repo within the `explore.paths` scope orbit gives you (it carries the scope in the seed jot it wrote at add — don't survey the whole tree), then write a pull-decision card answering both questions (roles + MVP/VIP entry points) via `cat ... | orbit memo data-pipeline`. Not a code survey.",
+      "expected_output": "Use `orbit memo data-pipeline --scaffold` to get the card template (stdout, not saved) — title + brief, `## When to add (roles)`, `## How to use`. Explore the repo within the scope orbit names for you (in the add-time stderr — don't survey the whole tree), then write a pull-decision card answering both questions (roles + MVP/VIP entry points) via `cat ... | orbit memo data-pipeline`. Not a code survey.",
       "files": []
     },
     {
@@ -52,7 +52,7 @@
     {
       "id": 9,
       "prompt": "Let's get to work.",
-      "expected_output": "Run `orbit context path` to detect workspace, then `orbit context --prime` to load the startup preflight (goal, available repos, done banner, and any residual jots), then begin working based on the goal.",
+      "expected_output": "Run `orbit context --startup` — one call doubles as workspace detection and the startup preflight (goal, state, available repos or worktree memos + per-repo status, a DONE banner if done), then begin working based on the goal.",
       "files": []
     },
     {
@@ -142,7 +142,7 @@
     {
       "id": 24,
       "prompt": "orbit start — spin up this workspace for me, and check whether there are any leftover un-aggregated discoveries from last time.",
-      "expected_output": "Run `orbit context path` to confirm you are in a workspace, then `orbit context --prime` to load the startup preflight — goal, repos, a DONE banner if the workspace is already marked done, and any pending jots from a prior session (fold them into memo and pop with `orbit jot <repo> --pop`).",
+      "expected_output": "Run `orbit context --startup` — one call doubles as workspace detection and the startup block: goal, state (a DONE banner if the workspace is already marked done), and — with worktrees present — each repo's memo + per-repo status with any pending jots from a prior session inlined (fold them into memo and pop with `orbit jot <repo> --pop`).",
       "files": []
     },
     {
@@ -160,13 +160,13 @@
     {
       "id": 27,
       "prompt": "backend had no memo before; after `orbit add` I went straight to editing and finished the fix. Can I run `orbit done` now?",
-      "expected_output": "Not yet — because backend was added with no/low memo, `orbit add` wrote a `[seed]` placeholder jot and `orbit context gaps` still flags it. Before `orbit done`, explore backend (within `explore.paths`) and write a real pull-decision card (roles + how to use) via `cat ... | orbit memo backend`, dropping the `[seed]` line (it is a system instruction, never memo content). Confirm `orbit context gaps` is empty; otherwise `orbit done` will warn that backend has no real memo.",
+      "expected_output": "Not yet — because backend was added with no/low memo, `orbit add` printed a one-shot stderr telling you to explore and write a card before done, and backend still shows `memo thin` in bare `orbit context`. Before `orbit done`, explore backend (within the scope orbit names for you) and write a real pull-decision card (roles + how to use) via `cat ... | orbit memo backend`; otherwise `orbit done` will warn `backend: memo thin (explore + write)`.",
       "files": []
     },
     {
       "id": 28,
-      "prompt": "At session start the system already injected a `=== PRIME — task-01 ===` block containing the goal, status, and pool roster. Now I say: let's get to work. What's your first step?",
-      "expected_output": "Do NOT run any context command — the injected `=== PRIME` block IS the completed startup preflight (it is the output of `orbit context --prime`), so goal, status, and the pool roster are already in context. Read that block and go straight to the workflow decision: if status is `done`, remind the user first; otherwise act on the goal (screen candidate repos, `orbit info`, etc.). Never re-run `orbit context --prime` or `orbit repos` to reload what you hold, and especially not plain `orbit context` (a mid-work full-memo dump, never a startup action).",
+      "prompt": "At session start the system already injected an `<orbit-context>` block containing the goal, state, and pool roster. Now I say: let's get to work. What's your first step?",
+      "expected_output": "Do NOT run any context command — the injected `<orbit-context>` block IS the completed startup preflight (it is the hook's injection of `orbit context --startup`), so goal, state, and the pool roster are already in context. Read that block and go straight to the workflow decision: if state is `done`, remind the user first; otherwise act on the goal (screen candidate repos, `orbit info`, etc.). Never re-run `orbit context --startup` or `orbit repos` to reload what you already hold.",
       "files": []
     },
     {
@@ -190,7 +190,7 @@
     {
       "id": 32,
       "prompt": "backend has no memo. Write its cold-start memo — how deep should I explore first?",
-      "expected_output": "Explore only within the `explore.paths` scope orbit gives you — orbit carries it in the seed jot it wrote when you added backend (a `path:depth` list; the repo root by default, which the user can extend). That scope is enough to name the repo's roles and its MVP/VIP entry points — the two things the card must answer. Don't survey the whole tree: the card is a pull-decision card, not a code doc; deep structure belongs in a dedicated code-doc, not the memo. Use `orbit memo backend --scaffold`, fill both card sections, and keep it tight — heed the `card budget` orbit reports rather than assuming a line count.",
+      "expected_output": "Explore only within the scope orbit names for you — orbit carries it in the add-time stderr when you added backend (a `path:depth` list; the repo root by default, which the user can extend). That scope is enough to name the repo's roles and its MVP/VIP entry points — the two things the card must answer. Don't survey the whole tree: the card is a pull-decision card, not a code doc; deep structure belongs in a dedicated code-doc, not the memo. Use `orbit memo backend --scaffold`, fill both card sections, and keep it tight — heed the `card budget` orbit reports rather than assuming a line count.",
       "files": []
     }
   ]

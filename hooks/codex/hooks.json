@@ -2,12 +2,22 @@
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup|resume",
+        "matcher": "startup",
         "hooks": [
           {
             "type": "command",
             "command": "bash \"${PLUGIN_ROOT}/hooks/codex/session-start.sh\"",
             "statusMessage": "Loading orbit workspace context"
+          }
+        ]
+      },
+      {
+        "matcher": "resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${PLUGIN_ROOT}/hooks/codex/session-resume.sh\"",
+            "statusMessage": "Restoring orbit workspace context"
           }
         ]
       }
@@ -20,17 +30,6 @@
             "type": "command",
             "command": "bash \"${PLUGIN_ROOT}/hooks/codex/auto-approve.sh\"",
             "statusMessage": "Checking orbit command"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${PLUGIN_ROOT}/hooks/codex/stop.sh\"",
-            "timeout": 30
           }
         ]
       }

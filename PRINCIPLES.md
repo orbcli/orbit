@@ -97,7 +97,7 @@ Not pursued in the current phase:
 
 Memo is not documentation — it is a cross-session knowledge cache. Design centers on three constraints: context window is finite, knowledge expires, and refresh cost is high.
 
-- On-demand loading: agents spend minimal tokens filtering, load details on demand, then operate — designed for context window economy. The session boot sequence mirrors this — prime (orientation) → ignition (`add` the repos actually needed) → orbit (work, pulling memos on demand) — each stage loads only what it needs
+- On-demand loading: agents spend minimal tokens filtering, load details on demand, then operate — designed for context window economy. The session boot sequence mirrors this — prime (orientation) → ignite (`add` the repos actually needed) → orbit (work, pulling memos on demand) — each stage loads only what it needs
 - Bounded capacity: memos have a configurable capacity budget (soft floor + hard ceiling) and are maintained incrementally — existing memos represent knowledge from prior sessions; factual errors are corrected and genuinely new roles or entry points folded in, curating rather than blindly appending once the card passes its ceiling. Cold-start exploration is likewise bounded to a configurable scope, so a repo's first touch never surveys the whole tree
 - Sync and memo are decoupled: code freshness and knowledge freshness are separate concerns; sync does not trigger memo refresh
 - Knowledge is a natural output of agent work, not a side effect of commands — orbit provides the pipeline, valuable understanding comes from actual exploration
@@ -144,11 +144,11 @@ Concurrency is the owner's responsibility: serial delegation has no contention; 
 
 ### 8. stderr is the steering channel
 
-Orbit is **advisory by design** — it has no runtime to enforce procedure. With few exceptions (explicit gates like `orbit done`'s completion path), commands do not block; they *guide*. That guidance travels on **stderr**: card budget, gap warnings, jot overflow, staleness/sync-behind notes, raw-mode tracking notes, README truncation. These are not decoration — they are how orbit routes the next-right-action to the agent when it cannot compel it.
+Orbit is **advisory by design** — it has no runtime to enforce procedure. With few exceptions (explicit gates like `orbit done`'s completion path), commands do not block; they *guide*. That guidance travels on **stderr**: card budget, memo-thin nudges, jot overflow, staleness/sync-behind notes, raw-mode tracking notes, README truncation. These are not decoration — they are how orbit routes the next-right-action to the agent when it cannot compel it.
 
 - The agent is expected to **read and act on** these hints, treating them as authoritative procedure, not noise.
-- stdout stays clean, machine-readable data (see the stdout/stderr tenet under Design Stance); the steering half lives entirely on stderr.
-- The gap guarantee's layered response (skill → hooks → CLI gate, in [spec-knowledge](docs/spec-knowledge.md)) is one instance of this principle: warnings guide, they do not block, and they never pollute stdout.
+- stdout carries two payload classes: **machine-facing data** (the default — output meant for piping/parsing) and **model-facing context** (readable markdown blocks — the `orbit context` family and the hook-injected blocks built from it, whose only consumer is the agent/human reading them). Session injection works by a hook forwarding the command's stdout into model context, so a context command's stdout *is* the message. stderr is always the steering channel, for every command.
+- The memo-surfacing model's redundant layers (add-time stderr → cruise block → CLI done gate, in [spec-knowledge](docs/spec-knowledge.md)) are one instance of this principle: warnings guide, they do not block, and they never pollute stdout.
 - The full catalogue of guidance warnings — their triggers, the exact commands each names, backstops, and the shared message-format contract — is maintained in [spec-warnings](docs/spec-warnings.md).
 
 ## Design Stance
@@ -164,7 +164,7 @@ The priority is the **Git-native base model**, not **multi-agent platform orches
 - Orbit spans two dimensions — workspace structure and agent knowledge — each with its own lifecycle: structure follows the **new → add → done → (prune | reactivate via goal)** loop — a done workspace is either reclaimed or reused by setting a new goal, which reactivates it — knowledge follows **repos → info → add → work → jot → memo** progressive accumulation; `add` is the intersection point. `sync` is a maintenance operation outside the core lifecycle — it keeps pool code fresh, independent of structural changes and knowledge updates
 - Workspace context is implicitly inferred from CWD, reducing command parameters
 - Commands remain atomic — each command does one thing, without chaining side effects; complex workflows are orchestrated by integration layers
-- stdout is data, stderr is hints — all command warnings, staleness detection, and guidance messages go to stderr, not polluting parseable stdout. Because orbit has no enforcement runtime, that stderr channel is the *primary steering mechanism* the agent is expected to act on, not merely informational (see Principle 8)
+- stdout is data, stderr is hints — all command warnings, staleness detection, and guidance messages go to stderr, not polluting parseable stdout. The refinement: stdout carries **machine-facing data** by default, but the `orbit context` family carries **model-facing context** (readable markdown blocks for the agent/human; session injection forwards them into model context). Because orbit has no enforcement runtime, the stderr channel is the *primary steering mechanism* the agent is expected to act on, not merely informational (see Principle 8)
 
 These form the foundation — established first so that whatever upper-layer agents or UIs are added later, the underlying model doesn't need to be redone.
 
@@ -215,7 +215,7 @@ Files (git-config INI + markdown) have zero dependencies, are disposable, manual
 
 ### Why knowledge is written by agents rather than auto-generated
 
-Auto-summarization (README extraction, AST analysis) produces mechanical descriptions — it can enumerate files and dependencies, but it cannot judge **which roles a repo plays in a task or which entry points are worth starting from**, the two questions the memo card answers. That judgment only emerges through actual work. Orbit makes memos a natural output of agent work — it provides the pipeline (scaffold template, capacity budget), while valuable understanding comes from actual exploration. On cold start memos are empty, mitigated by the README-first-line fallback and by the seed-jot/gap guarantee, which keeps a no-memo repo flagged until a real card is written.
+Auto-summarization (README extraction, AST analysis) produces mechanical descriptions — it can enumerate files and dependencies, but it cannot judge **which roles a repo plays in a task or which entry points are worth starting from**, the two questions the memo card answers. That judgment only emerges through actual work. Orbit makes memos a natural output of agent work — it provides the pipeline (scaffold template, capacity budget), while valuable understanding comes from actual exploration. On cold start memos are empty, mitigated by the README-first-line fallback and by the memo-surfacing model, which keeps a no-memo repo flagged (add-time stderr, cruise block, done gate) until a real card is written.
 
 ### Why knowledge is attached to repos rather than workspaces
 

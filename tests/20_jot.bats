@@ -15,8 +15,8 @@ teardown() {
 }
 
 # Helper: create a project with one repo cloned and added to a workspace.
-# `orbit add` seeds a [seed] jot for the memo-less mock repo; these tests exercise
-# jot push/pop mechanics in isolation, so clear that seed for a clean slate.
+# These tests exercise jot push/pop mechanics in isolation, so clear any
+# pre-existing queue entries for a clean slate.
 setup_workspace_with_repo() {
   local proj="$1"
   clone_project "$proj"
@@ -116,18 +116,39 @@ setup_workspace_with_repo() {
   assert_contains "$fe" "frontend note"
 }
 
-# --- overflow warning ---
+# --- buffer-size warn levels (jot.bufferSize, default memo.minLines = 4) ---
 
-@test "jot: overflow warning on stderr when >10 entries" {
+@test "jot: silent at or below half of bufferSize" {
+  local proj="$SANDBOX/jot-silent"
+  setup_workspace_with_repo "$proj"
+  cd "$proj/ws1"
+  orbit jot myrepo "note 1" 2>/dev/null
+  local stderr_output
+  stderr_output=$(orbit jot myrepo "note 2" 2>&1 >/dev/null)
+  [ -z "$stderr_output" ]
+}
+
+@test "jot: building note between half and bufferSize" {
+  local proj="$SANDBOX/jot-building"
+  setup_workspace_with_repo "$proj"
+  cd "$proj/ws1"
+  orbit jot myrepo "note 1" 2>/dev/null
+  orbit jot myrepo "note 2" 2>/dev/null
+  local stderr_output
+  stderr_output=$(orbit jot myrepo "note 3" 2>&1 >/dev/null)
+  assert_contains "$stderr_output" "3 jots (building)"
+}
+
+@test "jot: overflow warning on stderr past bufferSize" {
   local proj="$SANDBOX/jot-overflow"
   setup_workspace_with_repo "$proj"
   cd "$proj/ws1"
-  for i in $(seq 1 10); do
+  for i in $(seq 1 4); do
     orbit jot myrepo "note $i" 2>/dev/null
   done
   local stderr_output
-  stderr_output=$(orbit jot myrepo "note 11" 2>&1 >/dev/null)
-  assert_contains "$stderr_output" "jot entries: run jot --pop"
+  stderr_output=$(orbit jot myrepo "note 5" 2>&1 >/dev/null)
+  assert_contains "$stderr_output" "5 jots (overflow): jot myrepo --pop, then merge into memo"
 }
 
 # --- error cases ---
@@ -150,19 +171,38 @@ setup_workspace_with_repo() {
   [ "$status" -ne 0 ]
 }
 
-# --- seed jot (no/low memo) ---
+# --- no/low-memo nudge at add (stderr, no queue writes) ---
 
-@test "add: seeds a [seed] jot for a repo with no memo" {
-  local proj="$SANDBOX/jot-seed1"
+@test "add: no-memo stderr names the explore.paths scope" {
+  local proj="$SANDBOX/jot-add1"
   clone_project "$proj"
   cd "$proj" && orbit new --name ws1 --no-goal >/dev/null 2>&1
-  cd "$proj/ws1" && orbit add myrepo >/dev/null 2>&1
+  local stderr_output
+  stderr_output=$(cd "$proj/ws1" && orbit add myrepo 2>&1 >/dev/null)
+  assert_contains "$stderr_output" "no memo for myrepo"
+  assert_contains "$stderr_output" "explore . (depth 1)"
+  # and the jot queue stays clean — no system placeholders
   local entries
-  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null)
-  assert_contains "$entries" "[seed]"
+  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null || true)
+  [ -z "$entries" ]
 }
 
-@test "add: does not seed when the repo already has a memo" {
+@test "add: thin-memo stderr names the explore.paths scope" {
+  local proj="$SANDBOX/jot-add2"
+  clone_project "$proj"
+  # A memo below the thin floor (minLines default 4 non-blank lines).
+  printf '# myrepo\n\nstub.\n' | (cd "$proj" && orbit memo myrepo) >/dev/null 2>&1
+  cd "$proj" && orbit new --name ws1 --no-goal >/dev/null 2>&1
+  local stderr_output
+  stderr_output=$(cd "$proj/ws1" && orbit add myrepo 2>&1 >/dev/null)
+  assert_contains "$stderr_output" "memo for myrepo is thin"
+  assert_contains "$stderr_output" "explore . (depth 1)"
+  local entries
+  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null || true)
+  [ -z "$entries" ]
+}
+
+@test "add: writes no system jots when the repo already has a memo" {
   local proj="$SANDBOX/jot-seed2"
   clone_project "$proj"
   # Write a memo above the thin threshold so add treats it as sufficient.
@@ -174,55 +214,55 @@ setup_workspace_with_repo() {
   [ -z "$entries" ]
 }
 
-# --- over-length seed (memo past the max+min curate buffer) ---
+# --- over-budget advisory (one-shot stderr, no queue writes, no throttle) ---
 
-@test "memo: seeds a curate-down jot when the card is over budget" {
+@test "memo: over-budget writeback prints one-shot stderr, writes no jot" {
   local proj="$SANDBOX/jot-overlong1"
   setup_workspace_with_repo "$proj"
   git config --file "$proj/.repos/.orbit" memo.minLines 2
   git config --file "$proj/.repos/.orbit" memo.maxLines 3
   cd "$proj/ws1"
   # 7 non-blank lines > threshold (max 3 + min 2 = 5)
-  printf '# myrepo\n\nBrief.\n- a\n- b\n- c\n- d\n' | orbit memo myrepo >/dev/null 2>&1
+  local stderr_output
+  stderr_output=$(printf '# myrepo\n\nBrief.\n- a\n- b\n- c\n- d\n' | orbit memo myrepo 2>&1 >/dev/null)
+  assert_contains "$stderr_output" "over budget"
   local entries
-  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null)
-  assert_contains "$entries" "[seed]"
-  assert_contains "$entries" "over budget"
+  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null || true)
+  [ -z "$entries" ]
 }
 
-@test "memo: over-budget throttle prevents a second seed" {
+@test "memo: over-budget stderr fires on every over-budget writeback (no throttle)" {
   local proj="$SANDBOX/jot-overlong2"
   setup_workspace_with_repo "$proj"
   git config --file "$proj/.repos/.orbit" memo.minLines 2
   git config --file "$proj/.repos/.orbit" memo.maxLines 3
   cd "$proj/ws1"
-  printf '# myrepo\n\nBrief.\n- a\n- b\n- c\n- d\n' | orbit memo myrepo >/dev/null 2>&1
-  printf '# myrepo\n\nBrief.\n- a\n- b\n- c\n- d\n- e\n' | orbit memo myrepo >/dev/null 2>&1
-  local count
-  count=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null | grep -c "over budget")
-  [ "$count" -eq 1 ]
+  local first second
+  first=$(printf '# myrepo\n\nBrief.\n- a\n- b\n- c\n- d\n' | orbit memo myrepo 2>&1 >/dev/null)
+  second=$(printf '# myrepo\n\nBrief.\n- a\n- b\n- c\n- d\n- e\n' | orbit memo myrepo 2>&1 >/dev/null)
+  assert_contains "$first" "over budget"
+  assert_contains "$second" "over budget"
 }
 
-@test "memo: dropping back under budget clears the over-length throttle" {
+@test "memo: no over-budget stderr once back under budget" {
   local proj="$SANDBOX/jot-overlong3"
   setup_workspace_with_repo "$proj"
   git config --file "$proj/.repos/.orbit" memo.minLines 2
   git config --file "$proj/.repos/.orbit" memo.maxLines 3
   cd "$proj/ws1"
   printf '# myrepo\n\nBrief.\n- a\n- b\n- c\n- d\n' | orbit memo myrepo >/dev/null 2>&1
-  printf '# myrepo\n\nBrief.\n' | orbit memo myrepo >/dev/null 2>&1
-  run git config --file "$proj/ws1/.orbit" --get overlong.myrepo.seen
-  [ "$status" -ne 0 ]
+  local stderr_output
+  stderr_output=$(printf '# myrepo\n\nBrief.\n' | orbit memo myrepo 2>&1 >/dev/null)
+  [ -z "$stderr_output" ]
 }
 
-@test "memo: no over-budget seed when run from project root" {
+@test "memo: no over-budget stderr when run from project root" {
   local proj="$SANDBOX/jot-overlong4"
   setup_workspace_with_repo "$proj"
   git config --file "$proj/.repos/.orbit" memo.minLines 2
   git config --file "$proj/.repos/.orbit" memo.maxLines 3
   cd "$proj"
-  printf '# myrepo\n\nBrief.\n- a\n- b\n- c\n- d\n' | orbit memo myrepo >/dev/null 2>&1
-  local entries
-  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null || true)
-  [ -z "$entries" ]
+  local stderr_output
+  stderr_output=$(printf '# myrepo\n\nBrief.\n- a\n- b\n- c\n- d\n' | orbit memo myrepo 2>&1 >/dev/null)
+  [ -z "$stderr_output" ]
 }
