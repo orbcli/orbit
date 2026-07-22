@@ -10,6 +10,7 @@
     "skills/"
   ],
   "scripts": {
+    "test": "node --experimental-strip-types --test plugin.test.ts",
     "prepublishOnly": "mkdir -p skills/orbit && cp ../skills/orbit/SKILL.md skills/orbit/SKILL.md"
   },
   "keywords": [

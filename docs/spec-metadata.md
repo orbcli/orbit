@@ -177,16 +177,21 @@ After `orbit done` writes:
 
 ## Fallback Rules
 
-### `orbit repos` (Brief Display)
+### Brief Display Fallback (`orbit repos`, `orbit context --startup` prime roster)
+
+Applies wherever a pool repo's one-line brief is displayed. Both surfaces share one resolver (`orbit_pool_brief` in `orbit.sh`) that returns the brief plus its source tag (`index` / `memo` / `readme` / `none`); presentation is per-surface — `orbit repos` prints steering notes on **stderr** (human terminal), while the prime roster inlines them as **stdout sections** (`no memo (…):` / `index out of sync (…):`) because hook injection carries only stdout.
 
 Source priority:
-1. Global index `repos.<name>.brief` field (cached)
-2. Per-repo `.md` first effective text paragraph after heading (real-time extraction, repair path when index and .md are out of sync)
-   -> stderr: `orbit: <repo> index out of sync: refresh it with memo <repo> --refresh`
-3. README fallback: extract using the same rules from repo's README (**not written to meta**, display only for current invocation)
-   -> stderr: `orbit: <repo> has no memo, using README instead`
-4. None available -> brief column displays `-`
-   -> stderr: `orbit: <repo> has no memo or README`
+1. Global index `repos.<name>.brief` field (cached) — source `index`
+2. Per-repo `.md` first effective text paragraph after heading (real-time extraction, repair path when index and .md are out of sync) — source `memo`
+   -> `orbit repos` stderr: `orbit: <repo> index out of sync: refresh it with memo <repo> --refresh`
+   -> prime roster: repo listed under `index out of sync (repair via orbit memo <repo> --refresh):`
+3. README fallback: extract using the same rules from repo's README (**not written to meta**, display only for current invocation) — source `readme`
+   -> `orbit repos` stderr: `orbit: <repo> has no memo, using README instead`
+   -> prime roster: repo listed under `no memo (write the card via orbit memo <repo>; …):`
+4. None available -> brief column displays `-` (empty string in JSON) — source `none`
+   -> `orbit repos` stderr: `orbit: <repo> has no memo or README`
+   -> prime roster: repo listed under the same `no memo (…):` section
 
 Case 2 prompts index repair (.md exists meaning memo was previously executed, but index lost brief due to concurrent write or corruption).
 Cases 3 and 4 do not write back to index cache; stderr guides the agent to generate a proper .md file via `orbit memo <repo>`.

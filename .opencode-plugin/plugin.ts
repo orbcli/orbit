@@ -5,6 +5,9 @@ import type { Plugin } from "@opencode-ai/plugin"
 
 // Orbit OpenCode plugin — hooks mirroring the Claude/Qoder/Codex plugins:
 //   experimental.chat.system.transform  →  SessionStart (startup)
+//   experimental.session.compacting     →  summary-pass guard (no injection into
+//                                          the tool-forbidden summary request;
+//                                          durables go via the context channel)
 //   event(session.compacted)            →  SessionStart:compact
 //   permission.ask                      →  PreToolUse   (auto-approve safe orbit commands)
 //
@@ -15,8 +18,13 @@ import type { Plugin } from "@opencode-ai/plugin"
 // (anomalyco/opencode#5409), the first transform of every session injects
 // the full startup block (`orbit context --startup`); the skill is the
 // documented fallback for resume (agent runs bare `orbit context` itself).
-// Cache refreshes and post-compaction injections always use the light cruise
-// block — never re-inject the full startup block mid-session (token discipline).
+//
+// Injection tiers follow the Claude/Qoder lifecycle (docs/spec-hooks.md):
+// the startup block rides the whole pre-compact session — cache refreshes
+// after orbit CLI commands rebuild it in FULL (parity with Claude/Qoder,
+// where the injected block lives in conversation history until compaction) —
+// and only a compaction switches the session to the light cruise block
+// (compaction means context pressure; never re-inject full memos after one).
 //
 // Supports dual distribution:
 //   Local:  install.sh --opencode  →  copies plugin.ts + SKILL.md to ~/.config/opencode/
@@ -28,6 +36,51 @@ import type { Plugin } from "@opencode-ai/plugin"
 // Directory of this module — used to locate the bundled skill for npm installs.
 const pluginDir = dirname(fileURLToPath(import.meta.url))
 
+// ── Injected-block furniture (hook layer, never the orbit runtime) ──────
+// `orbit context` output is shared by humans and agents; the hooks add the
+// agent-only furniture around it. The XML comment bootstraps skill loading:
+// the skill description's primary trigger is "an <orbit-context> hook block
+// is present", but nothing in the payload itself pointed at the skill, and
+// agents were observed reading the block without ever loading the skill.
+// The wording is tier-specific:
+//   startup — a fresh session never has the skill loaded, so the call is
+//     unconditional ("before your first reply");
+//   cruise  — resume/compact blocks fire mid-session, and a compaction can
+//     wipe the skill CONTENT while a summary still "remembers" loading it —
+//     so the condition is content-in-context, not loaded-this-session.
+// XML comment syntax keeps the hint out of the data.
+const STARTUP_HINT =
+  "<!-- orbit workspace: invoke the orbit skill before your first reply -->"
+const CRUISE_HINT =
+  "<!-- orbit workspace: invoke the orbit skill (skip only if its content is already in your context) -->"
+
+const wrapContext = (text: string, startup: boolean): string =>
+  `<orbit-context>\n${startup ? STARTUP_HINT : CRUISE_HINT}\n${text}\n</orbit-context>`
+
+// True only when a bash command actually invokes the orbit CLI: the first
+// token of any command in a chain resolves to binary `orbit`/`orbit.sh`,
+// with interpreter/builtin prefixes unwrapped (`bash orbit.sh status`,
+// `sh ./orbit.sh`, `command orbit status`). Substring matching is wrong
+// here — workspace paths conventionally contain "orbit"
+// (~/coding/orbit-demo), so plain `ls`/`git` on the workspace would
+// false-positive and needlessly rebuild the context cache. Conservative
+// misses (env prefixes, `bash -c`, command substitution) are acceptable:
+// they only skip a refresh, never corrupt state.
+const invokesOrbitCli = (cmd: string): boolean =>
+  cmd.split(/&&|\|\||[;|&\n]/).some((segment) => {
+    const tokens = segment.trim().split(/\s+/)
+    const isOrbit = (t: string | undefined): boolean => {
+      const base = (t ?? "").split("/").pop() ?? ""
+      return base === "orbit" || base === "orbit.sh"
+    }
+    if (isOrbit(tokens[0])) return true
+    const first = (tokens[0] ?? "").split("/").pop() ?? ""
+    if (first === "bash" || first === "sh" || first === "zsh" || first === "command") {
+      return isOrbit(tokens[1])
+    }
+    return false
+  })
+
 // Subcommands in tiers 1–2 (read-only + idempotent workspace-write) from
 // skills/CONSTRAINTS.md. Excluded: done, prune, clone, config, new.
 const SAFE_SUBCOMMANDS = new Set([
@@ -36,27 +89,36 @@ const SAFE_SUBCOMMANDS = new Set([
   "version", "doctor", "completion",
 ])
 
-export default (async ({ client, $ }) => {
-  // Per-session cache for injected system context. Invalidated when a bash
-  // tool that runs an orbit command executes (workspace state may have changed).
+const orbitPlugin = (async ({ client, $ }) => {
+  // Per-session cache for injected system context. Refreshed when a bash
+  // tool that invokes the orbit CLI executes (workspace state may have
+  // changed). compactedSessions marks sessions that have been compacted —
+  // their refreshes stay on the cruise block, since full memos must not
+  // return after a compaction. compactingNow marks sessions with a
+  // compaction summary pass in flight — see the compacting hook below.
   const ctxCache = new Map<string, string>()
+  const compactedSessions = new Set<string>()
+  const compactingNow = new Set<string>()
 
-  // Run an orbit context command and wrap its markdown in <orbit-context>
-  // tags so the agent can tell hook-injected context from self-invoked output.
-  // Returns "" on any failure (orbit missing / not in a workspace — the
-  // command fails fast in both cases).
-  const buildContext = async (startup: boolean): Promise<string> => {
+  // Run an orbit context command and return its raw markdown. Returns "" on
+  // any failure (orbit missing / not in a workspace — the command fails
+  // fast in both cases).
+  const rawContext = async (startup: boolean): Promise<string> => {
     try {
       const res = startup
         ? await $`orbit context --startup`.nothrow().quiet()
         : await $`orbit context`.nothrow().quiet()
       if (res.exitCode !== 0) return ""
-      const text = res.text().trim()
-      if (!text) return ""
-      return `<orbit-context>\n${text}\n</orbit-context>`
+      return res.text().trim()
     } catch {
       return ""
     }
+  }
+
+  // Raw context wrapped for injection (tags + tier-specific skill hint).
+  const buildContext = async (startup: boolean): Promise<string> => {
+    const text = await rawContext(startup)
+    return text ? wrapContext(text, startup) : ""
   }
 
   return {
@@ -77,18 +139,33 @@ export default (async ({ client, $ }) => {
     // Appends workspace context to the system prompt so the agent knows it is
     // inside an orbit workspace from its first reply. The first transform of
     // every session injects the full startup block (see TODO above — resume
-    // routing is blocked on anomalyco/opencode#5409); refreshes after cache
-    // invalidation always use the light cruise block — never re-inject the
-    // full startup block mid-session (token discipline).
+    // routing is blocked on anomalyco/opencode#5409); the cached block is
+    // re-pushed on later transforms so it rides the whole session (the
+    // system prompt is rebuilt per request — nothing persists on its own).
+    // A cache miss rebuilds the session's current tier: startup normally,
+    // cruise once the session has been compacted — the full startup block
+    // never returns after a compaction, even on a rebuilt cache.
     "experimental.chat.system.transform": async (input, output) => {
       const sid = input.sessionID
+      // Summary-pass suppression (flagged by the compacting hook below):
+      // the summary request forbids tool calls, and the block's "invoke the
+      // skill" hint in its system prompt primes exactly the
+      // hallucinated-tool-call failure that aborts compaction ("Tool call
+      // not allowed while generating summary"). The flag is NOT consumed
+      // here — opencode retries the summary request on provider errors and
+      // every attempt re-fires this transform — it clears on
+      // session.compacted (success) or session.idle (failure/abort), so a
+      // failed compaction re-enables injection from the next turn.
+      // Workspace durables reach the summary through the compacting hook's
+      // context channel instead.
+      if (sid && compactingNow.has(sid)) return
       if (sid && ctxCache.has(sid)) {
         const cached = ctxCache.get(sid)!
         if (cached) output.system.push(cached)
         return
       }
 
-      const ctx = await buildContext(true)
+      const ctx = await buildContext(!(sid && compactedSessions.has(sid)))
 
       if (sid) ctxCache.set(sid, ctx)
       if (ctx) output.system.push(ctx)
@@ -133,35 +210,76 @@ export default (async ({ client, $ }) => {
     },
 
     "tool.execute.after": async (input) => {
-      // Invalidate the system-context cache when an orbit bash command runs,
-      // rebuilding it with the LIGHT cruise block (never the full startup
-      // block — mid-session refreshes must not re-inject full memos).
-      // Only update on a successful rebuild — if the rebuild fails (orbit
-      // missing, CWD left the workspace) keep the previous cache so the
-      // next transform still sees context rather than a permanent hole.
+      // Refresh the cached block after real orbit CLI invocations (workspace
+      // state may have changed). Pre-compact the refresh rebuilds the full
+      // startup block — Claude/Qoder parity, where the injected block rides
+      // conversation history for the whole pre-compact session. After a
+      // compaction the refresh stays on the cruise block: compaction means
+      // context pressure, so full memos are never re-injected after one.
+      // Only update on a successful rebuild — if it fails (orbit missing,
+      // CWD left the workspace) keep the previous cache so the next
+      // transform still sees context rather than a permanent hole.
       if (input.tool === "bash" && input.sessionID) {
         const args = input.args as Record<string, unknown> | undefined
         const cmd = typeof args?.command === "string" ? args.command : ""
-        if (cmd.includes("orbit") && ctxCache.has(input.sessionID)) {
-          const fresh = await buildContext(false)
+        if (invokesOrbitCli(cmd) && ctxCache.has(input.sessionID)) {
+          const fresh = await buildContext(!compactedSessions.has(input.sessionID))
           if (fresh) ctxCache.set(input.sessionID, fresh)
         }
       }
     },
 
+    // ── Compaction guard ───────────────────────────────────────────────
+    // Fires before the summary pass: flag the session so the system
+    // transform skips injection (above), and hand the workspace durables
+    // to the summary prompt through opencode's official channel — without
+    // this the summary would lose goal/state entirely, since hook-injected
+    // context lives in the system prompt, not in message history. Bare
+    // cruise text: no tags, no skill hint (instructions prime tool calls,
+    // which are forbidden in this pass).
+    "experimental.session.compacting": async (input, output) => {
+      try {
+        if (input.sessionID) compactingNow.add(input.sessionID)
+        const text = await rawContext(false)
+        if (text) output.context.push(text)
+      } catch {
+        // fail-safe: compaction proceeds without orbit context
+      }
+    },
+
     event: async ({ event }) => {
       try {
+        // ── Compaction episode end (failure/abort path) ────────────────
+        // A failed compaction never publishes session.compacted (opencode
+        // only publishes it on success), so clear the summary-pass
+        // suppression flag when the session goes idle — the next turn's
+        // transform injects normally again.
+        if (event.type === "session.idle") {
+          const sessionID = (event.properties as { sessionID?: string }).sessionID
+          if (sessionID) compactingNow.delete(sessionID)
+          return
+        }
         // ── SessionStart:compact equivalent ────────────────────────────
         // After compaction, inject the light cruise block two ways: as an
         // immediate prompt (the compacted history is gone), and into the
-        // cache so subsequent transforms re-inject the light block rather
-        // than the full startup block compaction was meant to avoid.
+        // cache so subsequent transforms re-inject it. Marking the session
+        // compacted also pins later cache refreshes to the cruise tier —
+        // the full startup block never returns after a compaction.
         if (event.type !== "session.compacted") return
         const sessionID = (event.properties as { sessionID?: string }).sessionID
         if (!sessionID) return
+        compactedSessions.add(sessionID)
+        compactingNow.delete(sessionID)
 
+        // On build failure (orbit missing / CWD left the workspace), drop the
+        // cache entry rather than leave a stale startup block behind — the
+        // session is now cruise-pinned, and the next transform's cache-miss
+        // path rebuilds the cruise tier anyway.
         const ctx = await buildContext(false)
-        if (!ctx) return
+        if (!ctx) {
+          ctxCache.delete(sessionID)
+          return
+        }
         ctxCache.set(sessionID, ctx)
         await client.session.prompt({
           path: { id: sessionID },
@@ -173,3 +291,16 @@ export default (async ({ client, $ }) => {
     },
   }
 }) satisfies Plugin
+
+// OpenCode's plugin loader enumerates EVERY value exported by this module
+// and throws "Plugin export is not a function" on anything that is not a
+// plugin function — a stray `export const` here kills the whole plugin at
+// load time. The helpers above must stay off the module's export surface;
+// tests reach them as properties of the default-exported function (typeof
+// is still "function", and the single-file install copies just this file).
+export default Object.assign(orbitPlugin, {
+  STARTUP_HINT,
+  CRUISE_HINT,
+  wrapContext,
+  invokesOrbitCli,
+})
