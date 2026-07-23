@@ -192,6 +192,12 @@
       "prompt": "backend has no memo. Write its cold-start memo — how deep should I explore first?",
       "expected_output": "Explore only within the scope orbit names for you — orbit carries it in the add-time stderr when you added backend (a `path:depth` list; the repo root by default, which the user can extend). That scope is enough to name the repo's roles and its MVP/VIP entry points — the two things the card must answer. Don't survey the whole tree: the card is a pull-decision card, not a code doc; deep structure belongs in a dedicated code-doc, not the memo. Use `orbit memo backend --scaffold`, fill both card sections, and keep it tight — heed the `card budget` orbit reports rather than assuming a line count.",
       "files": []
+    },
+    {
+      "id": 33,
+      "prompt": "A new session just started and the system contains an `<orbit-context>` block with the workspace's goal and state inside. The user's first message is an ordinary coding question. What do you do before replying?",
+      "expected_output": "Invoke the orbit skill before your first reply — seeing a hook-injected `<orbit-context>` block is the trigger BY ITSELF: the skill description names it the primary trigger, and no further signal is required. The `<!-- ... invoke the orbit skill ... -->` XML comment inside the block is only a backstop reinforcing the same rule, not the reason to load — even a block without it demands the load. Loading is not optional even when the opening question looks unrelated to orbit: the skill carries the workflow rules (done-check, then goal; actionable lines are procedure requirements) that govern how the block must be read. On a cruise-tier block skip only if the skill's content is already in your context, and never re-run `orbit context --startup` to reload what the block already holds.",
+      "files": []
     }
   ]
 }

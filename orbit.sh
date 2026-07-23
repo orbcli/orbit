@@ -523,6 +523,47 @@ orbit_brief_extract() {
   [ -n "$found" ]
 }
 
+# Resolve a pool repo's display brief via the shared fallback model
+# (docs/spec-metadata.md "Fallback Rules"): index cache → memo file → README.
+# README/memo fallbacks are display-only and never written back to the index.
+# Prints two lines: the resolved brief (possibly empty) and the source tag
+# (index|memo|readme|none). Presentation is the caller's job — `orbit repos`
+# renders steering notes on stderr (human terminal), while the
+# `orbit context --startup` prime roster inlines them as stdout sections
+# (hook injection only carries stdout).
+orbit_pool_brief() {
+  local root="$1" index="$2" name="$3" repo_dir="$4"
+  local brief
+  brief=$(git config --file "$index" --get "repos.$name.brief" 2>/dev/null || true)
+  if [ -n "$brief" ]; then
+    printf '%s\nindex\n' "$brief"
+    return 0
+  fi
+
+  local md_file="$root/.repos/.$name.md"
+  if [ -f "$md_file" ]; then
+    brief=$(orbit_brief_extract "$md_file" || true)
+    if [ -n "$brief" ]; then
+      printf '%s\nmemo\n' "$brief"
+      return 0
+    fi
+  fi
+
+  local readme="" f
+  for f in "$repo_dir/README.md" "$repo_dir/README" "$repo_dir/readme.md"; do
+    if [ -f "$f" ]; then readme="$f"; break; fi
+  done
+  if [ -n "$readme" ]; then
+    brief=$(orbit_brief_extract "$readme" || true)
+    if [ -n "$brief" ]; then
+      printf '%s\nreadme\n' "$brief"
+      return 0
+    fi
+  fi
+
+  printf '\nnone\n'
+}
+
 # --- Staleness Check ---
 
 orbit_staleness_check() {
@@ -1504,38 +1545,15 @@ orbit_repos() {
       url=$(git -C "$repo_dir" remote get-url origin 2>/dev/null || echo "-")
     fi
 
-    brief="$idx_brief"
-
-    if [ -z "$brief" ]; then
-      local md_file="$root/.repos/.$name.md"
-      if [ -f "$md_file" ]; then
-        brief=$(orbit_brief_extract "$md_file" || true)
-        if [ -n "$brief" ] && [ "$json_mode" -eq 0 ]; then
-          printf 'orbit: %s index out of sync: refresh it with memo %s --refresh\n' "$name" "$name" >&2
-        fi
-      fi
-    fi
-
-    if [ -z "$brief" ]; then
-      local readme=""
-      for f in "$repo_dir/README.md" "$repo_dir/README" "$repo_dir/readme.md"; do
-        if [ -f "$f" ]; then readme="$f"; break; fi
-      done
-      if [ -n "$readme" ]; then
-        brief=$(orbit_brief_extract "$readme" || true)
-        if [ -n "$brief" ] && [ "$json_mode" -eq 0 ]; then
-          printf 'orbit: %s has no memo, using README instead\n' "$name" >&2
-        fi
-      fi
-    fi
-
-    if [ -z "$brief" ]; then
-      if [ "$json_mode" -eq 1 ]; then
-        brief=""
-      else
-        brief="-"
-        printf 'orbit: %s has no memo or README\n' "$name" >&2
-      fi
+    local brief_src
+    { IFS= read -r brief; IFS= read -r brief_src || true; } <<< "$(orbit_pool_brief "$root" "$index" "$name" "$repo_dir")"
+    if [ "$json_mode" -eq 0 ]; then
+      case "$brief_src" in
+        memo)   printf 'orbit: %s index out of sync: refresh it with memo %s --refresh\n' "$name" "$name" >&2 ;;
+        readme) printf 'orbit: %s has no memo, using README instead\n' "$name" >&2 ;;
+        none)   printf 'orbit: %s has no memo or README\n' "$name" >&2 ;;
+      esac
+      [ -n "$brief" ] || brief="-"
     fi
 
     head="$idx_head"
@@ -2373,15 +2391,21 @@ orbit_context() {
 orbit_context_prime() {
   local root="$1" ws="$2" ws_dir="$3" goal="$4" state_val="$5" index="$6" json_mode="$7"
 
-  local pool_names=() pool_briefs=()
-  local pd pname pbrief
+  local pool_names=() pool_briefs=() pool_nomemo=() pool_desync=()
+  local pd pname pbrief psrc
   for pd in "$root/.repos"/*/; do
     [ -d "$pd" ] || continue
     pname=$(basename "$pd")
-    pbrief=$(git config --file "$index" --get "repos.$pname.brief" 2>/dev/null || true)
-    [ -n "$pbrief" ] || pbrief="-"
+    { IFS= read -r pbrief; IFS= read -r psrc || true; } <<< "$(orbit_pool_brief "$root" "$index" "$pname" "$pd")"
+    if [ -z "$pbrief" ] && [ "$json_mode" -eq 0 ]; then
+      pbrief="-"
+    fi
     pool_names+=("$pname")
     pool_briefs+=("$pbrief")
+    case "$psrc" in
+      readme|none) pool_nomemo+=("$pname") ;;
+      memo)        pool_desync+=("$pname") ;;
+    esac
   done
 
   if [ "$json_mode" -eq 1 ]; then
@@ -2419,6 +2443,17 @@ orbit_context_prime() {
     for i in "${!pool_names[@]}"; do
       printf '  %-16s %s\n' "${pool_names[$i]}" "${pool_briefs[$i]}"
     done
+    # Steering is inlined as stdout sections — hook injection carries only
+    # stdout, so the stderr notes `orbit repos` prints would never reach the
+    # agent (docs/spec-metadata.md "Fallback Rules").
+    if [ "${#pool_nomemo[@]}" -gt 0 ]; then
+      printf '\nno memo (write the card via orbit memo <repo>; a README-derived brief above is a display fallback, not a memo):\n'
+      printf '  %s\n' "${pool_nomemo[@]}"
+    fi
+    if [ "${#pool_desync[@]}" -gt 0 ]; then
+      printf '\nindex out of sync (repair via orbit memo <repo> --refresh):\n'
+      printf '  %s\n' "${pool_desync[@]}"
+    fi
   fi
 }
 

@@ -184,7 +184,7 @@ After the agent launches, **if no `<orbit-context>` block was injected** and the
 
 **Do NOT check whether `.orbit` files exist directly.** `.orbit` is a metadata cache that may be deleted; orbit commands auto-rebuild it when missing. Directly checking the file bypasses auto-maintenance capability, causing inconsistent behavior depending on whether `.orbit` exists.
 
-Skill description must include the startup trigger phrase (`orbit start`) and the `orbit context --startup` detection condition.
+Skill description must include the startup trigger phrase (`orbit start`) and the `orbit context --startup` detection condition. Keep it **under 500 characters and pure ASCII**: the description is loaded into every agent's skill list at every session start, so bloat and non-ASCII punctuation tax every session, and agent platforms enforce description limits. Maintainer-facing notes do not belong in SKILL.md (the agent loads the whole file) — constraints live here, not in in-file comments.
 
 ### Communication Conventions (Required)
 

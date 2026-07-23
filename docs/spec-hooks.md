@@ -12,12 +12,28 @@
   injects its markdown output. All logic (jot counting, three-band levels,
   staleness detection, memo state, per-repo status assembly) lives in
   `orbit.sh`, where it is bats-testable. The only wrapping a hook adds is the
-  tag pair below.
+  tag pair and the hint line below.
 - **`<orbit-context>` tags are hook-generated only.** `orbit.sh` never emits
   them; hooks add them front and back so the agent can distinguish
   hook-injected context from its own command output. Seeing the tag means the
   preflight already ran — the agent must not re-run `orbit context` to reload
   what it already holds.
+- **One XML comment hint per block, hook-layer only, tier-specific wording.**
+  The skill description names "an `<orbit-context>` hook block is present"
+  as the skill's primary trigger — seeing the tag alone demands the load.
+  The hint is only an in-band **backstop** for that trigger: the block
+  payload itself carried no pointer to the skill, and agents were observed
+  reading the block without ever loading it. Startup blocks carry
+  `<!-- orbit workspace: invoke the orbit skill before your first reply -->`
+  (unconditional — a fresh session never has the skill loaded). Cruise
+  blocks carry `<!-- orbit workspace: invoke the orbit skill (skip only if
+  its content is already in your context) -->` — resume/compact fires
+  mid-session, and a compaction can wipe the skill CONTENT while a summary
+  still "remembers" loading it, so the condition is content-in-context, not
+  loaded-this-session. XML comment syntax keeps the hint out of the data.
+  `orbit.sh` never emits it — hook furniture, not runtime output. In
+  skill-only setups with no hook, the launch phrase (`orbit start`) remains
+  the only entry point.
 - **Two injection tiers, decreasing token budget: startup > cruise.**
   - **startup** (`orbit context --startup`): cold start (empty workspace) →
     durables (`path` / `goal` / `state`, DONE banner when done) + the pool
@@ -48,19 +64,45 @@ fallback (the agent runs bare `orbit context` itself).
 | Claude | `SessionStart:startup` → `hooks/session-start.sh` | `SessionStart:resume` / `SessionStart:compact` → `hooks/session-resume.sh` |
 | Codex | `SessionStart:startup` → `hooks/codex/session-start.sh` | `SessionStart:resume\|clear\|compact` → `hooks/codex/session-resume.sh` |
 | Qoder | `SessionStart:startup` → `hooks/session-start.sh` | `SessionStart:resume` / `SessionStart:compact` → `hooks/session-resume.sh` |
-| OpenCode | `experimental.chat.system.transform` (first of session) → `--startup` | `session.compacted` event + ctxCache rebuild after orbit commands → cruise; resume ❌ (see TODO) |
+| OpenCode | `experimental.chat.system.transform` (first of session) → `--startup` | `experimental.session.compacting` → summary-pass guard (below); `session.compacted` event → cruise + pins the session to cruise tier; ctxCache refreshes after orbit CLI commands rebuild the current tier (startup pre-compact, cruise post-compact); resume ❌ (see TODO) |
 
 - Claude/Qoder use the shared scripts under `hooks/` directly; Codex goes
   through its wrappers under `hooks/codex/`. `hooks.json` in each agent dir
   wires the matchers. Codex SessionStart sources verified against the Codex
   manual: `startup | resume | clear | compact` — `clear` is Codex-only today.
 - **OpenCode** (`.opencode-plugin/plugin.ts`, TypeScript): the first
-  transform of a session injects `--startup`; the per-session `ctxCache` is
-  invalidated after any orbit bash command and rebuilt with the **cruise**
-  block (never the full startup block — mid-session refreshes must not
-  re-inject full memos). Compaction injects cruise two ways: an immediate
-  prompt (the compacted history is gone) plus a cache update so subsequent
-  transforms re-inject the cruise block.
+  transform of a session injects `--startup`; the per-session `ctxCache`
+  re-pushes the block on later transforms (the system prompt is rebuilt per
+  request — nothing persists on its own) and is refreshed after any orbit
+  **CLI** command — a bash command whose invoked binary is `orbit` /
+  `orbit.sh`. Path substrings never count: workspace paths conventionally
+  contain "orbit" (`~/coding/orbit-demo`), and a `cmd.includes("orbit")`
+  matcher once downgraded every session to cruise after the first `ls`.
+  The refresh rebuilds the session's **current tier in full**: the startup
+  block before any compaction (Claude/Qoder parity — there the injected
+  block rides conversation history for the whole pre-compact session), the
+  cruise block after (compaction means context pressure — full memos are
+  never re-injected). Compaction injects cruise two ways: an immediate
+  prompt (the compacted history is gone) plus a cache update and tier pin
+  so subsequent transforms and refreshes stay on cruise. A failed summary
+  never publishes `session.compacted` (opencode only publishes it on
+  success), so a failed compaction leaves the session unpinned and
+  injection resumes normally next turn.
+- **Compaction summary-pass guard (OpenCode).** The summary request
+  forbids tool calls, but `experimental.chat.system.transform` fires for
+  it like any other request — an injected block whose hint says "invoke
+  the skill" primes the model to attempt a tool call, which opencode
+  rejects with `Tool call not allowed while generating summary`, failing
+  the compaction. So `experimental.session.compacting` flags the session
+  and the transform suppresses injection for the whole compaction
+  episode — including provider-level retries of the summary request,
+  each of which re-fires the transform. The flag clears on
+  `session.compacted` (success) or `session.idle` (failure/abort — a
+  failed summary never publishes `session.compacted`), so injection
+  resumes normally from the next turn. The workspace durables (bare
+  cruise text — no tags, no hint) are handed to the summary prompt
+  through the hook's `context` channel, the official way to carry
+  information across compaction.
 
 ## File inventory
 

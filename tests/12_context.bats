@@ -191,6 +191,12 @@ teardown() {
   assert_contains "$output" "state: active"
   assert_contains "$output" "available in pool"
   assert_contains "$output" "myrepo"
+  # roster briefs follow the orbit repos fallback: no memo → README extract;
+  # the memo-missing steering is inlined as a stdout section (hook injection
+  # carries only stdout), not the repos-style stderr note
+  assert_contains "$output" "A mock repository for testing."
+  assert_contains "$output" "no memo (write the card via orbit memo <repo>"
+  [[ "$output" != *"has no memo, using README instead"* ]]
   # no stale header from the old format
   [[ "$output" != *"=== PRIME"* ]]
   [[ "$output" != *"primed"* ]]

@@ -3,7 +3,11 @@
 # Thin wrapper: all workspace-context logic lives in `orbit context --startup`;
 # this script only injects the command's markdown output, wrapped in
 # <orbit-context> tags so the agent can tell hook-injected context from
-# self-invoked output.
+# self-invoked output, plus a one-line XML comment hint that bootstraps skill
+# loading (hook-layer furniture — the orbit runtime never emits it; the block
+# payload carries no pointer to the skill and agents were observed reading it
+# without loading the skill). The startup hint is unconditional: a fresh
+# session never has the skill loaded yet.
 # For SessionStart, stdout is injected directly into the model's context.
 # - orbit installed + inside a workspace -> inject workspace startup block
 # - orbit installed + not in a workspace -> no output (no-op; --startup fails fast)
@@ -23,7 +27,9 @@ EOF
   exit 0
 fi
 
+HINT='<!-- orbit workspace: invoke the orbit skill before your first reply -->'
+
 if out=$(orbit context --startup 2>/dev/null) && [ -n "$out" ]; then
-  printf '<orbit-context>\n%s\n</orbit-context>\n' "$out"
+  printf '<orbit-context>\n%s\n%s\n</orbit-context>\n' "$HINT" "$out"
 fi
 exit 0

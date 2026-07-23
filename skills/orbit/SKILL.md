@@ -1,12 +1,7 @@
 ---
 name: orbit
-description: "Operate Orbit - the user's Git-native multi-repo workspace manager. Primary trigger: an orbit workspace is detected at session start (an <orbit-context> hook block), OR the user says 'orbit start' - invoke before your first reply. Also use when the user asks to clone a repo, create or manage a workspace, add a repo, switch branches, view status, set or clear a goal, jot a discovery, aggregate memos, or mark work done - or when the message mentions workspaces, .repos/, or cross-repo tasks."
+description: "Operate Orbit - the user's Git-native multi-repo workspace manager. If an <orbit-context> hook block is present, invoke BEFORE your first reply - even when the opening request seems unrelated to orbit. Also invoke on 'orbit start', or when asked to start working with no block injected (run `orbit context --startup`). Also use for clone, workspace create/manage, add repo, branch switch, status, goal, jot, memo aggregation, or done - or on mentions of workspaces, .repos/, or cross-repo tasks."
 ---
-
-<!-- MAINTAINERS: This SKILL.md is governed by skills/CONSTRAINTS.md (path relative to repo root) —
-     the canonical, cross-agent constraints for orbit skills. Before editing this file:
-     (1) comply with those constraints, and (2) update evals/evals.json per the doc's
-     Eval Maintenance Requirements. -->
 
 Use this skill to operate the user's Git-native multi-repo workspace manager (Orbit).
 
