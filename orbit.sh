@@ -1670,8 +1670,8 @@ orbit_repos() {
       url=$(git -C "$repo_dir" remote get-url origin 2>/dev/null || echo "-")
     fi
 
-    local brief_src
-    { IFS= read -r brief; IFS= read -r brief_src || true; } <<< "$(orbit_pool_brief "$root" "$index" "$name" "$repo_dir")"
+    # repos only needs the brief text; the source tag drives no rendering here
+    IFS= read -r brief <<< "$(orbit_pool_brief "$root" "$index" "$name" "$repo_dir")"
     [ -n "$brief" ] || brief="-"
 
     head="$idx_head"
