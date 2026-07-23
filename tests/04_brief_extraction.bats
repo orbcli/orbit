@@ -55,3 +55,33 @@ teardown() {
   [ "${#brief}" -le 120 ]
   [[ "$brief" != *" "* ]] || [[ "$brief" =~ [a-z]$ ]]
 }
+
+@test "brief: skips HTML block elements and their plain-text contents" {
+  local proj="$SANDBOX/brief-test5"
+  clone_project "$proj"
+
+  printf '# Repo\n\n<p align="center">\n  <em>\n    JavaScript\n  </em>\n</p>\n\nReal content here.\n' | (cd "$proj" && orbit memo myrepo) >/dev/null 2>&1
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' repos --json"
+  assert_contains "$output" "Real content here."
+}
+
+@test "brief: skips multi-line HTML tags" {
+  local proj="$SANDBOX/brief-test6"
+  clone_project "$proj"
+
+  printf '<div align="center">\n  <img alt="logo"\n       src="http://x/y.svg"\n       width="50%%">\n</div>\n\nCompiler repo.\n' | (cd "$proj" && orbit memo myrepo) >/dev/null 2>&1
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' repos --json"
+  assert_contains "$output" "Compiler repo."
+}
+
+@test "brief: skips code fences and nav link lines" {
+  local proj="$SANDBOX/brief-test7"
+  clone_project "$proj"
+
+  printf '# Repo\n\n```sh\nnpm install x\n```\n\n[Docs](http://x) | [Website](http://y)\n\nOpinionated formatter.\n' | (cd "$proj" && orbit memo myrepo) >/dev/null 2>&1
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' repos --json"
+  assert_contains "$output" "Opinionated formatter."
+}

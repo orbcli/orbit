@@ -32,13 +32,17 @@ teardown() {
   assert_contains "$output" "myrepo"
 }
 
-@test "repos: warns about README fallback when no memo" {
+@test "repos: no memo shows MEMO none with README fallback brief, no stderr spray" {
   local proj="$SANDBOX/repos-test3"
   clone_project "$proj"
 
-  local stderr_output
+  # Human table folds memo state into the MEMO column; stderr stays silent
+  local stderr_output stdout_output
+  stdout_output=$(cd "$proj" && orbit repos 2>/dev/null || true)
   stderr_output=$(cd "$proj" && orbit repos 2>&1 >/dev/null || true)
-  assert_contains "$stderr_output" "has no memo, using README"
+  assert_contains "$stdout_output" "none"
+  assert_contains "$stdout_output" "A mock repository for testing."
+  [ -z "$stderr_output" ]
 }
 
 @test "repos: shows brief from index after memo is written" {

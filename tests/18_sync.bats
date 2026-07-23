@@ -313,3 +313,50 @@ _push_update_to() {
   assert_contains "$output" '"remoteAhead":'
   assert_contains "$output" '"memoBehind":'
 }
+
+# --- Readable sync output (human-facing output proposal) ---
+
+@test "sync: reports already up to date when nothing changed" {
+  local proj="$SANDBOX/sync-noop"
+  local remote="$REMOTES/sync-noop.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "myrepo: already up to date"
+  # no false fast-forward claim when HEAD did not move
+  [[ "$output" != *"fast-forwarded"* ]]
+}
+
+@test "sync: batch mode distinguishes fast-forwarded vs up-to-date and tallies" {
+  local proj="$SANDBOX/sync-batch"
+  local remote1="$REMOTES/sync-batch1.git"
+  local remote2="$REMOTES/sync-batch2.git"
+  clone_remote "$remote1"
+  clone_remote "$remote2"
+  clone_project "$proj"
+  cd "$proj" && orbit clone "$remote2" --name repo2 >/dev/null 2>&1
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote1" >/dev/null 2>&1
+  git -C "$proj/.repos/repo2" remote set-url origin "$remote2" >/dev/null 2>&1
+
+  # Advance only remote1; remote2 stays put
+  local tmp
+  tmp=$(mktemp -d "$SANDBOX/_tmp_sync_XXXXXX")
+  git clone "$remote1" "$tmp" >/dev/null 2>&1
+  (
+    cd "$tmp"
+    echo "update" > update.txt
+    git add update.txt >/dev/null 2>&1
+    git commit -m "update" >/dev/null 2>&1
+    git push origin main >/dev/null 2>&1
+  )
+  rm -rf "$tmp"
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "myrepo: fast-forwarded 1 commit → origin/main"
+  assert_contains "$output" "repo2: already up to date"
+  assert_contains "$output" "sync complete: 2 ok, 0 failed"
+}

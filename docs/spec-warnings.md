@@ -72,15 +72,16 @@ in [spec-knowledge.md](spec-knowledge.md)).
 `orbit repos` and `orbit info` are **screening** commands: the agent runs them to decide
 *whether* to add a repo, before it is in the workspace. When they report a missing memo, that is
 a **fact for the add decision**, not a call to action — so these notes deliberately name **no**
-next command:
+next command. `orbit repos` carries the fact in its table's MEMO column (`ok` / `stale N` /
+`none`) rather than as a stderr note; `orbit info` prints it on stderr:
 
 | Note | Command + condition | Source |
 |:-----|:--------------------|:-------|
 | `<repo> has N jots (building)` | `orbit jot`, queue above half of `jot.bufferSize` but not past it | `orbit_jot` |
-| `<repo> has no memo, using README instead` | `orbit repos`, memo absent, README present | `orbit_repos` |
-| `<repo> has no memo or README` | `orbit repos`, both absent | `orbit_repos` |
+| MEMO column shows `none` | `orbit repos`, memo absent (README extract shown as brief, or `-`) | `orbit_repos` |
+| MEMO column shows `stale N` | `orbit repos`, memo N commits behind HEAD | `orbit_repos` |
 | `<repo> has no memo, showing README` | `orbit info`, memo absent, README present | `orbit_info` |
-| `<repo> README truncated to <N> lines, no memo yet` | `orbit info` README fallback exceeds `memo.maxLines` | `orbit_info` |
+| `<repo> has no memo; showing first <N> of <M> README lines` | `orbit info` README fallback exceeds `memo.maxLines` | `orbit_info` |
 | `<repo> has no memo` | `orbit info`, both absent | `orbit_info` |
 
 The `building` note is a count without a named action — the queue is filling but has not hit the aggregation threshold; the `overflow` steering warning (registry above) fires when it does. Naming an action at `building` would cry wolf.

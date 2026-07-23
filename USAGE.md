@@ -72,10 +72,14 @@ orbit repos
 
 Output format:
 ```
-NAME             URL                                     BRIEF
-backend          git@github.com:org/backend.git          Go REST API, sqlc-generated DB layer
-frontend         git@github.com:org/frontend.git         React SPA, consumes backend API
+NAME      ADDED  MEMO  BRIEF
+backend   *      ok    Go REST API, sqlc-generated DB layer
+frontend         ok    React SPA, consumes backend API
+my-svc           none  -
 ```
+
+`ADDED` marks repos already in the current workspace; `MEMO` is the card state
+(`ok` / `stale N` / `none`). Add `--urls` for the remote URL column.
 
 View detailed memo of a specific repo:
 

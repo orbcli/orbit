@@ -104,7 +104,8 @@ Go REST API, sqlc-generated DB layer, Echo router.
 ```
 
 Extraction rules (shared between `.md` and README):
-- Skip: `#` heading lines, blank lines, badge lines (`[![`/`![`), HTML comments, HTML tags (`<div>`/`<p>`/`<img>` etc.), list lines (`* `/`- `/`1. `), horizontal rules (`---`/`***`/`===`)
+- Skip: `#` heading lines, blank lines, badge lines (`[![`/`![`), link-only/nav lines (starting with `[`), list lines (`* `/`- `/`1. `), horizontal rules (`---`/`***`/`===`)
+- Skip multi-line constructs (verified against top-starred GitHub READMEs): code fences (` ``` `/`~~~` and their contents), `<!-- -->` comments (incl. multi-line), multi-line HTML tags (`<img …` spanning lines), HTML block elements and everything they contain (`<p align="center"> … </p>` — this is where banner language lists and badge walls live)
 - Strip: leading whitespace, leading `> ` (blockquote tagline)
 - Take: first effective text paragraph
 - Truncate: <= 120 characters, at word boundary
@@ -179,19 +180,19 @@ After `orbit done` writes:
 
 ### Brief Display Fallback (`orbit repos`, `orbit context --startup` prime roster)
 
-Applies wherever a pool repo's one-line brief is displayed. Both surfaces share one resolver (`orbit_pool_brief` in `orbit.sh`) that returns the brief plus its source tag (`index` / `memo` / `readme` / `none`); presentation is per-surface — `orbit repos` prints steering notes on **stderr** (human terminal), while the prime roster inlines them as **stdout sections** (`no memo (…):` / `index out of sync (…):`) because hook injection carries only stdout.
+Applies wherever a pool repo's one-line brief is displayed. Both surfaces share one resolver (`orbit_pool_brief` in `orbit.sh`) that returns the brief plus its source tag (`index` / `memo` / `readme` / `none`); presentation is per-surface — `orbit repos` folds memo state into the table's **MEMO column** (`ok` / `stale N` / `none`, computed inline; no stderr notes), while the prime roster inlines them as **stdout sections** (`no memo (…):` / `index out of sync (…):`) because hook injection carries only stdout.
 
 Source priority:
 1. Global index `repos.<name>.brief` field (cached) — source `index`
 2. Per-repo `.md` first effective text paragraph after heading (real-time extraction, repair path when index and .md are out of sync) — source `memo`
-   -> `orbit repos` stderr: `orbit: <repo> index out of sync: refresh it with memo <repo> --refresh`
+   -> `orbit repos`: MEMO column shows `stale N` (N = .md-behind-HEAD commits) or `ok`
    -> prime roster: repo listed under `index out of sync (repair via orbit memo <repo> --refresh):`
 3. README fallback: extract using the same rules from repo's README (**not written to meta**, display only for current invocation) — source `readme`
-   -> `orbit repos` stderr: `orbit: <repo> has no memo, using README instead`
-   -> prime roster: repo listed under `no memo (write the card via orbit memo <repo>; …):`
+   -> `orbit repos`: brief column shows the README extract; MEMO column shows `none`
+   -> prime roster: repo listed under `no memo (write the card via orbit memo <repo>; …):`; the roster line appends the remote URL — fallback briefs are uncurated, so the URL is the authoritative identity hint
 4. None available -> brief column displays `-` (empty string in JSON) — source `none`
-   -> `orbit repos` stderr: `orbit: <repo> has no memo or README`
-   -> prime roster: repo listed under the same `no memo (…):` section
+   -> `orbit repos`: brief `-`; MEMO column `none`
+   -> prime roster: repo listed under the same `no memo (…):` section; roster line shows `- (<url>)`
 
 Case 2 prompts index repair (.md exists meaning memo was previously executed, but index lost brief due to concurrent write or corruption).
 Cases 3 and 4 do not write back to index cache; stderr guides the agent to generate a proper .md file via `orbit memo <repo>`.
@@ -200,14 +201,17 @@ Brief extraction rules are in the "Brief Extraction Rules" section above (shared
 ### `orbit repos` Output Format
 
 ```
-NAME             URL                                     BRIEF
-backend          git@github.com:org/backend.git          Go REST API, sqlc-generated DB layer
-frontend         git@github.com:org/frontend.git         React SPA, consumes backend API
-my-svc           git@github.com:org/my-svc.git           -
+NAME      ADDED  MEMO     BRIEF
+backend   *      ok       Go REST API, sqlc-generated DB layer
+frontend         ok       React SPA, consumes backend API
+my-svc           none     -
 ```
 
-- Column-aligned, human-readable (default)
-- stderr warnings do not mix into the table
+- Column-aligned to the longest repo name, human-readable (default)
+- `ADDED`: `*` when the repo is already in the current workspace (CWD-inferred)
+- `MEMO`: card state — `ok` / `stale N` (N commits behind HEAD) / `none` (no memo file)
+- No stderr spray: memo state is table data, not a warning channel
+- `--urls` adds the remote URL column (truncated to 40 chars)
 
 ### `orbit repos --json` Output Format
 
@@ -234,8 +238,8 @@ Field descriptions:
 Source priority:
 1. Per-repo `.repos/.<repo>.md` file (outputs full text directly)
 2. No `.md` file -> outputs the repo's README, truncated to `memo.maxLines` (default 16) lines (**not written to meta**, display only for current invocation)
-   -> stderr: `orbit: <repo> has no memo, showing README`
-   -> if truncated, stderr also: `orbit: <repo> README truncated to <N> lines, no memo yet`
+   -> stderr (fits): `orbit: <repo> has no memo, showing README`
+   -> stderr (truncated): `orbit: <repo> has no memo; showing first <N> of <M> README lines`
 3. No README -> outputs hint message ("no memo available")
    -> stderr: `orbit: <repo>: use 'orbit memo <repo>' to add`
 

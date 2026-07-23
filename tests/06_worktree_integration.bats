@@ -331,7 +331,10 @@ teardown() {
   cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
 
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' status dev"
-  assert_contains "$output" "ws/dev/main"
+  # scoped branch prints without the ws/<ws>/ prefix; clean repo folds to 'clean'
+  assert_contains "$output" "myrepo"
+  assert_contains "$output" "clean"
+  [[ "$output" != *"ws/dev/main"* ]]
 }
 
 # --- CWD inference ---
