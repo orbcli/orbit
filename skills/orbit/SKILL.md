@@ -21,7 +21,7 @@ Detection is workspace-level only. Project root path is never exposed (prevents 
 Orbit has no runtime to *enforce* procedure — **its `orbit:`-prefixed stderr lines are the steering channel, split into two classes you must distinguish**:
 
 - **Actionable** — lines that name a next workflow (`pop + merge`, `explore + write`, `curate once`, `card budget ... curate`, `fetch`/`switch -c`). These are **procedure requirements, not suggestions**. The current task feeling higher-priority does not license skipping: every actionable item must be closed **before `orbit done` marks the workspace complete** — the close-out procedure is what keeps the next session's context intact. Most are immediate (add-time explore nudge, done-gate debt, over-budget memo — treat them as "before the next major step"); jot overflow is the one deferrable case — you may keep coding and aggregate at wrap-up (step 10) instead of dropping everything now. Skipping an actionable item is exactly the failure mode this channel exists to prevent.
-- **Informational** — lines that just report state (`N jots (building)`, `no memo, showing README`, `README truncated to N lines`). Read and note; no named workflow to execute.
+- **Informational** — lines that just report state (`N jots (building)`, `no memo, showing README`, `no memo; showing first N of M README lines`). Read and note; no named workflow to execute.
 
 stdout is machine-readable data; the steering lives on stderr. The actionable class is non-negotiable; the informational class is awareness only.
 

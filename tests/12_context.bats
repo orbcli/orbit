@@ -162,7 +162,7 @@ teardown() {
 
   # The done gate surfaces the same state per repo (advisory, still completes).
   run bash -c "cd '$proj/ws1' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' done 2>&1"
-  assert_contains "$output" "myrepo: memo thin (explore + write)"
+  assert_contains "$output" "myrepo: memo thin, no capture this session — explore + write"
 }
 
 @test "context <key>: status key is retired (unknown key)" {
@@ -195,6 +195,9 @@ teardown() {
   # the memo-missing steering is inlined as a stdout section (hook injection
   # carries only stdout), not the repos-style stderr note
   assert_contains "$output" "A mock repository for testing."
+  # fallback briefs are uncurated: the roster appends the remote URL as the
+  # authoritative identity hint
+  assert_contains "$output" "A mock repository for testing. ("
   assert_contains "$output" "no memo (write the card via orbit memo <repo>"
   [[ "$output" != *"has no memo, using README instead"* ]]
   # no stale header from the old format

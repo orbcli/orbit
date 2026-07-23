@@ -449,7 +449,11 @@ orbit_memo_state() {
 # or empty when tracked and up-to-date. Uses local refs only — never fetches.
 orbit_repo_upstream_behind() {
   local wt_dir="$1" upstream behind
-  upstream=$(git -C "$wt_dir" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+  # See orbit_status: a failing rev-parse can still print '@{upstream}' —
+  # gate on the exit code, not on the captured text.
+  if ! upstream=$(git -C "$wt_dir" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null); then
+    upstream=""
+  fi
   if [ -z "$upstream" ]; then
     printf 'untracked'
     return 0
@@ -501,16 +505,68 @@ orbit_brief_extract() {
   local file="$1"
   [ -e "$file" ] || [ "$file" = "/dev/stdin" ] || return 1
   local line found=""
+  # State for multi-line constructs common in GitHub READMEs:
+  #   in_fence   — inside a ``` / ~~~ code fence
+  #   in_comment — inside a multi-line <!-- --> comment
+  #   in_tag     — inside a multi-line HTML tag (<img ...\n src="..."\n width="50%">)
+  #   html_stack — open non-void HTML blocks (<p align="center"> … </p>)
+  local in_fence=0 in_comment=0 in_tag=0 html_stack=""
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line#"${line%%[![:space:]]*}"}"
+
+    if [ "$in_comment" = "1" ]; then
+      case "$line" in *'-->'*) in_comment=0 ;; esac
+      continue
+    fi
+    if [ "$in_tag" = "1" ]; then
+      case "$line" in *'>'*) in_tag=0 ;; esac
+      continue
+    fi
+    case "$line" in
+      '```'*|'~~~'*)
+        if [ "$in_fence" = "1" ]; then in_fence=0; else in_fence=1; fi
+        continue ;;
+    esac
+    [ "$in_fence" = "1" ] && continue
+    if [ -n "$html_stack" ]; then
+      local top="${html_stack##* }"
+      case "$line" in
+        '</'"$top"'>'*) html_stack="${html_stack% *}" ;;
+      esac
+      continue
+    fi
+
     case "$line" in
       ''|'#'*) continue ;;
-      '[!['*|'!['*) continue ;;
-      '<!--'*) continue ;;
-      '<'[a-zA-Z]*|'</'[a-zA-Z]*) continue ;;
+      '['*|'!['*) continue ;;        # badges, link-only/nav lines
       '* '*|'- '*|[0-9]*'. '*) continue ;;
       '---'*|'***'*|'==='*) continue ;;
+      '<!--'*)
+        case "$line" in *'-->'*) ;; *) in_comment=1 ;; esac
+        continue ;;
     esac
+    case "$line" in
+      '<'[a-zA-Z]*)
+        # no '>' on the line → multi-line tag, skip until it closes
+        case "$line" in *'>'*) ;; *) in_tag=1; continue ;; esac
+        local tag
+        tag="${line#<}"
+        tag="${tag%% *}"
+        tag="${tag%%>*}"
+        case "$tag" in
+          # void elements never open a block
+          img|br|hr|source|input|meta|link|area|base|col|embed|track|wbr) ;;
+          *)
+            # inline-closed (<h2>Text</h2>) or self-closing (<br/>) don't open
+            case "$line" in
+              *'/>'*|*'</'"$tag"'>'*) ;;
+              *) html_stack="$html_stack $tag" ;;
+            esac ;;
+        esac
+        continue ;;
+      '</'[a-zA-Z]*) continue ;;
+    esac
+
     line="${line#> }"
     if [ ${#line} -gt 120 ]; then
       line="${line:0:120}"
@@ -678,7 +734,10 @@ orbit_clone() {
   git config --file "$index" "repos.$repo_name.url" "$url"
   git config --file "$index" "repos.$repo_name.head" "$head"
 
-  printf 'cloned %s → %s\n' "$repo_name" "$dst"
+  local cloned_branch
+  cloned_branch=$(git -C "$dst" symbolic-ref --short HEAD 2>/dev/null || echo "unknown")
+  printf 'cloned %s (default branch: %s)\n' "$repo_name" "$cloned_branch"
+  printf 'next: orbit new "<goal>", then orbit add %s\n' "$repo_name"
 }
 
 orbit_new() {
@@ -970,7 +1029,7 @@ orbit_switch() {
     # Pre-register the fetch refspec so the first `git push` materializes
     # refs/remotes/origin/<branch> (status/@{upstream} work under single-branch pool).
     orbit_add_fetch_refspec "$repo_dir" "$branch_name"
-    printf 'created %s (upstream: origin/%s)\n' "$local_branch" "$branch_name"
+    printf '%s: created %s (upstream: origin/%s)\n' "$repo_name" "$local_branch" "$branch_name"
 
     # Post-creation conflict check: remote already has <name> with different
     # commits → push will conflict. Exempt when transferring a raw-mode branch
@@ -992,12 +1051,12 @@ orbit_switch() {
         orbit_fail "branch checked out in another worktree: $local_branch"
       fi
       git -C "$wt_path" checkout "$local_branch"
-      printf 'switched to %s\n' "$local_branch"
+      printf '%s: switched to %s\n' "$repo_name" "$local_branch"
     elif orbit_remote_branch_exists "$repo_dir" "$branch_name"; then
       orbit_ensure_remote_branch "$repo_dir" "$branch_name"
       git -C "$wt_path" checkout -b "$local_branch" "origin/$branch_name"
       orbit_set_upstream "$wt_path" "$local_branch" "$branch_name"
-      printf 'created %s (tracking origin/%s)\n' "$local_branch" "$branch_name"
+      printf '%s: created %s (upstream: origin/%s)\n' "$repo_name" "$local_branch" "$branch_name"
     else
       orbit_fail "branch not found on remote: origin/$branch_name (use -c to create)"
     fi
@@ -1031,7 +1090,7 @@ orbit_sync_one() {
     if [ -f "$root/.repos/.$repo_name.md" ]; then
       printf 'orbit: %s: memo may not apply to new branch %s\n' "$repo_name" "$new_branch" >&2
     fi
-    printf 'switched %s to branch %s\n' "$repo_name" "$new_branch"
+    printf 'pool: switched %s to branch %s\n' "$repo_name" "$new_branch"
     return 0
   fi
 
@@ -1040,15 +1099,26 @@ orbit_sync_one() {
     return 1
   fi
 
+  local head_before
+  head_before=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null || true)
+
   if [ "$force" -eq 1 ]; then
     git -C "$repo_dir" reset --hard "origin/$branch" 2>/dev/null
-    printf 'synced %s (reset to origin/%s)\n' "$repo_name" "$branch"
+    printf '%s: reset to origin/%s\n' "$repo_name" "$branch"
   else
     if ! git -C "$repo_dir" merge --ff-only "origin/$branch" 2>/dev/null; then
       printf 'orbit: %s: fast-forward failed (local diverged from upstream), use --force to reset\n' "$repo_name" >&2
       return 1
     fi
-    printf 'synced %s (fast-forward to origin/%s)\n' "$repo_name" "$branch"
+    local head_after
+    head_after=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null || true)
+    if [ "$head_before" = "$head_after" ]; then
+      printf '%s: already up to date\n' "$repo_name"
+    else
+      local n_commits
+      n_commits=$(git -C "$repo_dir" rev-list --count "${head_before}..${head_after}" 2>/dev/null || echo '?')
+      printf '%s: fast-forwarded %s commits → origin/%s\n' "$repo_name" "$n_commits" "$branch"
+    fi
   fi
 
   # sync updates the pool repo only. If this workspace has a worktree of this repo
@@ -1109,12 +1179,25 @@ orbit_sync() {
 
   [ "${#repos[@]}" -gt 0 ] || orbit_fail "no repos to sync"
 
-  local failed=0
+  local n_ok=0 failed_names=""
   for repo_name in "${repos[@]}"; do
-    orbit_sync_one "$repo_name" "$root" "$force" "$new_branch" "$ws_ctx" || failed=1
+    if orbit_sync_one "$repo_name" "$root" "$force" "$new_branch" "$ws_ctx"; then
+      n_ok=$((n_ok + 1))
+    else
+      failed_names="$failed_names $repo_name"
+    fi
   done
 
-  return "$failed"
+  local n_failed=$(( ${#repos[@]} - n_ok ))
+  if [ "${#repos[@]}" -gt 1 ]; then
+    if [ "$n_failed" -gt 0 ]; then
+      printf 'sync complete: %d ok, %d failed (%s)\n' "$n_ok" "$n_failed" "${failed_names# }"
+    else
+      printf 'sync complete: %d ok, 0 failed\n' "$n_ok"
+    fi
+  fi
+
+  [ "$n_failed" -eq 0 ]
 }
 
 orbit_status() {
@@ -1162,7 +1245,10 @@ orbit_status() {
       ws/"$ws"/*) is_scoped=1 ;;
       *) is_scoped=0 ;;
     esac
-    upstream=$(git -C "$d" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || printf '-')
+    # Upstream config may exist while its remote-tracking ref was never
+    # materialized (single-branch pool): rev-parse then prints the literal
+    # '@{upstream}' AND fails — treat that as untracked, never as in-sync.
+    upstream=$(git -C "$d" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) || upstream='-'
     if [ "$upstream" = '-' ]; then
       ahead='0'; behind='0'
     else
@@ -1170,7 +1256,7 @@ orbit_status() {
       behind=$(git -C "$d" rev-list --count "HEAD..${upstream}" 2>/dev/null || echo '0')
     fi
     dirty=$(git -C "$d" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-    repo_entries+=("$name|$branch|$ahead|$behind|$dirty|$is_scoped")
+    repo_entries+=("$name|$branch|$ahead|$behind|$dirty|$is_scoped|$upstream")
   done
 
   if [ "$json_mode" -eq 1 ]; then
@@ -1181,7 +1267,7 @@ orbit_status() {
     out+='"worktrees":['
     local first=1
     for entry in "${repo_entries[@]+${repo_entries[@]}}"; do
-      IFS='|' read -r name branch ahead behind dirty is_scoped <<< "$entry"
+      IFS='|' read -r name branch ahead behind dirty is_scoped upstream <<< "$entry"
       local dirty_bool="false"
       [ "$dirty" = "0" ] || dirty_bool="true"
       [ "$first" -eq 1 ] || out+=','
@@ -1200,22 +1286,48 @@ orbit_status() {
     return 0
   fi
 
-  printf '=== workspace: %s ===\n' "$ws"
+  printf '=== workspace: %s (%s) ===\n' "$ws" "$status_val"
   if [ -n "$goal" ]; then
-    printf '  goal: %s\n' "$goal"
-  fi
-  if [ "$status_val" != "active" ]; then
-    printf '  status: %s\n' "$status_val"
+    printf 'goal: %s\n' "$goal"
   fi
   printf '\n'
 
-  for entry in "${repo_entries[@]+${repo_entries[@]}}"; do
-    IFS='|' read -r name branch ahead behind dirty is_scoped <<< "$entry"
-    local upstream_display raw_mark
-    upstream_display=$(git -C "$ws_dir/$name" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || printf '-')
-    raw_mark=""
+  if [ "${#repo_entries[@]}" -eq 0 ]; then
+    printf '(no repos yet — orbit add <repo>)\n'
+    return 0
+  fi
+
+  local name_w=0
+  for entry in "${repo_entries[@]}"; do
+    IFS='|' read -r name _ <<< "$entry"
+    [ "${#name}" -gt "$name_w" ] && name_w=${#name}
+  done
+
+  for entry in "${repo_entries[@]}"; do
+    IFS='|' read -r name branch ahead behind dirty is_scoped upstream <<< "$entry"
+    local display_branch="$branch" raw_mark=""
+    case "$branch" in
+      ws/"$ws"/*) display_branch="${branch#ws/"$ws"/}" ;;
+    esac
     [ "$is_scoped" = "0" ] && raw_mark=" raw"
-    printf '  %-16s %-28s upstream:%-20s +%-3s -%-3s dirty:%s%s\n' "$name" "$branch" "$upstream_display" "$ahead" "$behind" "$dirty" "$raw_mark"
+    if [ "$upstream" = '-' ]; then
+      # Never fabricate +0/-0 for an untracked branch — that reads as "in sync"
+      printf '  %-*s %-28s %-15s -   -  dirty:%s%s\n' "$name_w" "$name" "$display_branch" "(no upstream)" "$dirty" "$raw_mark"
+    elif [ "$ahead" = "0" ] && [ "$behind" = "0" ] && [ "$dirty" = "0" ]; then
+      printf '  %-*s %-28s %-15s clean\n' "$name_w" "$name" "$display_branch" "$upstream"
+    else
+      local counters=""
+      [ "$ahead" != "0" ] && counters="+$ahead"
+      if [ "$behind" != "0" ]; then
+        [ -n "$counters" ] && counters="$counters "
+        counters="$counters-$behind"
+      fi
+      if [ "$dirty" != "0" ]; then
+        [ -n "$counters" ] && counters="$counters  "
+        counters="${counters}dirty:$dirty"
+      fi
+      printf '  %-*s %-28s %-15s %s%s\n' "$name_w" "$name" "$display_branch" "$upstream" "$counters" "$raw_mark"
+    fi
   done
 }
 
@@ -1429,31 +1541,29 @@ orbit_done() {
   orbit_ensure_workspace_orbit "$ws_dir"
 
   # Per-repo wrap-up gate (advisory, never blocks done): for each repo surface
-  # what remains — residual jots (pop + merge), thin memo with no capture
-  # (explore + write), over-budget card (curate once). bufferSize does not apply
-  # here: any leftover jot counts, done is the final backstop.
+  # what remains — one issue per line, with the literal command to close it.
+  # Keywords (pop + merge / explore + write / curate once) are quoted verbatim
+  # by skills/orbit/SKILL.md and skills/CONSTRAINTS.md: keep them intact.
   local budget_hint=0 any_warn=0
-  local rs_name rs_count rs_mstate rs_msg rs_branch rs_scoped
+  local rs_name rs_count rs_mstate rs_branch rs_scoped
   while IFS='|' read -r rs_name rs_count _ _ rs_mstate rs_branch rs_scoped; do
     [ -n "$rs_name" ] || continue
-    rs_msg=""
     if [ "$rs_count" -gt 0 ]; then
-      rs_msg="$rs_count jots remain (pop + merge)"
-      budget_hint=1
-    elif [ "$rs_mstate" = "thin" ]; then
-      rs_msg="memo thin (explore + write)"
+      printf 'orbit: %s: %s jots remain — run: orbit jot %s --pop, then merge into memo (pop + merge)\n' \
+        "$rs_name" "$rs_count" "$rs_name" >&2
+      budget_hint=1 any_warn=1
+    fi
+    if [ "$rs_mstate" = "thin" ] && [ "$rs_count" -eq 0 ]; then
+      printf 'orbit: %s: memo thin, no capture this session — explore + write\n' "$rs_name" >&2
+      any_warn=1
     fi
     if [ "$rs_mstate" = "over" ]; then
-      [ -n "$rs_msg" ] && rs_msg="$rs_msg, "
-      rs_msg="${rs_msg}memo over budget (curate once)"
-      budget_hint=1
+      printf 'orbit: %s: memo over budget — curate once\n' "$rs_name" >&2
+      budget_hint=1 any_warn=1
     fi
     if [ "$rs_scoped" = "0" ]; then
-      [ -n "$rs_msg" ] && rs_msg="$rs_msg, "
-      rs_msg="${rs_msg}raw mode branch (orbit switch -c $rs_branch to convert to scoped)"
-    fi
-    if [ -n "$rs_msg" ]; then
-      printf 'orbit: %s: %s\n' "$rs_name" "$rs_msg" >&2
+      printf 'orbit: %s: raw mode branch — run: orbit switch -c %s (convert to scoped)\n' \
+        "$rs_name" "$rs_branch" >&2
       any_warn=1
     fi
   done < <(orbit_collect_repo_status "$root" "$ws_dir")
@@ -1514,12 +1624,13 @@ orbit_done() {
 }
 
 orbit_repos() {
-  local json_mode=0
+  local json_mode=0 urls_mode=0
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json_mode=1; shift ;;
-      *) orbit_fail "usage: orbit repos [--json]" ;;
+      --urls) urls_mode=1; shift ;;
+      *) orbit_fail "usage: orbit repos [--json] [--urls]" ;;
     esac
   done
 
@@ -1529,7 +1640,11 @@ orbit_repos() {
   local index="$root/.repos/.orbit"
   local has_repos=0
 
-  local names=() urls=() briefs=() heads=() stales=() completes=()
+  # Mark repos already present in the current workspace (if any)
+  local cur_ws=""
+  cur_ws=$(orbit_infer_workspace "$root" 2>/dev/null) || cur_ws=""
+
+  local names=() urls=() briefs=() heads=() stales=() completes=() memo_states=() in_ws_marks=()
   for repo_dir in "$root/.repos"/*/; do
     [ -d "$repo_dir" ] || continue
     local name url brief head idx_url idx_brief idx_head
@@ -1547,14 +1662,7 @@ orbit_repos() {
 
     local brief_src
     { IFS= read -r brief; IFS= read -r brief_src || true; } <<< "$(orbit_pool_brief "$root" "$index" "$name" "$repo_dir")"
-    if [ "$json_mode" -eq 0 ]; then
-      case "$brief_src" in
-        memo)   printf 'orbit: %s index out of sync: refresh it with memo %s --refresh\n' "$name" "$name" >&2 ;;
-        readme) printf 'orbit: %s has no memo, using README instead\n' "$name" >&2 ;;
-        none)   printf 'orbit: %s has no memo or README\n' "$name" >&2 ;;
-      esac
-      [ -n "$brief" ] || brief="-"
-    fi
+    [ -n "$brief" ] || brief="-"
 
     head="$idx_head"
     if [ -z "$head" ]; then
@@ -1566,13 +1674,26 @@ orbit_repos() {
       incomplete_flag=true
     fi
 
-    [ "$json_mode" -eq 1 ] || orbit_staleness_check "$name" "$root"
-
     local memo_behind=0
     local current_head
     current_head=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null || true)
     if [ -n "$idx_head" ] && [ -n "$current_head" ] && [ "$idx_head" != "$current_head" ] && [ -f "$root/.repos/.$name.md" ]; then
       memo_behind=$(git -C "$repo_dir" rev-list "$idx_head".."$current_head" --count 2>/dev/null || echo 0)
+    fi
+
+    # Human table carries memo state as a column (was: unsilenceable stderr spray)
+    local memo_state
+    if [ ! -f "$root/.repos/.$name.md" ]; then
+      memo_state="none"
+    elif [ "$memo_behind" != "0" ]; then
+      memo_state="stale $memo_behind"
+    else
+      memo_state="ok"
+    fi
+
+    local in_ws=""
+    if [ -n "$cur_ws" ] && { [ -d "$root/$cur_ws/$name/.git" ] || [ -f "$root/$cur_ws/$name/.git" ]; }; then
+      in_ws="*"
     fi
 
     names+=("$name")
@@ -1581,6 +1702,8 @@ orbit_repos() {
     heads+=("$head")
     stales+=("$memo_behind")
     completes+=("$incomplete_flag")
+    memo_states+=("$memo_state")
+    in_ws_marks+=("$in_ws")
   done
 
   if [ "$has_repos" -eq 0 ]; then
@@ -1612,11 +1735,24 @@ orbit_repos() {
     return 0
   fi
 
-  printf '%-16s %-40s %s\n' "NAME" "URL" "BRIEF"
-  local i
+  local name_w=4
   for i in "${!names[@]}"; do
-    printf '%-16s %-40s %s\n' "${names[$i]}" "${urls[$i]}" "${briefs[$i]}"
+    [ "${#names[$i]}" -gt "$name_w" ] && name_w=${#names[$i]}
   done
+
+  if [ "$urls_mode" -eq 1 ]; then
+    printf '%-*s  %-5s %-9s %-40s %s\n' "$name_w" "NAME" "ADDED" "MEMO" "URL" "BRIEF"
+    local i
+    for i in "${!names[@]}"; do
+      printf '%-*s  %-5s %-9s %-40.40s %s\n' "$name_w" "${names[$i]}" "${in_ws_marks[$i]}" "${memo_states[$i]}" "${urls[$i]}" "${briefs[$i]}"
+    done
+  else
+    printf '%-*s  %-5s %-9s %s\n' "$name_w" "NAME" "ADDED" "MEMO" "BRIEF"
+    local i
+    for i in "${!names[@]}"; do
+      printf '%-*s  %-5s %-9s %s\n' "$name_w" "${names[$i]}" "${in_ws_marks[$i]}" "${memo_states[$i]}" "${briefs[$i]}"
+    done
+  fi
 }
 
 orbit_info() {
@@ -1665,13 +1801,14 @@ orbit_info() {
     done
 
     if [ -n "$readme" ]; then
-      printf 'orbit: %s has no memo, showing README\n' "$repo_name" >&2
       local max total
       max=$(orbit_memo_max "$root")
       total=$(grep -c '' "$readme" 2>/dev/null || echo 0)
       content=$(head -n "$max" "$readme")
       if [ "$total" -gt "$max" ]; then
-        printf 'orbit: %s README truncated to %s lines, no memo yet\n' "$repo_name" "$max" >&2
+        printf 'orbit: %s has no memo; showing first %s of %s README lines\n' "$repo_name" "$max" "$total" >&2
+      else
+        printf 'orbit: %s has no memo, showing README\n' "$repo_name" >&2
       fi
     else
       printf 'orbit: %s has no memo\n' "$repo_name" >&2
@@ -1796,7 +1933,7 @@ orbit_memo() {
     fi
   fi
 
-  printf 'wrote %s (brief: %s)\n' ".$repo_name.md" "$brief"
+  printf 'wrote memo for %s (brief: %s)\n' "$repo_name" "$brief"
 }
 
 orbit_memo_refresh_one() {
@@ -1828,12 +1965,15 @@ orbit_memo_refresh_all() {
   local root
   root=$(orbit_require_root) || return 1
 
+  local n_refreshed=0
   for repo_dir in "$root/.repos"/*/; do
     [ -d "$repo_dir" ] || continue
     local name
     name=$(basename "$repo_dir")
     orbit_memo_refresh_one "$name" "$root"
+    n_refreshed=$((n_refreshed + 1))
   done
+  printf 'refreshed index: %d repos\n' "$n_refreshed"
 }
 
 # --- Prune ---
@@ -1895,13 +2035,14 @@ orbit_collect_workspace_branches() {
 
 orbit_branch_protection_delete() {
   local main_repo="$1" branch="$2" pr_urls_str="$3" force_flag="$4" verify_flag="$5" dry_run_flag="$6"
+  # Returns 0 if the branch was (or would be) deleted, 1 if skipped.
 
   if [ "$force_flag" = "1" ]; then
     if [ "$dry_run_flag" = "1" ]; then
-      printf '  would force-delete branch: %s\n' "$branch"
+      printf '    would force-delete branch: %s\n' "$branch"
     else
       git -C "$main_repo" branch -D "$branch" 2>/dev/null || true
-      printf '  deleted branch (force): %s\n' "$branch"
+      printf '    deleted branch (force): %s\n' "$branch"
     fi
     return 0
   fi
@@ -1917,10 +2058,10 @@ orbit_branch_protection_delete() {
     done
     if [ "$all_merged" = "1" ]; then
       if [ "$dry_run_flag" = "1" ]; then
-        printf '  would delete branch (PR merged): %s\n' "$branch"
+        printf '    would delete branch (PR merged): %s\n' "$branch"
       else
         git -C "$main_repo" branch -D "$branch" 2>/dev/null || true
-        printf '  deleted branch (PR merged): %s\n' "$branch"
+        printf '    deleted branch (PR merged): %s\n' "$branch"
       fi
       return 0
     fi
@@ -1931,16 +2072,22 @@ orbit_branch_protection_delete() {
   default_branch=$(orbit_default_branch "$main_repo" 2>/dev/null || true)
   if [ -n "$default_branch" ] && git -C "$main_repo" merge-base --is-ancestor "$branch" "origin/$default_branch" 2>/dev/null; then
     if [ "$dry_run_flag" = "1" ]; then
-      printf '  would delete branch (merged): %s\n' "$branch"
+      printf '    would delete branch (merged): %s\n' "$branch"
     else
       git -C "$main_repo" branch -d "$branch" 2>/dev/null || true
-      printf '  deleted branch (merged): %s\n' "$branch"
+      printf '    deleted branch (merged): %s\n' "$branch"
     fi
     return 0
   fi
 
-  # Layer 3: skip
-  printf 'orbit: skipping unmerged branch: %s\n' "$branch" >&2
+  # Layer 3: skip — in dry-run the skip is part of the report (stdout); in a
+  # real run it is a diagnostic accompanying the mutation (stderr).
+  if [ "$dry_run_flag" = "1" ]; then
+    printf '    would skip unmerged branch: %s\n' "$branch"
+  else
+    printf 'orbit: skipping unmerged branch: %s\n' "$branch" >&2
+  fi
+  return 1
 }
 
 orbit_prune() {
@@ -2056,50 +2203,80 @@ orbit_prune() {
         continue ;;
     esac
 
-    # Process each repo worktree in workspace
+    # Collect repo worktrees first so the header can lead the report
+    local ws_repo_dirs=()
     for repo_dir in "$ws_dir"/*/; do
       [ -d "$repo_dir" ] || continue
       [ -d "$repo_dir/.git" ] || [ -f "$repo_dir/.git" ] || continue
+      local repo_name
+      repo_name=$(basename "$repo_dir")
+      [ -d "$root/.repos/$repo_name" ] || continue
+      ws_repo_dirs+=("$repo_dir")
+    done
 
+    local n_deleted=0 n_skipped=0 n_worktrees=0
+
+    if [ "$dry_run" = "1" ]; then
+      printf 'would prune: %s (%d repos)\n' "$ws" "${#ws_repo_dirs[@]}"
+    else
+      printf 'pruning: %s (%d repos)\n' "$ws" "${#ws_repo_dirs[@]}"
+    fi
+
+    if [ "${#ws_repo_dirs[@]}" -eq 0 ]; then
+      printf '  (no repos)\n'
+    fi
+
+    # Process each repo worktree in workspace
+    if [ "${#ws_repo_dirs[@]}" -gt 0 ]; then
+    for repo_dir in "${ws_repo_dirs[@]}"; do
       local repo_name
       repo_name=$(basename "$repo_dir")
       local main_repo="$root/.repos/$repo_name"
-      [ -d "$main_repo" ] || continue
+
+      printf '  %s:\n' "$repo_name"
 
       # Collect branches
       local ws_branches
       ws_branches=$(orbit_collect_workspace_branches "$repo_dir" "$ws")
 
       # Remove worktree
-      if [ "$dry_run" = "0" ]; then
+      if [ "$dry_run" = "1" ]; then
+        printf '    would remove worktree\n'
+      else
         git -C "$main_repo" worktree remove "$repo_dir" --force 2>/dev/null || true
+        printf '    removed worktree\n'
       fi
+      n_worktrees=$((n_worktrees + 1))
 
-      # Delete branches
+      # Delete branches (config sections are removed by git along with the branch)
       while IFS= read -r branch; do
         [ -n "$branch" ] || continue
-        orbit_branch_protection_delete "$main_repo" "$branch" "$pr_urls_str" "$force" "$verify" "$dry_run"
+        if orbit_branch_protection_delete "$main_repo" "$branch" "$pr_urls_str" "$force" "$verify" "$dry_run"; then
+          n_deleted=$((n_deleted + 1))
+        else
+          n_skipped=$((n_skipped + 1))
+        fi
       done <<< "$ws_branches"
 
-      # Clean upstream config sections for ws-prefixed branches
-      local prefix
-      prefix=$(orbit_require_prefix) || return 1
-      while IFS= read -r branch; do
-        [ -n "$branch" ] || continue
-        if [ "$dry_run" = "0" ]; then
+      # Clean leftover upstream config sections (branches that were skipped)
+      if [ "$dry_run" = "0" ]; then
+        local prefix
+        prefix=$(orbit_require_prefix) || return 1
+        while IFS= read -r branch; do
+          [ -n "$branch" ] || continue
           git -C "$main_repo" config --remove-section "branch.$branch" 2>/dev/null || true
-        else
-          printf '  would remove branch config: %s\n' "$branch"
-        fi
-      done < <(git -C "$main_repo" for-each-ref --format='%(refname:short)' "refs/heads/$prefix/$ws/" 2>/dev/null || true)
+        done < <(git -C "$main_repo" for-each-ref --format='%(refname:short)' "refs/heads/$prefix/$ws/" 2>/dev/null || true)
+      fi
     done
+    fi
 
     # Remove workspace directory
-    if [ "$dry_run" = "0" ]; then
-      rm -rf "${root:?}/${ws:?}"
-      printf 'pruned: %s\n' "$ws"
+    if [ "$dry_run" = "1" ]; then
+      printf 'would remove workspace directory\n'
     else
-      printf 'would prune: %s\n' "$ws"
+      rm -rf "${root:?}/${ws:?}"
+      printf 'pruned: %s (%d worktrees removed, %d branches deleted, %d skipped)\n' \
+        "$ws" "$n_worktrees" "$n_deleted" "$n_skipped"
     fi
   done
 }
@@ -2128,14 +2305,17 @@ orbit_doctor() {
     all_ok=0
   fi
 
-  if command -v git >/dev/null 2>&1 && ! orbit_git_supports_autosetupremote; then
-    # backticks are literal text in the user-facing warning
-    # shellcheck disable=SC2016
-    printf '[WARN] git < 2.37: a bare `git push` on a fresh raw-mode branch will error instead of creating origin/<branch> + tracking (recommend git >= 2.42)\n'
-  fi
-
   if command -v git >/dev/null 2>&1 && ! orbit_git_supports_orphan_worktree; then
-    printf '[WARN] git < 2.42: cannot bootstrap the first commit of an empty repo (orbit add uses --orphan)\n'
+    # < 2.42: one consolidated warning naming every affected capability
+    local missing=""
+    if ! orbit_git_supports_autosetupremote; then
+      # backticks are literal text in the user-facing warning
+      # shellcheck disable=SC2016
+      missing='raw-mode bare `git push` needs >= 2.37'
+    fi
+    [ -n "$missing" ] && missing="$missing; "
+    missing="${missing}empty-repo bootstrap (orbit add --orphan) needs >= 2.42"
+    printf '[WARN] git %s: upgrade to >= 2.42 (%s)\n' "$git_ver" "$missing"
   fi
 
   # 2. bash version check (≥ 3.2)
@@ -2174,7 +2354,7 @@ orbit_doctor() {
       for d in "$root/.repos"/*/; do
         [ -d "$d" ] && repo_count=$((repo_count + 1))
       done
-      printf '       repos in pool: %d\n' "$repo_count"
+      printf '[INFO] repos in pool: %d\n' "$repo_count"
       local ws_count=0
       for d in "$root"/*/; do
         [ -d "$d" ] || continue
@@ -2183,7 +2363,7 @@ orbit_doctor() {
         orbit_reserved_workspace "$dirname" && continue
         ws_count=$((ws_count + 1))
       done
-      printf '       workspaces: %d\n' "$ws_count"
+      printf '[INFO] workspaces: %d\n' "$ws_count"
     else
       printf '[WARN] .repos/ not found (run orbit clone to start)\n'
     fi
@@ -2195,7 +2375,8 @@ orbit_doctor() {
   if [ "$all_ok" -eq 1 ]; then
     printf 'All critical checks passed.\n'
   else
-    printf 'Some critical checks failed.\n' >&2
+    # the verdict belongs to the report — keep it on stdout with the rest
+    printf 'Some critical checks failed.\n'
     return 1
   fi
 }
@@ -2208,13 +2389,23 @@ orbit_config() {
   local orbit_file="$root/.repos/.orbit"
 
   if [ "$#" -eq 0 ]; then
-    git config --file "$orbit_file" --list 2>/dev/null | grep -v '^repos\.' || true
+    # git config --list lowercases keys; restore the documented camelCase forms
+    git config --file "$orbit_file" --list 2>/dev/null | grep -v '^repos\.' | \
+      sed -e 's/^memo\.minlines=/memo.minLines=/' \
+          -e 's/^memo\.maxlines=/memo.maxLines=/' \
+          -e 's/^jot\.buffersize=/jot.bufferSize=/' || true
     return 0
   fi
 
   local key="$1"
   if [ "$#" -eq 1 ]; then
-    git config --file "$orbit_file" --get "$key" 2>/dev/null || true
+    local val
+    if val=$(git config --file "$orbit_file" --get "$key" 2>/dev/null); then
+      printf '%s\n' "$val"
+    else
+      printf '(unset)\n' >&2
+      return 1
+    fi
     return 0
   fi
 
@@ -2391,8 +2582,8 @@ orbit_context() {
 orbit_context_prime() {
   local root="$1" ws="$2" ws_dir="$3" goal="$4" state_val="$5" index="$6" json_mode="$7"
 
-  local pool_names=() pool_briefs=() pool_nomemo=() pool_desync=()
-  local pd pname pbrief psrc
+  local pool_names=() pool_briefs=() pool_urls=() pool_srcs=() pool_nomemo=() pool_desync=()
+  local pd pname pbrief psrc purl
   for pd in "$root/.repos"/*/; do
     [ -d "$pd" ] || continue
     pname=$(basename "$pd")
@@ -2400,8 +2591,14 @@ orbit_context_prime() {
     if [ -z "$pbrief" ] && [ "$json_mode" -eq 0 ]; then
       pbrief="-"
     fi
+    purl=$(git config --file "$index" --get "repos.$pname.url" 2>/dev/null || true)
+    if [ -z "$purl" ]; then
+      purl=$(git -C "$pd" remote get-url origin 2>/dev/null || true)
+    fi
     pool_names+=("$pname")
     pool_briefs+=("$pbrief")
+    pool_urls+=("$purl")
+    pool_srcs+=("$psrc")
     case "$psrc" in
       readme|none) pool_nomemo+=("$pname") ;;
       memo)        pool_desync+=("$pname") ;;
@@ -2420,6 +2617,7 @@ orbit_context_prime() {
       first=0
       out+='{'
       out+="$(orbit_json_kv name "${pool_names[$p]}"),"
+      out+="$(orbit_json_kv url "${pool_urls[$p]}"),"
       out+="$(orbit_json_kv brief "${pool_briefs[$p]}")"
       out+='}'
     done
@@ -2439,13 +2637,30 @@ orbit_context_prime() {
     printf 'pool is empty — clone a repo into the pool first: orbit clone <url>\n'
   else
     printf 'available in pool (orbit add <repo> to pull source; orbit info <repo> for detail):\n'
-    local i
+    local i name_w=0
     for i in "${!pool_names[@]}"; do
-      printf '  %-16s %s\n' "${pool_names[$i]}" "${pool_briefs[$i]}"
+      [ "${#pool_names[$i]}" -gt "$name_w" ] && name_w=${#pool_names[$i]}
+    done
+    for i in "${!pool_names[@]}"; do
+      # Fallback briefs (README extract / none) are uncurated — append the
+      # remote URL as the authoritative identity hint. Curated memo/index
+      # briefs stay lean.
+      case "${pool_srcs[$i]}" in
+        readme|none)
+          if [ -n "${pool_urls[$i]}" ]; then
+            printf '  %-*s %s (%s)\n' "$name_w" "${pool_names[$i]}" "${pool_briefs[$i]}" "${pool_urls[$i]}"
+          else
+            printf '  %-*s %s\n' "$name_w" "${pool_names[$i]}" "${pool_briefs[$i]}"
+          fi
+          ;;
+        *)
+          printf '  %-*s %s\n' "$name_w" "${pool_names[$i]}" "${pool_briefs[$i]}"
+          ;;
+      esac
     done
     # Steering is inlined as stdout sections — hook injection carries only
-    # stdout, so the stderr notes `orbit repos` prints would never reach the
-    # agent (docs/spec-metadata.md "Fallback Rules").
+    # stdout, so notes emitted on stderr would never reach the agent
+    # (docs/spec-metadata.md "Fallback Rules").
     if [ "${#pool_nomemo[@]}" -gt 0 ]; then
       printf '\nno memo (write the card via orbit memo <repo>; a README-derived brief above is a display fallback, not a memo):\n'
       printf '  %s\n' "${pool_nomemo[@]}"

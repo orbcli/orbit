@@ -35,9 +35,10 @@ teardown() {
   [ "$status" -eq 0 ]
   assert_contains "$output" "unset: agent.recommend"
 
+  # after --unset the key reports (unset), exit 1
   run orbit config agent.recommend
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
+  [ "$status" -eq 1 ]
+  assert_contains "$output" "(unset)"
 }
 
 @test "config: list filters out repo/index entries" {
@@ -56,13 +57,14 @@ teardown() {
   ! printf '%s' "$output" | grep -q "repos.backend"
 }
 
-@test "config: get nonexistent key returns empty" {
+@test "config: get nonexistent key reports (unset)" {
   local proj="$SANDBOX/cfg-test4"
   mkdir -p "$proj/.repos"
   touch "$proj/.repos/.orbit"
   TEST_PROJECT="$proj"
 
+  # unset keys report (unset) and exit non-zero (git config --get semantics)
   run orbit config no.such.key
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
+  [ "$status" -eq 1 ]
+  assert_contains "$output" "(unset)"
 }

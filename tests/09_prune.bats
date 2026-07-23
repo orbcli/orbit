@@ -336,3 +336,67 @@ setup_project_with_done_workspace() {
   assert_contains "$output" "would prune: dev"
   assert_contains "$output" "would force-delete branch"
 }
+
+# --- Readable report format (human-facing output proposal) ---
+
+@test "prune: --dry-run report is header-first, repo-grouped, single-stream" {
+  local proj="$SANDBOX/prune-dryfmt"
+  local remote="$REMOTES/prune-dryfmt-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  cd "$proj" && orbit new "dryfmt test" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+
+  echo "unmerged" > "$proj/dev/myrepo/unmerged.txt"
+  git -C "$proj/dev/myrepo" add unmerged.txt
+  git -C "$proj/dev/myrepo" commit -m "unmerged work" >/dev/null 2>&1
+
+  cd "$proj/dev" && orbit done >/dev/null 2>&1
+
+  # stderr discarded: a dry-run report must be complete on stdout alone
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run 2>/dev/null"
+  [ "$status" -eq 0 ]
+  assert_dir_exists "$proj/dev"
+  assert_contains "$output" "would prune: dev (1 repos)"
+  assert_contains "$output" "  myrepo:"
+  assert_contains "$output" "    would remove worktree"
+  assert_contains "$output" "    would skip unmerged branch: ws/dev/main"
+  assert_contains "$output" "would remove workspace directory"
+  # branch config cleanup is coupled to deletion and never printed
+  case "$output" in
+    *"would remove branch config"*) false ;;
+  esac
+  # header precedes all detail lines
+  local header_line detail_line
+  header_line=$(printf '%s\n' "$output" | grep -n "would prune: dev" | head -1 | cut -d: -f1)
+  detail_line=$(printf '%s\n' "$output" | grep -n "would skip unmerged branch" | head -1 | cut -d: -f1)
+  [ "$header_line" -lt "$detail_line" ]
+}
+
+@test "prune: real run ends with a summary count" {
+  local proj="$SANDBOX/prune-summary"
+  local remote="$REMOTES/prune-summary-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  cd "$proj" && orbit new "summary test" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+
+  echo "feature" > "$proj/dev/myrepo/feature.txt"
+  git -C "$proj/dev/myrepo" add feature.txt
+  git -C "$proj/dev/myrepo" commit -m "add feature" >/dev/null 2>&1
+
+  local ws_commit
+  ws_commit=$(git -C "$proj/dev/myrepo" rev-parse HEAD)
+  git -C "$proj/.repos/myrepo" update-ref refs/heads/main "$ws_commit"
+  git -C "$proj/.repos/myrepo" push origin main >/dev/null 2>&1
+  git -C "$proj/.repos/myrepo" fetch origin >/dev/null 2>&1
+
+  cd "$proj/dev" && orbit done >/dev/null 2>&1
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
+  [ "$status" -eq 0 ]
+  [ ! -d "$proj/dev" ]
+  assert_contains "$output" "pruned: dev (1 worktrees removed, 1 branches deleted, 0 skipped)"
+}
