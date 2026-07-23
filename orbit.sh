@@ -125,6 +125,16 @@ orbit_fail() {
   return 1
 }
 
+# orbit_plural <count> <singular> <plural> — human-facing counts read wrong
+# with a bare "s" ("1 repos"); branch→branches style plurals need both forms.
+orbit_plural() {
+  if [ "$1" = "1" ]; then
+    printf '%s' "$2"
+  else
+    printf '%s' "$3"
+  fi
+}
+
 orbit_require_prefix() {
   case "$ORBIT_BRANCH_PREFIX" in
     ''|*/*) orbit_fail "invalid ORBIT_BRANCH_PREFIX: $ORBIT_BRANCH_PREFIX" ;;
@@ -1117,7 +1127,7 @@ orbit_sync_one() {
     else
       local n_commits
       n_commits=$(git -C "$repo_dir" rev-list --count "${head_before}..${head_after}" 2>/dev/null || echo '?')
-      printf '%s: fast-forwarded %s commits → origin/%s\n' "$repo_name" "$n_commits" "$branch"
+      printf '%s: fast-forwarded %s %s → origin/%s\n' "$repo_name" "$n_commits" "$(orbit_plural "$n_commits" commit commits)" "$branch"
     fi
   fi
 
@@ -1973,7 +1983,7 @@ orbit_memo_refresh_all() {
     orbit_memo_refresh_one "$name" "$root"
     n_refreshed=$((n_refreshed + 1))
   done
-  printf 'refreshed index: %d repos\n' "$n_refreshed"
+  printf 'refreshed index: %d %s\n' "$n_refreshed" "$(orbit_plural "$n_refreshed" repo repos)"
 }
 
 # --- Prune ---
@@ -2217,9 +2227,9 @@ orbit_prune() {
     local n_deleted=0 n_skipped=0 n_worktrees=0
 
     if [ "$dry_run" = "1" ]; then
-      printf 'would prune: %s (%d repos)\n' "$ws" "${#ws_repo_dirs[@]}"
+      printf 'would prune: %s (%d %s)\n' "$ws" "${#ws_repo_dirs[@]}" "$(orbit_plural "${#ws_repo_dirs[@]}" repo repos)"
     else
-      printf 'pruning: %s (%d repos)\n' "$ws" "${#ws_repo_dirs[@]}"
+      printf 'pruning: %s (%d %s)\n' "$ws" "${#ws_repo_dirs[@]}" "$(orbit_plural "${#ws_repo_dirs[@]}" repo repos)"
     fi
 
     if [ "${#ws_repo_dirs[@]}" -eq 0 ]; then
@@ -2275,8 +2285,9 @@ orbit_prune() {
       printf 'would remove workspace directory\n'
     else
       rm -rf "${root:?}/${ws:?}"
-      printf 'pruned: %s (%d worktrees removed, %d branches deleted, %d skipped)\n' \
-        "$ws" "$n_worktrees" "$n_deleted" "$n_skipped"
+      printf 'pruned: %s (%d %s removed, %d %s deleted, %d skipped)\n' \
+        "$ws" "$n_worktrees" "$(orbit_plural "$n_worktrees" worktree worktrees)" \
+        "$n_deleted" "$(orbit_plural "$n_deleted" branch branches)" "$n_skipped"
     fi
   done
 }

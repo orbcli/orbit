@@ -358,7 +358,7 @@ setup_project_with_done_workspace() {
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run 2>/dev/null"
   [ "$status" -eq 0 ]
   assert_dir_exists "$proj/dev"
-  assert_contains "$output" "would prune: dev (1 repos)"
+  assert_contains "$output" "would prune: dev (1 repo)"
   assert_contains "$output" "  myrepo:"
   assert_contains "$output" "    would remove worktree"
   assert_contains "$output" "    would skip unmerged branch: ws/dev/main"
@@ -398,5 +398,5 @@ setup_project_with_done_workspace() {
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
   [ "$status" -eq 0 ]
   [ ! -d "$proj/dev" ]
-  assert_contains "$output" "pruned: dev (1 worktrees removed, 1 branches deleted, 0 skipped)"
+  assert_contains "$output" "pruned: dev (1 worktree removed, 1 branch deleted, 0 skipped)"
 }

@@ -356,7 +356,7 @@ _push_update_to() {
 
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync"
   [ "$status" -eq 0 ]
-  assert_contains "$output" "myrepo: fast-forwarded 1 commits → origin/main"
+  assert_contains "$output" "myrepo: fast-forwarded 1 commit → origin/main"
   assert_contains "$output" "repo2: already up to date"
   assert_contains "$output" "sync complete: 2 ok, 0 failed"
 }
