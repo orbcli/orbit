@@ -234,3 +234,32 @@ teardown() {
   [ "$status" -ne 0 ]
   assert_contains "$output" "cannot be combined"
 }
+
+@test "context --startup: registers refspec and materializes tracking ref after push" {
+  local proj="$SANDBOX/context-refspec"
+  local remote="$REMOTES/context-refspec.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  cd "$proj" && orbit new --name ws1 --no-goal >/dev/null 2>&1
+  cd "$proj/ws1" && orbit add myrepo >/dev/null 2>&1
+
+  cd "$proj/ws1/myrepo" && orbit switch -c feat-x >/dev/null 2>&1
+  echo x > x.txt
+  git add x.txt >/dev/null 2>&1
+  git commit -m "x" >/dev/null 2>&1
+  git push >/dev/null 2>&1
+
+  # no refspec was registered at switch -c, so the push alone didn't materialize
+  run git rev-parse --verify --quiet origin/feat-x
+  [ "$status" -ne 0 ]
+
+  # the startup block reconciles refspecs and fetches: the scoped branch's
+  # tracking ref materializes at the first session start after the push
+  run bash -c "cd '$proj/ws1/myrepo' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' context --startup"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "orbit: myrepo: added fetch refspec: feat-x"
+  git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch \
+    | grep -Fqx "+refs/heads/feat-x:refs/remotes/origin/feat-x"
+  git rev-parse --verify --quiet origin/feat-x >/dev/null
+}

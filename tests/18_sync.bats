@@ -360,3 +360,38 @@ _push_update_to() {
   assert_contains "$output" "repo2: already up to date"
   assert_contains "$output" "sync complete: 2 ok, 0 failed"
 }
+
+# --- Stale fetch refspec cleanup ---
+
+@test "sync: removes stale fetch refspec left by a remote-deleted branch" {
+  local proj="$SANDBOX/sync-refspec"
+  local remote="$REMOTES/sync-refspec.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+
+  # Simulate residue: refspec + stale tracking ref for a branch the remote no
+  # longer has (typical: branch auto-deleted on PR merge)
+  git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
+    "+refs/heads/gone:refs/remotes/origin/gone"
+  git -C "$proj/.repos/myrepo" update-ref refs/remotes/origin/gone \
+    "$(git -C "$proj/.repos/myrepo" rev-parse HEAD)"
+
+  # the residue breaks every bare fetch (the bug being fixed)
+  run git -C "$proj/.repos/myrepo" fetch origin
+  [ "$status" -ne 0 ]
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "myrepo: removed stale fetch refspec: gone"
+
+  # only the live main refspec remains; the stale tracking ref is gone
+  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
+  [ "$output" = "+refs/heads/main:refs/remotes/origin/main" ]
+  run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/remotes/origin/gone
+  [ "$status" -ne 0 ]
+
+  # bare fetch works again
+  run git -C "$proj/.repos/myrepo" fetch origin
+  [ "$status" -eq 0 ]
+}
