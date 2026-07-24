@@ -210,14 +210,14 @@ Jot entries are real discoveries only — orbit writes no system placeholders in
 
 ## orbit info Auto-fetch
 
-`orbit info <repo>` automatically fetches that repo's tracking branch on execution (`git fetch origin <default-branch>`), enabling two-layer staleness detection:
+`orbit info <repo>` automatically reconciles the repo's fetch refspecs and fetches on execution (`orbit_reconcile_fetch_refspecs` + bare `git fetch origin`), enabling two-layer staleness detection:
 
 - **Layer 1 (pool ← upstream)**: After fetch, compares pool repo's local branch with `origin/<branch>`; if behind, outputs to stderr: `orbit: <repo>: N new commits on origin/<branch>`
 - **Layer 2 (memo ← pool HEAD)**: Existing `orbit_staleness_check`, compares HEAD at memo write time with pool repo's current HEAD
 
-Both layer warnings output to stderr, not affecting stdout. Fetch failures are silently skipped (network unavailability does not block viewing).
+Both layer warnings output to stderr, not affecting stdout. Refspec reconciliation changes (see [`spec-lifecycle.md`](./spec-lifecycle.md#fetch-refspec-reconciliation)) also print to stderr as `orbit: <repo>: removed stale fetch refspec: <branch>` / `orbit: <repo>: added fetch refspec: <branch>`; the bare fetch materializes newly registered tracking refs immediately. Fetch failures are silently skipped (network unavailability does not block viewing).
 
-`orbit repos` does not fetch (stays purely local and fast), only shows Layer 2.
+The same reconcile-then-bare-fetch pair runs per repo in the `orbit context --startup` reignite block (the session-start hook path), so a scoped/raw branch shows remote tracking from the first session start after its push. `orbit repos` and bare `orbit context` (cruise block) do not fetch (stay purely local and fast), only show Layer 2.
 
 ## orbit sync
 

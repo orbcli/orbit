@@ -1032,7 +1032,7 @@ orbit_add() {
     # you create with `git checkout -b <name>` and push won't show remote tracking
     # in `git status` / `@{upstream}` until `git fetch origin <name>` materializes
     # the ref. `orbit switch -c <name>` (scoped) wires tracking up front.
-    printf 'orbit: raw-mode branches (git checkout -b) stay untracked under the single-branch pool: run git fetch origin <branch> after pushing, or use switch -c <name> to wire tracking up front\n' >&2
+    printf 'orbit: raw-mode branches (git checkout -b) stay untracked under the single-branch pool: run git fetch origin <branch> after pushing, or use switch -c <name> to wire the upstream config up front (the tracking ref materializes at the next sync/info/session start)\n' >&2
     local md_file="$root/.repos/.$repo_name.md"
     if [ -f "$md_file" ]; then
       printf -- '--- memo: %s (pass -s to suppress) ---\n' "$repo_name" >&2
@@ -1873,7 +1873,12 @@ orbit_info() {
   local default_branch
   default_branch=$(orbit_default_branch "$repo_dir" 2>/dev/null) || true
   if [ -n "$default_branch" ]; then
-    git -C "$repo_dir" fetch origin "$default_branch" 2>/dev/null || true
+    # Reconcile fetch refspecs, then bare fetch so refs for refspecs just
+    # registered (branch pushed since last run) materialize too.
+    while IFS= read -r line; do
+      printf 'orbit: %s: %s\n' "$repo_name" "$line" >&2
+    done < <(orbit_reconcile_fetch_refspecs "$repo_dir" 0)
+    git -C "$repo_dir" fetch origin 2>/dev/null || true
   fi
 
   orbit_upstream_check "$repo_name" "$root"
@@ -2795,7 +2800,10 @@ orbit_context_reignite() {
       default_branch=$(orbit_default_branch "$root/.repos/$name" 2>/dev/null || true)
       memo_behind=0 remote_ahead=0
       if [ -n "$default_branch" ]; then
-        git -C "$root/.repos/$name" fetch origin "$default_branch" 2>/dev/null || true
+        while IFS= read -r line; do
+          printf 'orbit: %s: %s\n' "$name" "$line" >&2
+        done < <(orbit_reconcile_fetch_refspecs "$root/.repos/$name" 0)
+        git -C "$root/.repos/$name" fetch origin 2>/dev/null || true
         local_head=$(git -C "$root/.repos/$name" rev-parse "refs/heads/$default_branch" 2>/dev/null || true)
         remote_head=$(git -C "$root/.repos/$name" rev-parse "refs/remotes/origin/$default_branch" 2>/dev/null || true)
         if [ -n "$local_head" ] && [ -n "$remote_head" ] && [ "$local_head" != "$remote_head" ]; then
@@ -2865,7 +2873,10 @@ orbit_context_reignite() {
     default_branch=$(orbit_default_branch "$root/.repos/$name" 2>/dev/null || true)
     memo_behind=0 remote_ahead=0
     if [ -n "$default_branch" ]; then
-      git -C "$root/.repos/$name" fetch origin "$default_branch" 2>/dev/null || true
+      while IFS= read -r line; do
+        printf 'orbit: %s: %s\n' "$name" "$line" >&2
+      done < <(orbit_reconcile_fetch_refspecs "$root/.repos/$name" 0)
+      git -C "$root/.repos/$name" fetch origin 2>/dev/null || true
       local_head=$(git -C "$root/.repos/$name" rev-parse "refs/heads/$default_branch" 2>/dev/null || true)
       remote_head=$(git -C "$root/.repos/$name" rev-parse "refs/remotes/origin/$default_branch" 2>/dev/null || true)
       if [ -n "$local_head" ] && [ -n "$remote_head" ] && [ "$local_head" != "$remote_head" ]; then
