@@ -252,6 +252,7 @@ orbit sync [repo...] [--force] [--branch <branch>]
 `--branch` + `--force` can be combined.
 
 **Post-sync behavior:**
+- Before fetching, sync reconciles fetch refspecs with the remote: entries for branches the remote no longer has are removed (a stale entry makes every bare `git fetch` fail with `couldn't find remote ref`), and entries are registered for locally-tracked branches that now exist remotely; each change prints `<repo>: removed stale fetch refspec: <branch>` / `<repo>: added fetch refspec: <branch>`. The fetch itself is bare (`git fetch origin`) so newly registered tracking refs materialize immediately. See [`spec-lifecycle.md`](./spec-lifecycle.md#fetch-refspec-reconciliation) for the exact rule
 - Does not update the `.orbit` index `head` field (`head` reflects HEAD at memo write time, not at sync time)
 - `orbit_staleness_check` compares memo HEAD vs pool current HEAD; distance naturally changes after sync
 - sync does not cascade to memo refresh — memo validity is determined by actual work needs, not by commit distance (see [`docs/spec-knowledge.md`](./spec-knowledge.md) Sync and Memo Cascade Relationship; agent behavior rules in `skills/CONSTRAINTS.md` Sync Decision Rules)

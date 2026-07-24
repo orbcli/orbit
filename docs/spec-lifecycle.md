@@ -123,6 +123,19 @@ Three-layer determination:
 - If `gh` is not present -> stderr warning, skips PR status check, degrades to second layer (git merged check)
 - Without `--verify`, `gh` is not called by default (zero external dependency path)
 
+### Fetch Refspec Reconciliation
+
+The pool is a single-branch clone, so `orbit switch` to an existing remote branch registers a per-branch fetch refspec (`+refs/heads/<branch>:refs/remotes/origin/<branch>`) to materialize the remote-tracking ref. Every configured exact refspec must point at a branch the remote actually has — one stale entry makes every bare `git fetch` fail with `couldn't find remote ref`, in every worktree of that pool.
+
+Prune (and `orbit sync`, see [`spec-commands.md`](./spec-commands.md#orbit-sync)) reconciles refspecs with the remote:
+
+- **Remove** a refspec when the remote no longer has the branch (typical: auto-deleted on PR merge; also legacy refspecs registered for branches that were never pushed). The stale `refs/remotes/origin/<branch>` ref is deleted along with it.
+- **Register** a refspec when a local branch tracks a remote branch that exists but has no refspec (scoped/raw branch pushed since last run), so the tracking ref materializes on the next fetch.
+
+`orbit switch -c` deliberately does NOT pre-register a refspec for the new branch — the branch doesn't exist on the remote yet, so the refspec would break every bare `git fetch` until the first push. Registration happens via reconciliation once the branch exists remotely.
+
+`--dry-run` reports `would remove stale fetch refspec: <branch>` / `would add fetch refspec: <branch>` without mutating. Reconciliation is skipped entirely when the remote is unreachable, so unverifiable refspecs are never removed by mistake.
+
 ## Multi-Repo Workspace Completion Semantics
 
 - All repos' PRs confirmed merged -> workspace is fully reclaimable

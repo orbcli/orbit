@@ -187,18 +187,23 @@ teardown() {
   [ "$(git config --get branch.feature/raw.merge)" = "refs/heads/feature/raw" ]
 }
 
-@test "switch: -c pre-registers fetch refspec for the new branch" {
+@test "switch: -c does NOT pre-register a fetch refspec for the unpushed branch" {
   local proj="$SANDBOX/switch-refspec"
   clone_project "$proj" "$SHARED_PROJECT_WITH_BRANCH"
   cd "$proj" && orbit new "switch test" --name dev >/dev/null 2>&1
   cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
 
   cd "$proj/dev/myrepo" && orbit switch -c feat-new >/dev/null 2>&1
-  git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch \
-    | grep -Fqx "+refs/heads/feat-new:refs/remotes/origin/feat-new"
+  # An exact refspec for a branch the remote doesn't have yet would make every
+  # bare `git fetch` fail until the first push — registration is deferred to
+  # sync/prune reconciliation once the branch exists remotely.
+  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
+  [[ "$output" != *"refs/heads/feat-new:"* ]]
+  # upstream config is still wired up front
+  [ "$(git config --get branch.ws/dev/feat-new.merge)" = "refs/heads/feat-new" ]
 }
 
-@test "scoped mode: git push after switch -c materializes remote-tracking ref" {
+@test "scoped mode: push then sync registers refspec and materializes tracking ref" {
   local proj="$SANDBOX/scoped-push"
   local remote="$REMOTES/scoped-push.git"
   clone_remote "$remote"
@@ -215,7 +220,15 @@ teardown() {
   run git push
   [ "$status" -eq 0 ]
 
-  # remote-tracking ref now exists and @{upstream} resolves
+  # no refspec was pre-registered, so the push alone doesn't materialize the ref
+  run git rev-parse --verify --quiet origin/feat-scoped
+  [ "$status" -ne 0 ]
+
+  # sync reconciliation sees the branch on the remote, registers the refspec,
+  # and the fetch materializes the remote-tracking ref
+  (cd "$proj" && orbit sync myrepo >/dev/null 2>&1)
+  git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch \
+    | grep -Fqx "+refs/heads/feat-scoped:refs/remotes/origin/feat-scoped"
   git rev-parse --verify --quiet origin/feat-scoped >/dev/null
   local up
   up=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}')

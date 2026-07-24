@@ -400,3 +400,104 @@ setup_project_with_done_workspace() {
   [ ! -d "$proj/dev" ]
   assert_contains "$output" "pruned: dev (1 worktree removed, 1 branch deleted, 0 skipped)"
 }
+
+# --- Stale fetch refspec cleanup ---
+
+@test "prune: removes stale fetch refspec left by a remote-deleted branch" {
+  local proj="$SANDBOX/prune-refspec"
+  local remote="$REMOTES/prune-refspec-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  cd "$proj" && orbit new "refspec test" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+  cd "$proj/dev" && orbit done >/dev/null 2>&1
+
+  # Simulate residue: refspec + stale tracking ref for a branch the remote no
+  # longer has (typical: branch auto-deleted on PR merge)
+  git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
+    "+refs/heads/gone:refs/remotes/origin/gone"
+  git -C "$proj/.repos/myrepo" update-ref refs/remotes/origin/gone \
+    "$(git -C "$proj/.repos/myrepo" rev-parse HEAD)"
+
+  # the residue breaks every bare fetch (the bug being fixed)
+  run git -C "$proj/.repos/myrepo" fetch origin
+  [ "$status" -ne 0 ]
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "    removed stale fetch refspec: gone"
+
+  # refspec and stale ref are gone; the live main refspec is untouched
+  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
+  [ "$output" = "+refs/heads/main:refs/remotes/origin/main" ]
+  run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/remotes/origin/gone
+  [ "$status" -ne 0 ]
+
+  # bare fetch works again
+  run git -C "$proj/.repos/myrepo" fetch origin
+  [ "$status" -eq 0 ]
+}
+
+@test "prune --dry-run: reports stale fetch refspec without removing it" {
+  local proj="$SANDBOX/prune-refspec-dry"
+  local remote="$REMOTES/prune-refspec-dry-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  cd "$proj" && orbit new "refspec dry test" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+  cd "$proj/dev" && orbit done >/dev/null 2>&1
+
+  git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
+    "+refs/heads/gone:refs/remotes/origin/gone"
+  git -C "$proj/.repos/myrepo" update-ref refs/remotes/origin/gone \
+    "$(git -C "$proj/.repos/myrepo" rev-parse HEAD)"
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "    would remove stale fetch refspec: gone"
+
+  # nothing was removed
+  git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch \
+    | grep -Fqx "+refs/heads/gone:refs/remotes/origin/gone"
+  git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/remotes/origin/gone >/dev/null
+}
+
+@test "prune: removes legacy pre-registered refspec for a never-pushed branch" {
+  local proj="$SANDBOX/prune-legacy-refspec"
+  local remote="$REMOTES/prune-legacy-refspec-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+
+  # active workspace with a scoped branch that was never pushed
+  cd "$proj" && orbit new "live work" --name live >/dev/null 2>&1
+  cd "$proj/live" && orbit add myrepo >/dev/null 2>&1
+  cd "$proj/live/myrepo" && orbit switch -c feat-live >/dev/null 2>&1
+
+  # a second, done workspace over the same pool repo
+  cd "$proj" && orbit new "old work" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+  cd "$proj/dev" && orbit done >/dev/null 2>&1
+
+  # Legacy residue (older orbit pre-registered refspecs at switch -c): a local
+  # branch tracks feat-live but the remote has never had it — every bare fetch
+  # fails while this entry exists.
+  git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
+    "+refs/heads/feat-live:refs/remotes/origin/feat-live"
+  run git -C "$proj/.repos/myrepo" fetch origin
+  [ "$status" -ne 0 ]
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
+  [ "$status" -eq 0 ]
+  assert_dir_exists "$proj/live"
+  assert_contains "$output" "    removed stale fetch refspec: feat-live"
+
+  # the local branch itself is untouched; only the fetch-breaking entry is gone
+  git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/heads/ws/live/feat-live >/dev/null
+  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
+  [ "$output" = "+refs/heads/main:refs/remotes/origin/main" ]
+  run git -C "$proj/.repos/myrepo" fetch origin
+  [ "$status" -eq 0 ]
+}
