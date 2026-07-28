@@ -307,20 +307,28 @@ orbit_ensure_remote_branch() {
   # out the stale ref silently builds on abandoned history. Degrade when
   # offline: use the local ref with a warning; fail only when there is
   # nothing to fall back on.
-  if ! git -C "$repo" fetch origin "$branch" 2>/dev/null; then
+    if ! git -C "$repo" fetch origin "$branch" 2>/dev/null; then
     if git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null 2>&1; then
       printf 'orbit: cannot fetch origin/%s, using possibly-stale local ref\n' "$branch" >&2
     else
+      # Roll back the refspec registered above: a leftover entry pointing at a
+      # non-existent remote branch breaks every bare fetch in the pool until
+      # the next reconcile touchpoint.
+      orbit_remove_fetch_refspec "$repo" "+refs/heads/$branch:refs/remotes/origin/$branch"
       orbit_fail "cannot fetch origin/$branch"
     fi
   fi
 }
 
 # Remove one exact fetch refspec value. `git config --unset` matches the value
-# as a regex and the refspec's leading '+' is an invalid pattern (--fixed-value
-# needs git >= 2.26), so rebuild the value list instead.
+# as a regex and the refspec's leading '+' is an invalid pattern, so prefer
+# --fixed-value (git >= 2.26, atomic single-value removal); older git falls
+# back to rebuilding the value list.
 orbit_remove_fetch_refspec() {
   local repo="$1" target="$2" line
+  if git -C "$repo" config --unset --fixed-value remote.origin.fetch "$target" 2>/dev/null; then
+    return 0
+  fi
   local keep=()
   while IFS= read -r line; do
     [ "$line" = "$target" ] || keep+=("$line")
@@ -340,7 +348,8 @@ orbit_remove_fetch_refspec() {
 # on PR merge; also legacy refspecs pre-registered by `switch -c` for branches
 # never pushed). Phase 2 registers refspecs for locally-tracked branches that
 # exist remotely but have none (scoped/raw branch pushed since last run), so
-# their remote-tracking refs can materialize.
+# their remote-tracking refs can materialize. Refspecs orbit never wrote
+# (wildcards, other remote layouts) are left untouched in both phases.
 #
 # Prints one line per change (or would-change, in dry-run).
 orbit_reconcile_fetch_refspecs() {
@@ -356,6 +365,10 @@ orbit_reconcile_fetch_refspecs() {
     esac
     branch="${refspec#+refs/heads/}"
     branch="${branch%%:refs/remotes/origin/*}"
+    # Foreign refspecs are not orbit's to manage: git refnames forbid '*', so
+    # anything containing a glob (e.g. a user-configured full-fetch wildcard
+    # '+refs/heads/*:refs/remotes/origin/*') stays untouched.
+    case "$branch" in *'*'*) continue ;; esac
     printf '%s\n' "$remote_heads" | awk '{print $2}' | grep -Fqx "refs/heads/$branch" && continue
     if [ "$dry_run" = "1" ]; then
       printf 'would remove stale fetch refspec: %s\n' "$branch"
@@ -594,11 +607,14 @@ orbit_brief_extract() {
   [ -e "$file" ] || [ "$file" = "/dev/stdin" ] || return 1
   local line found=""
   # State for multi-line constructs common in GitHub READMEs:
-  #   in_fence   — inside a ``` / ~~~ code fence
+  #   in_fence   — the opening fence marker (``` or ~~~), empty when outside
   #   in_comment — inside a multi-line <!-- --> comment
   #   in_tag     — inside a multi-line HTML tag (<img ...\n src="..."\n width="50%">)
   #   html_stack — open non-void HTML blocks (<p align="center"> … </p>)
-  local in_fence=0 in_comment=0 in_tag=0 html_stack=""
+  #   html_lines — lines spent inside html_stack; an unclosed block is common
+  #     in hand-written README HTML, so after a budget we drop the stack and
+  #     resume normal scanning instead of swallowing the rest of the file
+  local in_fence="" in_comment=0 in_tag=0 html_stack="" html_lines=0
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line#"${line%%[![:space:]]*}"}"
 
@@ -612,16 +628,29 @@ orbit_brief_extract() {
     fi
     case "$line" in
       '```'*|'~~~'*)
-        if [ "$in_fence" = "1" ]; then in_fence=0; else in_fence=1; fi
+        # Typed fences: only the same fence type closes the block, so a ~~~
+        # line inside a ``` fence (or vice versa) is content, not a toggle.
+        if [ -n "$in_fence" ]; then
+          case "$line" in "$in_fence"*) in_fence="" ;; esac
+        else
+          in_fence="${line:0:3}"
+        fi
         continue ;;
     esac
-    [ "$in_fence" = "1" ] && continue
+    [ -n "$in_fence" ] && continue
     if [ -n "$html_stack" ]; then
-      local top="${html_stack##* }"
-      case "$line" in
-        '</'"$top"'>'*) html_stack="${html_stack% *}" ;;
-      esac
-      continue
+      html_lines=$((html_lines + 1))
+      if [ "$html_lines" -gt 50 ]; then
+        html_stack="" html_lines=0
+      else
+        local top="${html_stack##* }"
+        case "$line" in
+          '</'"$top"'>'*)
+            html_stack="${html_stack% *}"
+            [ -z "$html_stack" ] && html_lines=0 ;;
+        esac
+        continue
+      fi
     fi
 
     case "$line" in
@@ -1426,6 +1455,15 @@ orbit_status() {
       fi
       printf '  %-*s %-28s %-15s %s%s\n' "$name_w" "$name" "$display_branch" "$upstream" "$counters" "$raw_mark"
     fi
+  done
+
+  # Steering parity with context/done (spec-warnings steering registry):
+  # raw-mode branches get the conversion pointer on stderr; the stdout table
+  # keeps only the ' raw' mark.
+  for entry in "${repo_entries[@]}"; do
+    IFS='|' read -r name branch ahead behind dirty is_scoped upstream <<< "$entry"
+    [ "$is_scoped" = "0" ] || continue
+    printf 'orbit: %s: raw mode branch — run: orbit switch -c %s (convert to scoped)\n' "$name" "$branch" >&2
   done
 }
 

@@ -85,3 +85,30 @@ teardown() {
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' repos --json"
   assert_contains "$output" "Opinionated formatter."
 }
+
+@test "brief: recovers from an unclosed HTML block instead of swallowing the file" {
+  local proj="$SANDBOX/brief-test8"
+  clone_project "$proj"
+
+  # <p> never closes: the stack budget (50 lines) must expire and normal
+  # scanning must resume. Filler lines are list items (skipped either way),
+  # so the brief must come from the text after the block.
+  {
+    printf '# Repo\n\n<p align="center">\n'
+    for i in $(seq 1 55); do printf -- '- badge %s\n' "$i"; done
+    printf '\nReal content after unclosed block.\n'
+  } | (cd "$proj" && orbit memo myrepo) >/dev/null 2>&1
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' repos --json"
+  assert_contains "$output" "Real content after unclosed block."
+}
+
+@test "brief: tilde fence line inside a backtick fence is content, not a toggle" {
+  local proj="$SANDBOX/brief-test9"
+  clone_project "$proj"
+
+  printf '# Repo\n\n```sh\n~~~\nstill code\n```\n\nReal brief line.\n' | (cd "$proj" && orbit memo myrepo) >/dev/null 2>&1
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' repos --json"
+  assert_contains "$output" "Real brief line."
+}

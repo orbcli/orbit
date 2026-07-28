@@ -8,7 +8,7 @@
 - Maintain the "directory-as-configuration" philosophy; no manifest files
 - Orbit is a Layer 2 tool, not bound to any specific agent
 - Workspaces don't nest: new workspaces are always created under the project root, even when `new` is run from within a workspace
-- Default is raw mode (agent manages branches itself); scoped mode (prefix isolation) is opt-in
+- Default is scoped mode (`orbit switch -c`, prefix isolation + upstream wiring); raw mode (agent manages branches itself with plain git) is advanced
 - Project root resolution: traverse upward from CWD looking for `.repos/`, up to `/` (same as git looking for `.git/`)
 
 ## Architecture Boundaries and Command Existence Criteria

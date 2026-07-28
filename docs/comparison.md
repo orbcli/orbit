@@ -218,7 +218,7 @@ Orbit provides directory-level fidelity and traceability of complete source code
 |-----------|-------|-----|-------|-----|-------------------|---------|-------------|
 | Multi-repo Management | ✓ Core | ✓ workspace mode | ✓ Core (same branch) | ✗ Single repo | ✗ Single repo | ✗ Single repo | ✗ Single repo |
 | Configuration Method | Directory-as-config (cache) | global_state.json | state.json + presets | git config | Built-in | .workmux.yaml | None (hidden) |
-| Branch Isolation | ws/ prefix (opt-in) | label=branch | shared branch (no prefix) | None | worktree- prefix | None | None |
+| Branch Isolation | ws/ prefix (default) | label=branch | shared branch (no prefix) | None | worktree- prefix | None | None |
 | Remote Branch Cleanliness | High (no prefix pushed to remote) | High (label is branch name) | High (no prefix) | N/A | Low | N/A | N/A |
 | Metadata Philosophy | cache-not-truth | state-as-truth | state-as-truth | None | Internal management | None | None |
 | Agent Readability | High (markdown) | Low | via gw-claude plugin | Low | Built-in | Low | Low |

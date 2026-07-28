@@ -395,3 +395,27 @@ _push_update_to() {
   run git -C "$proj/.repos/myrepo" fetch origin
   [ "$status" -eq 0 ]
 }
+
+@test "sync: leaves a user-configured wildcard fetch refspec untouched" {
+  local proj="$SANDBOX/sync-wildcard"
+  local remote="$REMOTES/sync-wildcard.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+
+  # User converted the pool to full fetch (a wildcard entry orbit never
+  # writes), plus a stale exact entry. Reconcile must remove the stale one
+  # but leave the wildcard alone.
+  git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
+    "+refs/heads/*:refs/remotes/origin/*"
+  git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
+    "+refs/heads/gone:refs/remotes/origin/gone"
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "myrepo: removed stale fetch refspec: gone"
+
+  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
+  assert_contains "$output" "+refs/heads/*:refs/remotes/origin/*"
+  [[ "$output" != *"refs/heads/gone"* ]]
+}
