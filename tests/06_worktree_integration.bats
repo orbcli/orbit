@@ -259,6 +259,49 @@ teardown() {
   [ "$merge_ref" = "refs/heads/feature-x" ]
 }
 
+@test "switch: re-switch after remote branch advanced checks out the new head" {
+  local proj="$SANDBOX/switch-stale-ref"
+  local remote="$REMOTES/switch-stale-ref.git"
+  clone_remote "$remote" "$SHARED_REMOTE_WITH_BRANCH"
+  clone_project "$proj" "$SHARED_PROJECT_WITH_BRANCH"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+
+  cd "$proj" && orbit new "stale ref" --name ws1 >/dev/null 2>&1
+  cd "$proj/ws1" && orbit add myrepo >/dev/null 2>&1
+
+  # first switch materializes origin/feature-x in the pool
+  cd "$proj/ws1/myrepo" && orbit switch feature-x >/dev/null 2>&1
+  local first_head
+  first_head=$(git rev-parse HEAD)
+
+  # rewrite the remote branch (rebase/force-push workflow)
+  local tmp
+  tmp=$(mktemp -d "$SANDBOX/_tmp_stale_XXXXXX")
+  git clone "$remote" "$tmp" >/dev/null 2>&1
+  (
+    cd "$tmp"
+    git checkout feature-x >/dev/null 2>&1
+    git reset --hard origin/main >/dev/null 2>&1
+    echo "rewritten" > rewritten.txt
+    git add rewritten.txt
+    git commit -m "rewritten history" >/dev/null 2>&1
+    git push --force origin feature-x >/dev/null 2>&1
+  )
+  local new_head
+  new_head=$(git -C "$tmp" rev-parse HEAD)
+  rm -rf "$tmp"
+  [ "$first_head" != "$new_head" ]
+
+  # second workspace forces the ensure path with the stale ref present:
+  # without the fix it checks out the abandoned first_head
+  cd "$proj" && orbit new "stale ref 2" --name ws2 >/dev/null 2>&1
+  cd "$proj/ws2" && orbit add myrepo >/dev/null 2>&1
+  cd "$proj/ws2/myrepo" && orbit switch feature-x >/dev/null 2>&1
+
+  [ "$(git rev-parse HEAD)" = "$new_head" ]
+  [ "$(git -C "$proj/.repos/myrepo" rev-parse refs/remotes/origin/feature-x)" = "$new_head" ]
+}
+
 @test "switch: non-existent remote branch fails" {
   local proj="$SANDBOX/switch-test7"
   clone_project "$proj" "$SHARED_PROJECT_WITH_BRANCH"
