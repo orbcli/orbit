@@ -196,7 +196,7 @@ git checkout -b feature/api-refactor
 git push origin feature/api-refactor
 ```
 
-**Tracking-display limitation:** the pool is a single-branch clone, so a raw-mode branch you push this way won't show remote tracking in `git status` / `@{upstream}` — the branch and push are fine, only the ahead/behind display is blank. Run `git fetch origin <branch>` once to materialize the ref, or use scoped mode below, which wires tracking up front.
+**Tracking-display limitation:** the pool is a single-branch clone, so a raw-mode branch you push this way won't show remote tracking in `git status` / `@{upstream}` — the branch and push are fine, only the ahead/behind display is blank. Run `git fetch origin <branch>` once to materialize the ref, or just wait: the next `orbit sync` / `orbit info` / session start registers the refspec and materializes it automatically. Scoped mode below wires the upstream config up front and materializes the ref the same way once the branch is pushed.
 
 ### Scoped Mode (when branch isolation is needed)
 

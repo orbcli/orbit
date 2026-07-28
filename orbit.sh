@@ -307,6 +307,75 @@ orbit_ensure_remote_branch() {
   fi
 }
 
+# Remove one exact fetch refspec value. `git config --unset` matches the value
+# as a regex and the refspec's leading '+' is an invalid pattern (--fixed-value
+# needs git >= 2.26), so rebuild the value list instead.
+orbit_remove_fetch_refspec() {
+  local repo="$1" target="$2" line
+  local keep=()
+  while IFS= read -r line; do
+    [ "$line" = "$target" ] || keep+=("$line")
+  done < <(git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null || true)
+  git -C "$repo" config --unset-all remote.origin.fetch 2>/dev/null || true
+  for line in ${keep[@]+"${keep[@]}"}; do
+    git -C "$repo" config --add remote.origin.fetch "$line"
+  done
+}
+
+# Reconcile the pool's exact fetch refspecs with reality. Invariant: every
+# configured exact refspec must point at a branch the remote actually has —
+# one stale entry makes every bare `git fetch` fail with "couldn't find
+# remote ref" in every worktree of the pool.
+#
+# Phase 1 removes refspecs whose remote branch is gone (typical: auto-deleted
+# on PR merge; also legacy refspecs pre-registered by `switch -c` for branches
+# never pushed). Phase 2 registers refspecs for locally-tracked branches that
+# exist remotely but have none (scoped/raw branch pushed since last run), so
+# their remote-tracking refs can materialize.
+#
+# Prints one line per change (or would-change, in dry-run).
+orbit_reconcile_fetch_refspecs() {
+  local repo="$1" dry_run="${2:-0}"
+  local remote_heads refspec branch lb merge
+  # One network round-trip; on failure (offline etc.) skip reconciliation
+  # entirely so unverifiable refspecs are never removed by mistake.
+  remote_heads=$(git -C "$repo" ls-remote --heads origin 2>/dev/null) || return 0
+  while IFS= read -r refspec; do
+    case "$refspec" in
+      +refs/heads/*:refs/remotes/origin/*) ;;
+      *) continue ;;
+    esac
+    branch="${refspec#+refs/heads/}"
+    branch="${branch%%:refs/remotes/origin/*}"
+    printf '%s\n' "$remote_heads" | awk '{print $2}' | grep -Fqx "refs/heads/$branch" && continue
+    if [ "$dry_run" = "1" ]; then
+      printf 'would remove stale fetch refspec: %s\n' "$branch"
+    else
+      orbit_remove_fetch_refspec "$repo" "$refspec"
+      git -C "$repo" update-ref -d "refs/remotes/origin/$branch" 2>/dev/null || true
+      printf 'removed stale fetch refspec: %s\n' "$branch"
+    fi
+  done < <(git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null || true)
+  while IFS= read -r lb; do
+    [ -n "$lb" ] || continue
+    [ "$(git -C "$repo" config --get "branch.$lb.remote" 2>/dev/null)" = "origin" ] || continue
+    merge=$(git -C "$repo" config --get "branch.$lb.merge" 2>/dev/null) || continue
+    case "$merge" in
+      refs/heads/*) branch="${merge#refs/heads/}" ;;
+      *) continue ;;
+    esac
+    printf '%s\n' "$remote_heads" | awk '{print $2}' | grep -Fqx "refs/heads/$branch" || continue
+    git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null \
+      | grep -Fqx "+refs/heads/$branch:refs/remotes/origin/$branch" && continue
+    if [ "$dry_run" = "1" ]; then
+      printf 'would add fetch refspec: %s\n' "$branch"
+    else
+      orbit_add_fetch_refspec "$repo" "$branch"
+      printf 'added fetch refspec: %s\n' "$branch"
+    fi
+  done < <(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
+}
+
 # --- CWD Inference ---
 
 orbit_infer_workspace() {
@@ -963,7 +1032,7 @@ orbit_add() {
     # you create with `git checkout -b <name>` and push won't show remote tracking
     # in `git status` / `@{upstream}` until `git fetch origin <name>` materializes
     # the ref. `orbit switch -c <name>` (scoped) wires tracking up front.
-    printf 'orbit: raw-mode branches (git checkout -b) stay untracked under the single-branch pool: run git fetch origin <branch> after pushing, or use switch -c <name> to wire tracking up front\n' >&2
+    printf 'orbit: raw-mode branches (git checkout -b) stay untracked under the single-branch pool: run git fetch origin <branch> after pushing, or use switch -c <name> to wire the upstream config up front (the tracking ref materializes at the next sync/info/session start)\n' >&2
     local md_file="$root/.repos/.$repo_name.md"
     if [ -f "$md_file" ]; then
       printf -- '--- memo: %s (pass -s to suppress) ---\n' "$repo_name" >&2
@@ -1036,9 +1105,10 @@ orbit_switch() {
     fi
     git -C "$wt_path" checkout -b "$local_branch"
     orbit_set_upstream "$wt_path" "$local_branch" "$branch_name"
-    # Pre-register the fetch refspec so the first `git push` materializes
-    # refs/remotes/origin/<branch> (status/@{upstream} work under single-branch pool).
-    orbit_add_fetch_refspec "$repo_dir" "$branch_name"
+    # Do NOT pre-register a fetch refspec here: an exact refspec for a branch
+    # the remote doesn't have yet makes every bare `git fetch` fail until the
+    # first push. sync/prune reconciliation registers it once the branch
+    # exists remotely (see orbit_reconcile_fetch_refspecs).
     printf '%s: created %s (upstream: origin/%s)\n' "$repo_name" "$local_branch" "$branch_name"
 
     # Post-creation conflict check: remote already has <name> with different
@@ -1104,7 +1174,16 @@ orbit_sync_one() {
     return 0
   fi
 
-  if ! git -C "$repo_dir" fetch origin "$branch" 2>/dev/null; then
+  # Reconcile fetch refspecs first: a stale entry (remote branch deleted, or
+  # pre-registered but never pushed) breaks every bare `git fetch` in every
+  # worktree of this pool.
+  while IFS= read -r line; do
+    printf '%s: %s\n' "$repo_name" "$line"
+  done < <(orbit_reconcile_fetch_refspecs "$repo_dir" 0)
+
+  # Bare fetch (not `fetch origin $branch`) so refs for refspecs just
+  # registered by the reconcile materialize too.
+  if ! git -C "$repo_dir" fetch origin 2>/dev/null; then
     printf 'orbit: %s: fetch failed\n' "$repo_name" >&2
     return 1
   fi
@@ -1794,7 +1873,12 @@ orbit_info() {
   local default_branch
   default_branch=$(orbit_default_branch "$repo_dir" 2>/dev/null) || true
   if [ -n "$default_branch" ]; then
-    git -C "$repo_dir" fetch origin "$default_branch" 2>/dev/null || true
+    # Reconcile fetch refspecs, then bare fetch so refs for refspecs just
+    # registered (branch pushed since last run) materialize too.
+    while IFS= read -r line; do
+      printf 'orbit: %s: %s\n' "$repo_name" "$line" >&2
+    done < <(orbit_reconcile_fetch_refspecs "$repo_dir" 0)
+    git -C "$repo_dir" fetch origin 2>/dev/null || true
   fi
 
   orbit_upstream_check "$repo_name" "$root"
@@ -2277,6 +2361,12 @@ orbit_prune() {
           git -C "$main_repo" config --remove-section "branch.$branch" 2>/dev/null || true
         done < <(git -C "$main_repo" for-each-ref --format='%(refname:short)' "refs/heads/$prefix/$ws/" 2>/dev/null || true)
       fi
+
+      # Reconcile fetch refspecs (remote branch deleted, e.g. after PR merge;
+      # or pushed since and not yet registered)
+      while IFS= read -r line; do
+        printf '    %s\n' "$line"
+      done < <(orbit_reconcile_fetch_refspecs "$main_repo" "$dry_run")
     done
     fi
 
@@ -2710,7 +2800,10 @@ orbit_context_reignite() {
       default_branch=$(orbit_default_branch "$root/.repos/$name" 2>/dev/null || true)
       memo_behind=0 remote_ahead=0
       if [ -n "$default_branch" ]; then
-        git -C "$root/.repos/$name" fetch origin "$default_branch" 2>/dev/null || true
+        while IFS= read -r line; do
+          printf 'orbit: %s: %s\n' "$name" "$line" >&2
+        done < <(orbit_reconcile_fetch_refspecs "$root/.repos/$name" 0)
+        git -C "$root/.repos/$name" fetch origin 2>/dev/null || true
         local_head=$(git -C "$root/.repos/$name" rev-parse "refs/heads/$default_branch" 2>/dev/null || true)
         remote_head=$(git -C "$root/.repos/$name" rev-parse "refs/remotes/origin/$default_branch" 2>/dev/null || true)
         if [ -n "$local_head" ] && [ -n "$remote_head" ] && [ "$local_head" != "$remote_head" ]; then
@@ -2780,7 +2873,10 @@ orbit_context_reignite() {
     default_branch=$(orbit_default_branch "$root/.repos/$name" 2>/dev/null || true)
     memo_behind=0 remote_ahead=0
     if [ -n "$default_branch" ]; then
-      git -C "$root/.repos/$name" fetch origin "$default_branch" 2>/dev/null || true
+      while IFS= read -r line; do
+        printf 'orbit: %s: %s\n' "$name" "$line" >&2
+      done < <(orbit_reconcile_fetch_refspecs "$root/.repos/$name" 0)
+      git -C "$root/.repos/$name" fetch origin 2>/dev/null || true
       local_head=$(git -C "$root/.repos/$name" rev-parse "refs/heads/$default_branch" 2>/dev/null || true)
       remote_head=$(git -C "$root/.repos/$name" rev-parse "refs/remotes/origin/$default_branch" 2>/dev/null || true)
       if [ -n "$local_head" ] && [ -n "$remote_head" ] && [ "$local_head" != "$remote_head" ]; then

@@ -190,7 +190,7 @@ git checkout -b feature/x  # plain branch, no prefix
 git push origin feature/x  # explicit push target
 ```
 
-**Tracking-display limitation (raw mode only).** The pool is a single-branch clone, so a branch you create with `git checkout -b` and push won't show remote tracking in `git status` / `@{upstream}` — the remote-tracking ref isn't materialized. The branch and its push are fine; only the ahead/behind display is blank. Run `git fetch origin <branch>` once to materialize the ref, or use scoped mode (`orbit switch -c`), which wires tracking up front. `orbit add` prints this note too.
+**Tracking-display limitation (raw mode only).** The pool is a single-branch clone, so a branch you create with `git checkout -b` and push won't show remote tracking in `git status` / `@{upstream}` — the remote-tracking ref isn't materialized. The branch and its push are fine; only the ahead/behind display is blank. Run `git fetch origin <branch>` once to materialize the ref, or just wait: the next `orbit sync` / `orbit info` / session start registers the refspec and materializes it automatically. Scoped mode (`orbit switch -c`) wires the upstream config up front and materializes the ref the same way once the branch is pushed. `orbit add` prints this note too.
 
 ### Scoped mode (opt-in, prevents multi-workspace conflicts)
 
