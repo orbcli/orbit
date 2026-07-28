@@ -225,7 +225,7 @@ Every skill must guide the agent to discover before acting:
     - No memo or thin card (doesn't answer both card questions) → first check what you already know from prior code work this session (grep/edit/commit/trace all count as exploring). If that context is sufficient, go straight to write. Only if context is still insufficient do you trigger explore, and only within the scope orbit names for you (the add-time stderr carries it). Use `orbit memo <repo> --scaffold` for the template, then write. Include any popped jot entries
    - **This step builds understanding *now*** (read code / draft the memo skeleton) — it cannot be deferred to wrap-up. Step 10 only aggregates incremental discoveries on top of it; it is not where first-time exploration happens
    - **Discovery gate:** for every added repo, no target action (edit / branch / push / release / tag) may begin until steps 3–7 are complete for that repo. Jumping from `add` straight to a target action is the failure this gate prevents
-8. Branch — raw mode `git checkout -b` (default, most scenarios) or scoped mode `orbit switch -c` (shared branches)
+8. Branch — scoped mode `orbit switch -c` (default, most scenarios) or raw mode `git checkout -b` (advanced, no orbit branch management)
 9. Work: use native git commands inside worktrees for development. **jot feeds the card, so jot only what the card needs and lacks** — a role, or an MVP/VIP entry point the card misses or gets wrong → `orbit jot "one-liner"` from within the repo directory. Lightweight queue — no need to read or merge memo during work. If jot warns the buffer is filling (`building` at half of the buffer orbit reports; `overflow` past it), consider aggregating now (see step 10)
    - **What to jot**: only information the card needs and doesn't yet have — a role (why a workspace would pull this repo in) or an MVP/VIP entry point (where to start, and why), about the repo's main branch. **Not**: deep code structure (module internals, conventions, pitfalls, call graphs — out of card scope, belongs in a code-doc); feature-branch changes; temporary debug info; anything the card already says
    - **Need a new repo during work** (e.g., tracing a cross-repo dependency) → return to the discovery flow of steps 2–7: `orbit repos` to screen → `orbit info` to assess → decide whether to add → sync if needed → add → memo check
@@ -388,8 +388,8 @@ Orbit takes no stance on git push workflow — that is the developer's (or autom
 ### Branch Mode Choice (Must Be Documented)
 
 The skill must give the agent a basic rule for picking a branch mode:
-- **Default = raw** (`git checkout -b <name>`) for a fresh, workspace-local branch name.
-- **Reach for scoped** (`orbit switch` / `orbit switch -c`) when the branch is an **existing/shared** branch, or when the name could **easily conflict** across workspaces (multiple workspaces touching the same repo) — scoped branches are namespaced per workspace.
+- **Default = scoped** (`orbit switch -c <name>`) — upstream tracking wired up front, branch namespaced per workspace (no cross-workspace conflicts), cleaned up by `orbit prune`.
+- **Raw** (`git checkout -b <name>`) is **advanced** — plain git with no orbit branch management; the skill must not present it as the default.
 - **Fallback (the "already used by worktree" trap):** git refuses to check out a branch already checked out in another worktree — the pool holds each repo's base branch, and other workspaces may hold shared branches. When `git checkout <name>` or `git switch <name>` aborts with `already used by worktree`, the skill must direct the agent to run `orbit switch <name>` instead: it creates a per-workspace `ws/<workspace>/<name>` branch tracking `origin/<name>` (a distinct local name that never collides), and `git push` still targets `origin/<name>`.
 
 ### Push Behavior by Mode (Must Be Documented)

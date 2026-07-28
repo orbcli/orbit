@@ -176,11 +176,11 @@ orbit doctor
 > **Don't `git checkout master`/`main` inside a worktree.** The pool already has the base branch checked out, so git aborts with `fatal: '<branch>' is already used by worktree at '.repos/<repo>'`. To branch off the latest baseline, sync through orbit first: `orbit switch master` (creates a workspace-level tracking branch, fetching remote) → `git pull --ff-only` → `git checkout -b feature/x`. This starts the new branch from the synced remote HEAD, not stale local code.
 
 **Which mode?**
-- **Default = raw** (`git checkout -b <name>`) for a fresh, workspace-local branch name.
-- **Reach for scoped** (`orbit switch` / `orbit switch -c`) when checking out an **existing/shared** branch, or when the name could **easily conflict** across workspaces (multiple workspaces touching the same repo) — scoped branches are namespaced per workspace.
+- **Default = scoped** (`orbit switch -c <name>`) — upstream tracking wired up front, branch namespaced per workspace (no cross-workspace conflicts), cleaned up by `orbit prune`.
+- **Raw** (`git checkout -b <name>`) is **advanced** — plain git with no orbit branch management; use only when you explicitly want that.
 - **Fallback — the "already used by worktree" trap.** Git refuses to check out a branch that is already checked out in another worktree: the pool holds each repo's base branch, and other workspaces may hold shared branches. So `git checkout <name>` / `git switch <name>` can abort with `fatal: '<name>' is already used by worktree at ...`. Don't fight it — run **`orbit switch <name>`**. It creates a per-workspace branch `ws/<workspace>/<name>` tracking `origin/<name>` — a distinct local name that never collides — and `git push` still targets `origin/<name>`.
 
-### Raw mode (default)
+### Raw mode (advanced)
 
 After `orbit add`, use git directly. Orbit does not manage branches:
 
@@ -192,7 +192,7 @@ git push origin feature/x  # explicit push target
 
 **Tracking-display limitation (raw mode only).** The pool is a single-branch clone, so a branch you create with `git checkout -b` and push won't show remote tracking in `git status` / `@{upstream}` — the remote-tracking ref isn't materialized. The branch and its push are fine; only the ahead/behind display is blank. Run `git fetch origin <branch>` once to materialize the ref, or just wait: the next `orbit sync` / `orbit info` / session start registers the refspec and materializes it automatically. Scoped mode (`orbit switch -c`) wires the upstream config up front and materializes the ref the same way once the branch is pushed. `orbit add` prints this note too.
 
-### Scoped mode (opt-in, prevents multi-workspace conflicts)
+### Scoped mode (default)
 
 Use `orbit switch` to create prefixed branches with upstream config:
 

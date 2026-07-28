@@ -302,7 +302,7 @@ teardown() {
   [ "$(git -C "$proj/.repos/myrepo" rev-parse refs/remotes/origin/feature-x)" = "$new_head" ]
 }
 
-@test "switch: non-existent remote branch fails" {
+@test "switch: non-existent remote branch fails and leaves no fetch refspec residue" {
   local proj="$SANDBOX/switch-test7"
   clone_project "$proj" "$SHARED_PROJECT_WITH_BRANCH"
   cd "$proj" && orbit new "switch test" --name dev >/dev/null 2>&1
@@ -310,6 +310,13 @@ teardown() {
 
   run bash -c "cd '$proj/dev/myrepo' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' switch nonexist-branch"
   [ "$status" -ne 0 ]
+
+  # the refspec registered before the failed fetch must be rolled back —
+  # a leftover entry would break every bare fetch in the pool
+  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
+  [[ "$output" != *"nonexist-branch"* ]]
+  run git -C "$proj/.repos/myrepo" fetch origin
+  [ "$status" -eq 0 ]
 }
 
 @test "switch: -c with existing remote branch name succeeds (no remote check)" {
@@ -391,6 +398,20 @@ teardown() {
   assert_contains "$output" "myrepo"
   assert_contains "$output" "clean"
   [[ "$output" != *"ws/dev/main"* ]]
+}
+
+@test "status: raw mode branch gets the conversion steering line (parity with context/done)" {
+  local proj="$SANDBOX/status-test6"
+  clone_project "$proj"
+  cd "$proj" && orbit new "status raw" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+  git -C "$proj/dev/myrepo" checkout -b raw-branch >/dev/null 2>&1
+
+  run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' status"
+  # stdout table keeps only the mark; the full steering goes to stderr
+  assert_contains "$output" "raw-branch"
+  assert_contains "$output" " raw"
+  assert_contains "$output" "orbit: myrepo: raw mode branch — run: orbit switch -c raw-branch (convert to scoped)"
 }
 
 # --- CWD inference ---

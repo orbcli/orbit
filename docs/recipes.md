@@ -234,7 +234,7 @@ Key points:
 - Scoped mode adds a `ws/<workspace>/` prefix to local branches, preventing collisions when multiple workspaces use the same repo
 - Remote branch names stay clean — no prefix is pushed
 - `git push` works without specifying a target (upstream is pre-configured)
-- Use scoped mode when branches might overlap; use raw mode (default `git checkout -b`) when they won't
+- Scoped mode is the default; raw mode (`git checkout -b`, plain git with no orbit branch management) is advanced — reach for it only when you explicitly want no orbit management
 
 # Agent knowledge & context
 

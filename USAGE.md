@@ -185,20 +185,7 @@ Notes:
 
 ## 6. Branch Operations
 
-### Raw Mode (default)
-
-After `orbit add`, use all native git commands; orbit does not participate in branch management:
-
-```bash
-cd task-01/backend/
-git checkout -b feature/api-refactor
-# work, commit
-git push origin feature/api-refactor
-```
-
-**Tracking-display limitation:** the pool is a single-branch clone, so a raw-mode branch you push this way won't show remote tracking in `git status` / `@{upstream}` — the branch and push are fine, only the ahead/behind display is blank. Run `git fetch origin <branch>` once to materialize the ref, or just wait: the next `orbit sync` / `orbit info` / session start registers the refspec and materializes it automatically. Scoped mode below wires the upstream config up front and materializes the ref the same way once the branch is pushed.
-
-### Scoped Mode (when branch isolation is needed)
+### Scoped Mode (default)
 
 Create a new tracking branch from current HEAD:
 
@@ -231,6 +218,19 @@ In scoped mode, `git push` automatically pushes to the correct remote branch (wi
 git push
 # → ws/task-01/feat-api-refactor pushes to origin/feat-api-refactor
 ```
+
+### Raw Mode (advanced)
+
+After `orbit add`, use all native git commands; orbit does not participate in branch management:
+
+```bash
+cd task-01/backend/
+git checkout -b feature/api-refactor
+# work, commit
+git push origin feature/api-refactor
+```
+
+**Tracking-display limitation:** the pool is a single-branch clone, so a raw-mode branch you push this way won't show remote tracking in `git status` / `@{upstream}` — the branch and push are fine, only the ahead/behind display is blank. Run `git fetch origin <branch>` once to materialize the ref, or just wait: the next `orbit sync` / `orbit info` / session start registers the refspec and materializes it automatically. Scoped mode above wires the upstream config up front and materializes the ref the same way once the branch is pushed.
 
 ## 7. Viewing Status
 
