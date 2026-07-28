@@ -302,8 +302,17 @@ orbit_add_fetch_refspec() {
 orbit_ensure_remote_branch() {
   local repo="$1" branch="$2"
   orbit_add_fetch_refspec "$repo" "$branch"
-  if ! git -C "$repo" rev-parse --verify --quiet "origin/$branch" >/dev/null 2>&1; then
-    git -C "$repo" fetch origin "$branch" 2>/dev/null || orbit_fail "cannot fetch origin/$branch"
+  # Always fetch, even when origin/<branch> exists locally: the remote branch
+  # may have advanced or been force-pushed after it was fetched, and checking
+  # out the stale ref silently builds on abandoned history. Degrade when
+  # offline: use the local ref with a warning; fail only when there is
+  # nothing to fall back on.
+  if ! git -C "$repo" fetch origin "$branch" 2>/dev/null; then
+    if git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null 2>&1; then
+      printf 'orbit: cannot fetch origin/%s, using possibly-stale local ref\n' "$branch" >&2
+    else
+      orbit_fail "cannot fetch origin/$branch"
+    fi
   fi
 }
 
