@@ -89,6 +89,27 @@ const SAFE_SUBCOMMANDS = new Set([
   "version", "doctor", "completion",
 ])
 
+// Auto-approve decision for a single bash command line, mirroring
+// hooks/auto-approve.sh (parity contract: docs/spec-hooks.md). Only a bare,
+// un-chained orbit invocation whose subcommand is in the safe tiers is
+// allowed. All matching is token-exact — never substring: `--forceful` or an
+// `--force=x`-style spelling must not trip the destructive guard, while a
+// whitespace-delimited `--force` word conservatively trips it even inside
+// quotes (naive split, fail-safe direction — same as the shell hook).
+const allowsOrbitCommand = (cmd: string): boolean => {
+  // Refuse anything with shell chaining/redirection/substitution.
+  if (/[;&|`$()><\n]/.test(cmd)) return false
+  const parts = cmd.trim().split(/\s+/)
+  const binary = (parts[0] ?? "").split("/").pop() ?? ""
+  if (binary !== "orbit" && binary !== "orbit.sh") return false
+  const sub = parts[1] ?? ""
+  if (!SAFE_SUBCOMMANDS.has(sub)) return false
+  // sync --force does git reset --hard on the pool repo — still prompt.
+  // Token match (not substring) — consistent with how sub is parsed above.
+  if (sub === "sync" && parts.some((p) => p === "--force")) return false
+  return true
+}
+
 const orbitPlugin = (async ({ client, $ }) => {
   // Per-session cache for injected system context. Refreshed when a bash
   // tool that invokes the orbit CLI executes (workspace state may have
@@ -174,7 +195,8 @@ const orbitPlugin = (async ({ client, $ }) => {
     // ── PreToolUse/Bash equivalent ──────────────────────────────────────
     // Auto-approves single, un-chained orbit invocations whose subcommand is
     // in the two safe tiers. Destructive/externally-visible subcommands
-    // (done, prune, clone, config, new) and sync --force still prompt.
+    // (done, prune, clone, config, new) and sync --force still prompt. The
+    // decision itself lives in allowsOrbitCommand (pure, test-covered).
     "permission.ask": async (input, output) => {
       try {
         if (input.type !== "bash") return
@@ -190,19 +212,7 @@ const orbitPlugin = (async ({ client, $ }) => {
           (typeof input.pattern === "string" ? input.pattern : "")
         if (!cmd) return
 
-        // Refuse anything with shell chaining/redirection/substitution.
-        if (/[;&|`$()><\n]/.test(cmd)) return
-
-        const parts = cmd.trim().split(/\s+/)
-        const binary = (parts[0] ?? "").split("/").pop() ?? ""
-        if (binary !== "orbit" && binary !== "orbit.sh") return
-
-        const sub = parts[1] ?? ""
-        if (!SAFE_SUBCOMMANDS.has(sub)) return
-
-        // sync --force does git reset --hard on the pool repo — still prompt.
-        if (sub === "sync" && cmd.includes("--force")) return
-
+        if (!allowsOrbitCommand(cmd)) return
         output.status = "allow"
       } catch {
         // fail-safe: normal confirmation preserved
@@ -303,4 +313,5 @@ export default Object.assign(orbitPlugin, {
   CRUISE_HINT,
   wrapContext,
   invokesOrbitCli,
+  allowsOrbitCommand,
 })
