@@ -73,7 +73,7 @@ curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.s
 curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh | bash
 ```
 
-The demo drops you into a ready workspace: add a `fuel` field to the telemetry downlink — a change that must land in *both* repos in lockstep. With `--claude`, `--codex`, or `--qodercli`, the plugin install is folded in — just `claude start`, `codex`, or `qodercli start`. Clean up with `rm -rf ~/orbit-try`.
+The demo drops you into a ready workspace: add a `fuel` field to the telemetry downlink — a change that must land in *both* repos in lockstep. With `--claude`, `--codex`, or `--qodercli`, the plugin install is folded in — just `claude start`, `codex`, or `qodercli start`. The folded-in install pulls from an explicit HTTPS source (override with `ORBIT_SOURCE`), so a fresh machine without SSH keys works out of the box. Clean up with `rm -rf ~/orbit-try`.
 
 ## Quick Start
 
@@ -92,9 +92,9 @@ curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh | bash
 curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh \
   | bash -s -- --claude --zsh
 
-# No SSH key on this machine? Point the plugin marketplace at an explicit
-# HTTPS source (the default owner/repo shorthand lets the agent CLI pick the
-# protocol, and some expand it to SSH):
+# By default the marketplace source is the orbcli/orbit shorthand and the
+# agent CLI picks the clone protocol (SSH wins if you have a key). No SSH
+# key on this machine? Point it at an explicit HTTPS source instead:
 curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh \
   | ORBIT_SOURCE=https://github.com/orbcli/orbit.git bash -s -- --claude
 ```
