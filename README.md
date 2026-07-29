@@ -91,6 +91,12 @@ The demo drops you into a ready workspace: add a `fuel` field to the telemetry d
 curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh | bash
 curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh \
   | bash -s -- --claude --zsh
+
+# No SSH key on this machine? Point the plugin marketplace at an explicit
+# HTTPS source (the default owner/repo shorthand lets the agent CLI pick the
+# protocol, and some expand it to SSH):
+curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh \
+  | ORBIT_SOURCE=https://github.com/orbcli/orbit.git bash -s -- --claude
 ```
 
 `install.sh` installs the runtime to `~/.local/bin` and puts it on your PATH. Add `--force` to reinstall an existing plugin (refreshes content from the already-configured source). Add `--replace-marketplace` to switch where a plugin's marketplace points — e.g. moving an install from a local checkout to the public git repo (`ORBIT_SOURCE=orbcli/orbit ./install.sh --codex --replace-marketplace`); plain `--force` cannot re-point the source. To uninstall: `./install.sh --uninstall --all` (or pick targets: `--uninstall --claude --codex`, `--uninstall --cli` for just the runtime, etc.).

@@ -19,6 +19,12 @@ TRY_DIR="${ORBIT_TRY_DIR:-$HOME/orbit-try}"
 UPSTREAM="$TRY_DIR/upstream"
 BIN_DIR="$TRY_DIR/bin"          # runtime lands here so `rm -rf $TRY_DIR` wipes it too
 INSTALL_URL="https://raw.githubusercontent.com/orbcli/orbit/main/install.sh"
+# Install source handed to install.sh when piped from the network. Default is
+# the explicit HTTPS URL, NOT the owner/repo shorthand: the shorthand leaves the
+# clone protocol to each agent CLI, and claude expands it to SSH with no
+# fallback — a fresh machine without SSH keys can't install the plugin. Try-it
+# must succeed with zero setup. Override with ORBIT_SOURCE (e.g. back to SSH).
+TRY_SOURCE="${ORBIT_SOURCE:-https://github.com/orbcli/orbit.git}"
 
 say()  { printf '\033[36m%s\033[0m\n' "$*"; }
 warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
@@ -41,9 +47,12 @@ fi
 # is published), else the remote. Extra args (e.g. --claude) pass through.
 run_install() {
   if [ -n "$LOCAL_INSTALL" ]; then
+    # Local checkout: no TRY_SOURCE here — install.sh must keep sourcing from
+    # the checkout (path type) so local edits take effect. A user-exported
+    # ORBIT_SOURCE still passes through the environment untouched.
     ORBIT_BIN_DIR="$BIN_DIR" bash "$LOCAL_INSTALL" "$@"
   else
-    curl -sL "$INSTALL_URL" | ORBIT_BIN_DIR="$BIN_DIR" bash -s -- "$@"
+    curl -sL "$INSTALL_URL" | ORBIT_SOURCE="$TRY_SOURCE" ORBIT_BIN_DIR="$BIN_DIR" bash -s -- "$@"
   fi
 }
 

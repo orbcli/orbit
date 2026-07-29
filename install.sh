@@ -46,6 +46,21 @@ OC_SKILL_TMP=""
 
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
+# Marketplace installs hand $SOURCE to the agent CLI, and an owner/repo
+# shorthand leaves the clone protocol to that CLI — claude expands it to SSH
+# with no fallback, so a machine without SSH keys fails right here. Hint the
+# explicit-HTTPS retry instead of changing the default (SSH users keep SSH).
+hint_https_source() {
+  local flag="$1"
+  if [ "$SOURCE_TYPE" = "repo" ]; then
+    printf '%s\n' "hint: no SSH key for GitHub? retry with an explicit HTTPS source:" >&2
+    # The typical victim here piped install.sh from the network and has no
+    # local checkout — print the curl form (same precedent as completion_hint).
+    printf '%s\n' "  curl -sL https://raw.githubusercontent.com/$SOURCE/$ORBIT_REF/install.sh \\" >&2
+    printf '%s\n' "    | ORBIT_SOURCE=https://github.com/$SOURCE.git bash -s -- $flag --replace-marketplace" >&2
+  fi
+}
+
 cleanup() {
   [ -n "${SRC_ORBIT_TMP:-}" ] && rm -f "$SRC_ORBIT_TMP"
   [ -n "${CLONE_TMP:-}" ] && rm -rf "$CLONE_TMP"
@@ -225,7 +240,7 @@ install_claude_plugin() {
   if [ "$FORCE" -eq 1 ] || [ "$REPLACE_MP" -eq 1 ]; then
     claude plugin uninstall claude-orbit -y >/dev/null 2>&1 || true
   fi
-  claude plugin install "claude-orbit@orbcli"
+  claude plugin install "claude-orbit@orbcli" || { hint_https_source --claude; fail "claude plugin install failed"; }
   printf '%s\n' "Installed Orbit plugin into Claude Code"
 }
 
@@ -254,7 +269,7 @@ install_qoder_plugin() {
     qodercli plugins uninstall "qoder-orbit@orbcli" -s user >/dev/null 2>&1 || true
   fi
   # Plain install never removes; it just installs (no-op if already present).
-  qodercli plugins install "qoder-orbit@orbcli" -s user
+  qodercli plugins install "qoder-orbit@orbcli" -s user || { hint_https_source --qoder; fail "qodercli plugin install failed"; }
   printf '%s\n' "Installed Orbit plugin via qodercli"
 }
 
@@ -292,7 +307,7 @@ install_codex_plugin() {
   if [ "$FORCE" -eq 1 ] || [ "$REPLACE_MP" -eq 1 ]; then
     codex plugin remove "codex-orbit@orbcli" >/dev/null 2>&1 || true
   fi
-  codex plugin add "codex-orbit@orbcli"
+  codex plugin add "codex-orbit@orbcli" || { hint_https_source --codex; fail "codex plugin add failed"; }
   printf '%s\n' "Installed Orbit plugin into Codex"
 }
 
