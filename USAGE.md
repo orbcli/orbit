@@ -47,7 +47,7 @@ If you use bash, change to `--bash`. To overwrite an existing installation, add 
 ORBIT_SOURCE=https://github.com/orbcli/orbit.git ./install.sh --claude
 ```
 
-`examples/demo/try.sh` does exactly this by default when piped from the network, so first-time users get the zero-setup HTTPS path; the plain `install.sh` default stays the shorthand, keeping SSH for those who have it.
+`examples/demo/try.sh` does exactly this by default when piped from the network, so first-time users get the zero-setup HTTPS path; the plain `install.sh` default stays the shorthand, leaving the protocol choice to each CLI.
 
 ## 3. Adding Repos to the Pool
 

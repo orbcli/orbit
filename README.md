@@ -93,7 +93,7 @@ curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh \
   | bash -s -- --claude --zsh
 
 # By default the marketplace source is the orbcli/orbit shorthand and the
-# agent CLI picks the clone protocol (SSH wins if you have a key). No SSH
+# agent CLI picks the clone protocol (some CLIs try SSH first). No SSH
 # key on this machine? Point it at an explicit HTTPS source instead:
 curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh \
   | ORBIT_SOURCE=https://github.com/orbcli/orbit.git bash -s -- --claude
