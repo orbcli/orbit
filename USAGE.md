@@ -41,6 +41,14 @@ The following assumes `orbit` as the command name. For global installation:
 
 If you use bash, change to `--bash`. To overwrite an existing installation, add `--force`. To switch where a plugin's marketplace points (for example from a local checkout to the public git repo), add `--replace-marketplace` — e.g. `ORBIT_SOURCE=orbcli/orbit ./install.sh --codex --replace-marketplace`. Plain `--force` only refreshes content from the already-configured source; it does not change where the source points.
 
+`ORBIT_SOURCE` also picks the clone protocol for the plugin marketplace: the `owner/repo` shorthand leaves that choice to the agent CLI (some expand it to SSH, which fails without an SSH key), while an explicit URL is used as-is. On a machine without SSH keys, pass the HTTPS URL:
+
+```bash
+ORBIT_SOURCE=https://github.com/orbcli/orbit.git ./install.sh --claude
+```
+
+`examples/demo/try.sh` does exactly this by default when piped from the network, so first-time users get the zero-setup HTTPS path; the plain `install.sh` default stays the shorthand, leaving the protocol choice to each CLI.
+
 ## 3. Adding Repos to the Pool
 
 No separate `init` command is needed — the first `clone` or `new` automatically initializes the project root.

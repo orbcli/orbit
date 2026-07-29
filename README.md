@@ -73,7 +73,7 @@ curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.s
 curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh | bash
 ```
 
-The demo drops you into a ready workspace: add a `fuel` field to the telemetry downlink — a change that must land in *both* repos in lockstep. With `--claude`, `--codex`, or `--qodercli`, the plugin install is folded in — just `claude start`, `codex`, or `qodercli start`. Clean up with `rm -rf ~/orbit-try`.
+The demo drops you into a ready workspace: add a `fuel` field to the telemetry downlink — a change that must land in *both* repos in lockstep. With `--claude`, `--codex`, or `--qodercli`, the plugin install is folded in — just `claude start`, `codex`, or `qodercli start`. The folded-in install pulls from an explicit HTTPS source (override with `ORBIT_SOURCE`), so a fresh machine without SSH keys works out of the box. Clean up with `rm -rf ~/orbit-try`.
 
 ## Quick Start
 
@@ -91,6 +91,12 @@ The demo drops you into a ready workspace: add a `fuel` field to the telemetry d
 curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh | bash
 curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh \
   | bash -s -- --claude --zsh
+
+# By default the marketplace source is the orbcli/orbit shorthand and the
+# agent CLI picks the clone protocol (some CLIs try SSH first). No SSH
+# key on this machine? Point it at an explicit HTTPS source instead:
+curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh \
+  | ORBIT_SOURCE=https://github.com/orbcli/orbit.git bash -s -- --claude
 ```
 
 `install.sh` installs the runtime to `~/.local/bin` and puts it on your PATH. Add `--force` to reinstall an existing plugin (refreshes content from the already-configured source). Add `--replace-marketplace` to switch where a plugin's marketplace points — e.g. moving an install from a local checkout to the public git repo (`ORBIT_SOURCE=orbcli/orbit ./install.sh --codex --replace-marketplace`); plain `--force` cannot re-point the source. To uninstall: `./install.sh --uninstall --all` (or pick targets: `--uninstall --claude --codex`, `--uninstall --cli` for just the runtime, etc.).
