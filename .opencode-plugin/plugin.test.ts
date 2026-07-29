@@ -5,7 +5,7 @@ import orbitPlugin from "./plugin.ts"
 // Helpers are attached to the default-exported plugin function — OpenCode's
 // loader forbids non-plugin module exports ("Plugin export is not a
 // function"), so plugin.ts cannot export them directly.
-const { CRUISE_HINT, STARTUP_HINT, invokesOrbitCli, wrapContext } = orbitPlugin
+const { CRUISE_HINT, STARTUP_HINT, allowsOrbitCommand, invokesOrbitCli, wrapContext } = orbitPlugin
 
 test("invokesOrbitCli: real orbit invocations", () => {
   assert.equal(invokesOrbitCli("orbit status"), true)
@@ -82,4 +82,34 @@ test("wrapContext: tier-specific hint inside the tags, content untouched", () =>
   const body = "path: /ws/orbit-demo\ngoal: ship it"
   assert.equal(wrapContext(body, true), `<orbit-context>\n${STARTUP_HINT}\n${body}\n</orbit-context>`)
   assert.equal(wrapContext(body, false), `<orbit-context>\n${CRUISE_HINT}\n${body}\n</orbit-context>`)
+})
+
+test("allowsOrbitCommand: safe tiers auto-approved", () => {
+  assert.equal(allowsOrbitCommand("orbit status"), true)
+  assert.equal(allowsOrbitCommand("orbit memo backend"), true)
+  assert.equal(allowsOrbitCommand("orbit.sh jot backend \"discovery\""), true)
+  assert.equal(allowsOrbitCommand("/usr/local/bin/orbit context --startup"), true)
+})
+
+test("allowsOrbitCommand: destructive / externally-visible tiers still prompt", () => {
+  for (const sub of ["done", "prune", "clone", "config", "new"]) {
+    assert.equal(allowsOrbitCommand(`orbit ${sub}`), false)
+  }
+})
+
+test("allowsOrbitCommand: non-orbit binary and chained commands prompt", () => {
+  assert.equal(allowsOrbitCommand("git status"), false)
+  assert.equal(allowsOrbitCommand("orbitx status"), false)
+  assert.equal(allowsOrbitCommand("orbit status && echo done"), false)
+  assert.equal(allowsOrbitCommand("echo $(orbit status)"), false)
+})
+
+test("allowsOrbitCommand: sync --force prompts, matched token-exactly", () => {
+  assert.equal(allowsOrbitCommand("orbit sync --force"), false)
+  assert.equal(allowsOrbitCommand("orbit sync backend --force"), false)
+  // Substring lookalikes must NOT trip the guard (the old cmd.includes bug).
+  assert.equal(allowsOrbitCommand("orbit sync --forceful"), true)
+  // A whitespace-delimited --force word conservatively trips it even inside
+  // quotes (naive tokenization — fail-safe direction, same as the shell hook).
+  assert.equal(allowsOrbitCommand('orbit sync --repo "a --force b"'), false)
 })
