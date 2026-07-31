@@ -341,17 +341,20 @@ orbit prune --older 30d           # Only clean those done more than 30 days ago
 orbit prune task-01               # Clean a specific workspace
 orbit prune --dry-run             # Preview
 orbit prune --verify              # Check if PR has been merged
-orbit prune --force               # Skip branch protection checks
+orbit prune --force               # Skip branch + data protections
 ```
 
 > **Note**: `prune` will delete candidate workspace directories. Branches are only cleaned when protection conditions are met (branches are preserved without `--force` if unmerged). It's recommended to use `--dry-run` first to preview what will be cleaned.
+>
+> `prune` must be run from the project root — it refuses to run inside any workspace. It also skips a workspace your session is rooted in (detected via process ancestry, not CWD, so `cd`-ing out first does not bypass it), and — unless `--force` is given — workspaces with uncommitted changes, workspaces holding a git repo that isn't from the pool (a `git clone` made inside the workspace: its objects live nowhere else), and workspaces with jots that were never merged into a memo.
 
 ## 11. Environment Variables
 
 ```bash
 ORBIT_ROOT=<project-root>         # Explicitly specify project root
-ORBIT_BRANCH_PREFIX=<prefix>      # Override tracking branch prefix, default ws
 ```
+
+The scoped-mode branch prefix is **project config** — `orbit config branch.prefix <prefix>` (default `ws`). It is baked into every branch orbit creates and is what `prune` matches on to find them again, so it has to stay stable across sessions. Changing it is refused while any branch still carries the current prefix (moving it would orphan those branches). See [`docs/spec-lifecycle.md`](docs/spec-lifecycle.md) → Branch Prefix.
 
 ## 12. Codex Sandbox Escalation
 
@@ -488,6 +491,7 @@ Checks:
 - git version (≥ 2.20; bootstrapping the first commit of an empty repo needs ≥ 2.42, since `orbit add` uses `git worktree add --orphan`)
 - bash version (≥ 3.2)
 - Optional tools (jq, gh)
+- Process-ancestry facility (`/proc` on Linux, `lsof` on macOS) — prune's session-rooted guard is best-effort and needs one of them; without either it warns and prune falls back to the root-level guard only
 - Project structure (`.repos/` existence, repo count, workspace count)
 
 `orbit doctor` can be executed from anywhere; being inside an orbit project is not required. It also prints the orbit runtime version, which you can query on its own with `orbit version` (aliases: `--version`, `-v`).
@@ -528,7 +532,7 @@ orbit clone <url> [--push <fork-url>] [--name <identity>] [--branch <branch>]
 orbit repos
 orbit info <repo>
 orbit memo [<repo>] [--refresh|--scaffold]
-orbit sync [repo...] [--force] [--branch <branch>]
+orbit sync [repo...] [--force] [--branch <branch>]   # --force / --branch: project root only
 
 # Workspace lifecycle
 orbit new "<goal>" [--name <name>] [--no-goal] [--exec "<cmd>"]
@@ -538,6 +542,8 @@ orbit switch -c [repo] <name>
 orbit jot [<repo>] ["<text>"]
 orbit jot [<repo>] --pop [--json]
 orbit done [--pr <url>...] [--json]
+
+# Cross-workspace cleanup (from project root only)
 orbit prune [workspace] [--older <dur>] [--verify] [--dry-run] [--force]
 
 # Status and context

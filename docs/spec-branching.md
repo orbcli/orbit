@@ -207,7 +207,7 @@ Switching to an existing remote branch scenario:
 ```
 
 Characteristics:
-- Local branches have `ws/<workspace>/` prefix (isolating multi-workspace same-repo conflicts)
+- Local branches have `ws/<workspace>/` prefix (isolating multi-workspace same-repo conflicts). The `ws` segment is project config — `orbit config branch.prefix` — deliberately durable, since the same value both names branches here and selects them for deletion in prune (see [spec-lifecycle](./spec-lifecycle.md) "Branch Prefix")
 - Remote branches have no prefix (`push.default=upstream` + config auto-strips it)
 - orbit performs no remote writes; push timing is entirely up to the agent
 
@@ -219,7 +219,7 @@ Complete steps when `orbit prune` deletes a workspace (see [spec-lifecycle](./sp
 3. Execute `git branch -d/-D` for all branches collected in step 1 (determined by three-layer protection)
 4. `git config --remove-section branch.<name>` — clean up upstream config entries (only scoped mode branches have these entries)
 
-Why step 1 scans prefixed branches: The base branch created by `orbit add` (e.g., `ws/task-01/main`) is no longer the current branch after the agent switches away; relying only on the current branch would leak it.
+Why step 1 scans prefixed branches: The base branch created by `orbit add` (e.g., `ws/task-01/main`) is no longer the current branch after the agent switches away; relying only on the current branch would leak it. The scan pattern is `refs/heads/<branch.prefix>/<workspace>/`, i.e. the same configured prefix that named those branches — which is why the prefix must not be re-pointable per invocation.
 
 ## Visibility vs Hiding Balance
 

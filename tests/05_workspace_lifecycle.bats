@@ -264,3 +264,18 @@ teardown() {
   status_val=$(git config --file "$proj/dev/.orbit" --get workspace.status)
   [ "$status_val" = "done" ]
 }
+
+@test "workspace inference works through a symlinked path" {
+  local proj="$SANDBOX/infer-symlink"
+  mkdir -p "$proj/.repos"
+  touch "$proj/.repos/.orbit"
+  TEST_PROJECT="$proj"
+  (cd "$proj" && orbit new "symlink infer" --name dev >/dev/null 2>&1)
+  ln -s "$proj/dev" "$SANDBOX/dev-link"
+
+  # A logical prefix comparison fails here (the symlink path shares no prefix
+  # with the root), which would make every CWD-inferring command unusable.
+  run bash -c "cd -L '$SANDBOX/dev-link' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' context workspace"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "dev"
+}

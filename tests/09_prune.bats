@@ -40,6 +40,8 @@ setup_project_with_done_workspace() {
   cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
   cd "$proj/dev" && orbit done >/dev/null 2>&1
 
+  # session running prune must not be parked inside a workspace
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
   [ "$status" -eq 0 ]
   [ ! -d "$proj/dev" ]
@@ -52,6 +54,8 @@ setup_project_with_done_workspace() {
   cd "$proj" && orbit new "active goal" --name dev >/dev/null 2>&1
   cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
 
+  # session running prune must not be parked inside a workspace
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
   [ "$status" -eq 0 ]
   assert_dir_exists "$proj/dev"
@@ -73,6 +77,7 @@ setup_project_with_done_workspace() {
   local ten_days_ago=$(( $(date +%s) - 864000 ))
   git config --file "$proj/dev/.orbit" workspace.done-at "$ten_days_ago"
 
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --older 1d"
   [ "$status" -eq 0 ]
   [ ! -d "$proj/dev" ]
@@ -89,6 +94,7 @@ setup_project_with_done_workspace() {
   cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
   cd "$proj/dev" && orbit done >/dev/null 2>&1
 
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --older 30d"
   [ "$status" -eq 0 ]
   assert_dir_exists "$proj/dev"
@@ -107,6 +113,7 @@ setup_project_with_done_workspace() {
   cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
   cd "$proj/dev" && orbit done >/dev/null 2>&1
 
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run"
   [ "$status" -eq 0 ]
   assert_dir_exists "$proj/dev"
@@ -130,6 +137,7 @@ setup_project_with_done_workspace() {
 
   cd "$proj/dev" && orbit done >/dev/null 2>&1
 
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --force"
   [ "$status" -eq 0 ]
   [ ! -d "$proj/dev" ]
@@ -156,6 +164,7 @@ setup_project_with_done_workspace() {
   cd "$proj/ws-two" && orbit add myrepo >/dev/null 2>&1
   cd "$proj/ws-two" && orbit done >/dev/null 2>&1
 
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune ws-one"
   [ "$status" -eq 0 ]
   [ ! -d "$proj/ws-one" ]
@@ -169,6 +178,7 @@ setup_project_with_done_workspace() {
   cd "$proj" && orbit new "active ws" --name dev >/dev/null 2>&1
   cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
 
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune dev"
   [ "$status" -ne 0 ]
   assert_contains "$output" "not found or not marked done"
@@ -198,6 +208,8 @@ setup_project_with_done_workspace() {
 
   cd "$proj/dev" && orbit done >/dev/null 2>&1
 
+  # session running prune must not be parked inside a workspace
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
   [ "$status" -eq 0 ]
   [ ! -d "$proj/dev" ]
@@ -225,6 +237,7 @@ setup_project_with_done_workspace() {
 
   cd "$proj/dev" && orbit done >/dev/null 2>&1
 
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
   [ "$status" -eq 0 ]
   [ ! -d "$proj/dev" ]
@@ -247,6 +260,7 @@ setup_project_with_done_workspace() {
 
   cd "$proj/dev" && orbit done >/dev/null 2>&1
 
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --force"
   [ "$status" -eq 0 ]
 
@@ -274,6 +288,7 @@ setup_project_with_done_workspace() {
   cd "$proj/dev" && orbit add repo2 >/dev/null 2>&1
   cd "$proj/dev" && orbit done >/dev/null 2>&1
 
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --force"
   [ "$status" -eq 0 ]
   [ ! -d "$proj/dev" ]
@@ -299,6 +314,8 @@ setup_project_with_done_workspace() {
   touch "$proj/.repos/.orbit"
   TEST_PROJECT="$proj"
 
+  # session running prune must not be parked inside a workspace
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
   [ "$status" -eq 0 ]
   assert_contains "$output" "nothing to prune"
@@ -310,6 +327,7 @@ setup_project_with_done_workspace() {
   touch "$proj/.repos/.orbit"
   TEST_PROJECT="$proj"
 
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune nonexist"
   [ "$status" -ne 0 ]
   assert_contains "$output" "not found or not marked done"
@@ -330,6 +348,7 @@ setup_project_with_done_workspace() {
 
   cd "$proj/dev" && orbit done >/dev/null 2>&1
 
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run --force"
   [ "$status" -eq 0 ]
   assert_dir_exists "$proj/dev"
@@ -355,6 +374,7 @@ setup_project_with_done_workspace() {
   cd "$proj/dev" && orbit done >/dev/null 2>&1
 
   # stderr discarded: a dry-run report must be complete on stdout alone
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run 2>/dev/null"
   [ "$status" -eq 0 ]
   assert_dir_exists "$proj/dev"
@@ -395,6 +415,8 @@ setup_project_with_done_workspace() {
 
   cd "$proj/dev" && orbit done >/dev/null 2>&1
 
+  # session running prune must not be parked inside a workspace
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
   [ "$status" -eq 0 ]
   [ ! -d "$proj/dev" ]
@@ -424,6 +446,8 @@ setup_project_with_done_workspace() {
   run git -C "$proj/.repos/myrepo" fetch origin
   [ "$status" -ne 0 ]
 
+  # session running prune must not be parked inside a workspace
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
   [ "$status" -eq 0 ]
   assert_contains "$output" "    removed stale fetch refspec: gone"
@@ -454,6 +478,7 @@ setup_project_with_done_workspace() {
   git -C "$proj/.repos/myrepo" update-ref refs/remotes/origin/gone \
     "$(git -C "$proj/.repos/myrepo" rev-parse HEAD)"
 
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run"
   [ "$status" -eq 0 ]
   assert_contains "$output" "    would remove stale fetch refspec: gone"
@@ -489,6 +514,8 @@ setup_project_with_done_workspace() {
   run git -C "$proj/.repos/myrepo" fetch origin
   [ "$status" -ne 0 ]
 
+  # session running prune must not be parked inside a workspace
+  cd "$SANDBOX"
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
   [ "$status" -eq 0 ]
   assert_dir_exists "$proj/live"
@@ -500,4 +527,411 @@ setup_project_with_done_workspace() {
   [ "$output" = "+refs/heads/main:refs/remotes/origin/main" ]
   run git -C "$proj/.repos/myrepo" fetch origin
   [ "$status" -eq 0 ]
+}
+
+# --- Root-level isolation (workspace = scope boundary) ---
+
+@test "prune: refuses to run from inside a workspace" {
+  local proj="$SANDBOX/prune-inside-ws"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "inside test" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "must be run from the project root"
+  assert_dir_exists "$proj/dev"
+}
+
+# --- Session protection via process ancestry ---
+
+@test "prune: refuses named target when the session is rooted in it, even from project root" {
+  local proj="$SANDBOX/prune-rooted"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "rooted test" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  # the incident shape: a process parked inside the workspace spawns a child
+  # that cds to the project root and prunes the workspace — cwd checks pass,
+  # ancestry must catch it. The trailing exit keeps bash from exec-collapsing
+  # the subshell (which would erase the parked ancestor).
+  # Do NOT "simplify" this into a flat cd chain: the outer shell must stay
+  # parked in dev as a live ancestor, or the test silently stops covering
+  # the ancestry guard.
+  run bash -c "cd '$proj/dev' && (cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune dev); rc=\$?; exit \$rc"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "cannot prune workspace with an active session: dev"
+  assert_dir_exists "$proj/dev"
+}
+
+@test "prune: skips workspace with an active session on the enumeration path" {
+  local proj="$SANDBOX/prune-rooted-enum"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "rooted enum test" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  # same parked-ancestor topology as above — keep the subshell + trailing exit
+  run bash -c "cd '$proj/dev' && (cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1); rc=\$?; exit \$rc"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "skipping dev: workspace has an active session"
+  assert_dir_exists "$proj/dev"
+}
+
+@test "prune: announces an inactive session guard when ancestry is unreadable" {
+  # On a /proc host the ancestry is always readable — the blind-spot path
+  # cannot be constructed there.
+  [ ! -d "/proc/$$" ] || skip "/proc present: ancestry is readable on this host"
+
+  local proj="$SANDBOX/prune-no-ancestry"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "blind guard" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  # Shadow every cwd-reading facility this host has: with nothing readable the
+  # guard must say it is inactive instead of silently checking nothing.
+  local stubs="$SANDBOX/no-ancestry-bin"
+  mkdir -p "$stubs"
+  printf '#!/bin/sh\nexit 1\n' > "$stubs/ps"
+  printf '#!/bin/sh\nexit 1\n' > "$stubs/lsof"
+  chmod +x "$stubs/ps" "$stubs/lsof"
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && PATH='$stubs':\$PATH ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "cannot read process ancestry on this host: the active-session guard is inactive"
+}
+
+# --- Data protection: uncommitted changes ---
+
+@test "prune: skips workspace with uncommitted changes (no --force)" {
+  local proj="$SANDBOX/prune-dirty"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "dirty test" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  echo "dirty" > "$proj/dev/myrepo/dirty.txt"
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "skipping dev: uncommitted changes in: myrepo"
+  assert_dir_exists "$proj/dev"
+  assert_file_exists "$proj/dev/myrepo/dirty.txt"
+}
+
+@test "prune: --dry-run reports uncommitted changes as would skip" {
+  local proj="$SANDBOX/prune-dirty-dry"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "dirty dry test" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  echo "dirty" > "$proj/dev/myrepo/dirty.txt"
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "would skip: dev (uncommitted changes in: myrepo)"
+  assert_dir_exists "$proj/dev"
+}
+
+@test "prune: squash-merged branch skip names the content-upstream cleanup" {
+  local proj="$SANDBOX/prune-squash"
+  local remote="$REMOTES/prune-squash-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  (cd "$proj" && orbit new "squash test" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+
+  echo "feature" > "$proj/dev/myrepo/feature.txt"
+  git -C "$proj/dev/myrepo" add feature.txt
+  git -C "$proj/dev/myrepo" commit -m "feature" >/dev/null 2>&1
+
+  # squash-merge simulation: the branch's exact tree lands on master under a
+  # new SHA — content upstream, form diverged (ancestor check must fail)
+  local branch_tree new_master
+  branch_tree=$(git -C "$proj/dev/myrepo" rev-parse 'HEAD^{tree}')
+  new_master=$(git -C "$proj/.repos/myrepo" commit-tree "$branch_tree" \
+    -p "$(git -C "$proj/.repos/myrepo" rev-parse main)" -m "squashed feature")
+  git -C "$proj/.repos/myrepo" update-ref refs/heads/main "$new_master"
+  git -C "$proj/.repos/myrepo" push origin main >/dev/null 2>&1
+  git -C "$proj/.repos/myrepo" fetch origin >/dev/null 2>&1
+
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  [ ! -d "$proj/dev" ]
+  assert_contains "$output" "skipping unmerged branch: ws/dev/main (content already upstream"
+  assert_contains "$output" "git -C $proj/.repos/myrepo branch -D ws/dev/main"
+}
+
+@test "prune: --force removes workspace with uncommitted changes" {
+  local proj="$SANDBOX/prune-dirty-force"
+  local remote="$REMOTES/prune-dirty-force-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  (cd "$proj" && orbit new "dirty force test" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  echo "dirty" > "$proj/dev/myrepo/dirty.txt"
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --force"
+  [ "$status" -eq 0 ]
+  [ ! -d "$proj/dev" ]
+  assert_contains "$output" "pruned: dev"
+}
+
+# --- Data protection: git repos not from the pool ---
+
+@test "prune: skips workspace holding a git repo that isn't from the pool" {
+  local proj="$SANDBOX/prune-foreign"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "foreign test" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  # the incident shape: an agent git-clones a helper repo straight into the
+  # workspace. Its objects live in its own .git, so rm -rf would take history
+  # that exists nowhere else — the pool-backed worktree guards never see it.
+  git init -q "$proj/dev/helper"
+  (cd "$proj/dev/helper" && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m "unpushed work")
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  # session running prune must not be parked inside a workspace
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "skipping dev: git repos not from the pool: helper"
+  assert_dir_exists "$proj/dev/helper/.git"
+}
+
+@test "prune: --dry-run reports a non-pool git repo as would skip" {
+  local proj="$SANDBOX/prune-foreign-dry"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "foreign dry" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  git init -q "$proj/dev/helper"
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "would skip: dev (git repos not from the pool: helper)"
+  assert_dir_exists "$proj/dev"
+}
+
+@test "prune: --force removes workspace holding a non-pool git repo" {
+  local proj="$SANDBOX/prune-foreign-force"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "foreign force" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  git init -q "$proj/dev/helper"
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --force"
+  [ "$status" -eq 0 ]
+  [ ! -d "$proj/dev" ]
+  assert_contains "$output" "pruned: dev"
+}
+
+@test "prune: a .git directory under a pool repo's name is foreign, not a worktree" {
+  local proj="$SANDBOX/prune-name-collision"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "collision test" --name dev >/dev/null 2>&1)
+  # An independent clone that happens to carry the pool repo's name: it has a
+  # .git *directory* (a pool worktree has a .git file), so its history lives
+  # here and nowhere else — the name match must not disguise it as pool-backed.
+  git init -q "$proj/dev/myrepo"
+  (cd "$proj/dev/myrepo" && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m "unpushed work")
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "skipping dev: git repos not from the pool: myrepo"
+  assert_dir_exists "$proj/dev/myrepo/.git"
+}
+
+# --- Knowledge protection: unmerged jots ---
+
+@test "prune: skips workspace with jots that were never merged into memo" {
+  local proj="$SANDBOX/prune-jots"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "jot test" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit jot myrepo "only place that signs release artifacts" >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit jot myrepo "real entry is scripts/sign.sh" >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "skipping dev: unmerged jots in: myrepo (2)"
+  assert_dir_exists "$proj/dev"
+}
+
+@test "prune: --dry-run reports unmerged jots as would skip with counts" {
+  local proj="$SANDBOX/prune-jots-dry"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "jot dry" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit jot myrepo "a discovery" >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "would skip: dev (unmerged jots in: myrepo (1))"
+  assert_dir_exists "$proj/dev"
+}
+
+@test "prune: proceeds after jots are popped" {
+  local proj="$SANDBOX/prune-jots-popped"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "jot popped" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit jot myrepo "a discovery" >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit jot myrepo --pop >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
+  [ "$status" -eq 0 ]
+  [ ! -d "$proj/dev" ]
+  assert_contains "$output" "pruned: dev"
+}
+
+@test "prune: --force removes workspace with unmerged jots" {
+  local proj="$SANDBOX/prune-jots-force"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "jot force" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit jot myrepo "a discovery" >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --force"
+  [ "$status" -eq 0 ]
+  [ ! -d "$proj/dev" ]
+  assert_contains "$output" "pruned: dev"
+}
+
+# --- Guard invariants ---
+
+@test "prune: --force does not bypass the active-session guard" {
+  local proj="$SANDBOX/prune-force-session"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "force session" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  # --force releases the DATA guards (dirty / foreign / jots) by design; it must
+  # never release the session guard — that one protects the session's own footing.
+  # Parked-ancestor topology: keep the subshell + trailing exit.
+  run bash -c "cd '$proj/dev' && (cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune dev --force); rc=\$?; exit \$rc"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "cannot prune workspace with an active session: dev"
+  assert_dir_exists "$proj/dev"
+}
+
+@test "prune: --force does not bypass the root-level guard" {
+  local proj="$SANDBOX/prune-force-root"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "force root" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --force"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "must be run from the project root"
+  assert_dir_exists "$proj/dev"
+}
+
+@test "prune: root-level guard fires through a symlinked path" {
+  local proj="$SANDBOX/prune-symlink"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "symlink test" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+  # A cwd reached through a symlink has a logical path that shares no prefix
+  # with the root — a logical comparison would let prune run inside the workspace.
+  ln -s "$proj/dev" "$SANDBOX/dev-link"
+
+  run bash -c "cd -L '$SANDBOX/dev-link' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "must be run from the project root"
+  assert_dir_exists "$proj/dev"
+}
+
+@test "prune: reclaims a done workspace that never had a repo added" {
+  local proj="$SANDBOX/prune-empty-ws"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "empty workspace" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  # The data guards enumerate arrays that are empty here; under bash 3.2 a naked
+  # "${arr[@]}" expansion on an empty array aborts the whole run via set -u.
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "pruned: dev"
+  [ ! -d "$proj/dev" ]
+}
+
+@test "prune --dry-run: handles a done workspace with no repos" {
+  local proj="$SANDBOX/prune-empty-ws-dry"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "empty dry" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "would prune: dev"
+  assert_dir_exists "$proj/dev"
+}
+
+@test "prune: reports every skip reason at once, not one per run" {
+  local proj="$SANDBOX/prune-all-reasons"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "all reasons" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  echo "dirty" > "$proj/dev/myrepo/wip.txt"
+  git init -q "$proj/dev/helper"
+  (cd "$proj/dev" && orbit jot myrepo "a discovery" >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  # --force releases all three data guards as one decision, so the operator has
+  # to see the whole set at once instead of discovering them one run at a time.
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "uncommitted changes in: myrepo"
+  assert_contains "$output" "git repos not from the pool: helper"
+  assert_contains "$output" "unmerged jots in: myrepo (1)"
+}
+
+@test "prune: names branches left outside branch.prefix instead of leaking them" {
+  local proj="$SANDBOX/prune-left-behind"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "left behind" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  # A branch created while branch.prefix held another value: losing the config
+  # (it is cache) reverts the prefix and would orphan this branch silently.
+  git -C "$proj/.repos/myrepo" branch "team/dev/feature" >/dev/null 2>&1
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "left branch outside branch.prefix: team/dev/feature"
+
+  run git -C "$proj/.repos/myrepo" for-each-ref --format='%(refname:short)' refs/heads/team/
+  assert_contains "$output" "team/dev/feature"
 }

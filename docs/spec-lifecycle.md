@@ -78,16 +78,49 @@ Only `orbit goal` reactivates. Resuming work another way does not clear `done`: 
 ## `orbit prune` Reclamation Flow
 
 ```bash
-orbit prune                       # clean up all workspaces with status=done
+orbit prune                       # clean up all workspaces with status=done (from the project root)
 orbit prune --older 30d           # clean up done-at older than 30 days with status=done
-orbit prune --older 30d --force   # same as above, skips branch protection checks
+orbit prune --older 30d --force   # same as above, skips branch protection AND the data guards below
 orbit prune task-01               # clean up a specific workspace (requires status=done)
-orbit prune task-01 --force       # specific + skips branch protection checks
+orbit prune task-01 --force       # specific + skips branch protection AND the data guards below
 orbit prune --dry-run             # preview, no execution
 orbit prune --verify              # checks PR status to confirm merged before cleanup
 ```
 
 The time source for `--older` is the `done-at` field in the workspace `.orbit` file (only workspaces with `status=done` are cleaned up, so `done-at` always exists). Falls back to `created` if missing, then falls back to directory mtime.
+
+## Prune Safety Guards
+
+`orbit prune` is a root-level destructive operation and guards against destroying live work:
+
+- **Root-level only**: it refuses to run when the CWD is inside any workspace — cross-scope destructive ops belong to the scope above (workspace = agent scope boundary). The comparison is on physical paths, so a cwd reached through a symlink cannot slip past it.
+- **Active-session protection**: it never prunes a workspace the current session is rooted in. The check walks the process ancestry (per-ancestor cwd via `lsof` on macOS, `/proc/<pid>/cwd` on Linux; parent pids from `/proc/<pid>/stat` when available, else `ps`) instead of trusting the invoking shell's CWD — a shell can `cd` out, but a session's launch directory stays on its process tree. Target paths are normalized to physical form (`pwd -P`) so symlinked roots (e.g. `/var` → `/private/var`) still match the resolved cwds reported by the OS. On the enumeration path the candidate is skipped; on the named-target path prune errors out. The ancestry walk is best-effort and **announces its own blind spot**: if not a single ancestor cwd could be read (no `/proc`, no `lsof`, or a `ps` without `-o` support), prune says the guard is inactive rather than proceeding as if it had checked (`orbit doctor` reports the facility too).
+- **Uncommitted-changes protection**: a candidate with a dirty worktree (uncommitted or untracked changes) is skipped unless `--force` is given; `--dry-run` reports it as `would skip`. An unreadable `git status` counts as dirty — "cannot tell" is not "clean".
+- **Foreign-repo protection**: a candidate holding a top-level git repo with no pool counterpart is skipped unless `--force` is given. A pool worktree always has a `.git` *file* (gitdir pointer), so a `.git` *directory* is an independent clone even under a pool repo's name — typically a `git clone` run inside the workspace. Its objects live in its own `.git`, so the workspace removal would destroy history that exists nowhere else — the worktree guards do not cover it.
+- **Unmerged-jot protection**: a candidate whose workspace `.orbit` still holds jot entries is skipped unless `--force` is given, with the per-repo counts named. `done` warns about residual jots once; this is the last checkpoint before the queue is destroyed with the directory.
+
+Guard scope is the workspace's **top level**: the data guards enumerate every direct child that is a git repo (pool-backed or foreign) plus the workspace `.orbit` — not just the pool-backed worktrees. A repo nested deeper inside a plain subdirectory is outside the guards' view and is removed with the directory.
+
+The three data guards report **together**: all applicable reasons are joined into one skip line (`; `-separated) rather than surfacing one per run, because `--force` releases them as a single decision and the operator needs the whole set to make it once.
+
+`--force` releases the three **data** guards (uncommitted changes, foreign repo, unmerged jots) and the branch protections. It does **not** release the root-level or active-session guards: those protect the ground the running session stands on, not data the user can choose to discard.
+
+Branch cleanup reports what it leaves: a local branch shaped like this workspace's (`*/<workspace>/*`) but outside the configured `branch.prefix` is named rather than silently left behind — it is not orbit's to delete (a raw-mode branch, or one created while the prefix held another value). Git holds the branch names, so they remain the recoverable record even if the config that named them is lost.
+
+The exact messages an agent sees (message text is part of the contract):
+
+```text
+orbit: prune must be run from the project root
+orbit: cannot prune workspace with an active session: <ws>      # named target
+orbit: skipping <ws>: workspace has an active session            # enumeration
+orbit: skipping <ws>: uncommitted changes in: <repos>; git repos not from the pool: <repos>; unmerged jots in: <repo> (<n>)
+orbit: <repo>: left branch outside branch.prefix: <branches>
+orbit: cannot read process ancestry on this host: the active-session guard is inactive
+```
+
+Under `--dry-run` each skip is reported on stdout as `would skip: <ws> (<reasons>)`. None of these name `--force`: a refusal must not double as instructions for getting around it.
+
+Rationale: the pre-guard cwd check ("skip the workspace you are currently in") was self-defeating — its skip message told an agent exactly how to route around it (`cd` out and prune by name), and `git worktree remove --force` destroyed uncommitted changes with no check at all.
 
 ## Three-Layer Branch Cleanup Protection
 
@@ -115,7 +148,7 @@ Three-layer determination:
 |-----------|--------|-----------|
 | Has PR URL and `gh pr view` confirms merged | `git branch -D` (force) | Externally confirmed merged, safe |
 | No PR URL, but after `git fetch` branch is merged into origin/\<default-branch\> | `git branch -d` (safe) | Git native protection, confirmed reachable |
-| Neither of the above satisfied | Skip, warn user | Cannot confirm, no risk taken |
+| Neither of the above satisfied | Skip, warn user — when the branch's *content* is already upstream (squash/rebase merge rewrites SHAs, defeating the ancestor check), the warning names it and prints the exact `git -C <pool> branch -D <branch>` cleanup command | Cannot confirm, no risk taken; content equivalence is detected cost-ordered — `git merge-tree` (≥ 2.38, definitive) then `git cherry` (1:1 patch equivalence) — and prune runs at the project root, where the operator is human |
 
 ### `gh` CLI Dependency Notes
 
@@ -148,14 +181,33 @@ Every orbit command that already fetches opportunistically — `orbit sync`, `or
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `ORBIT_ROOT` | Overrides project root auto-discovery, explicitly specifies the project root path | None (traverses upward from CWD looking for `.repos/`) |
-| `ORBIT_BRANCH_PREFIX` | Custom local branch prefix for scoped mode (replaces default `ws/`) | `ws` |
 | `ORBIT_EDITOR` | Editor used to compose free-form text (goal, jot, memo) when no argument/stdin is given; also forces editor mode in non-TTY contexts | Falls back to `VISUAL`, then `EDITOR`, then `vi` |
 
 `ORBIT_ROOT` use cases:
 - CI/CD environments where CWD is not under project root
 - Scripts that need to explicitly specify the operation target
 
-`ORBIT_BRANCH_PREFIX` use cases:
+## Branch Prefix (`branch.prefix`)
+
+The scoped-mode branch prefix is **project config**, not an environment variable:
+
+```bash
+orbit config branch.prefix team     # scoped branches become team/<workspace>/<name>
+```
+
+Default `ws`. It is read from `.repos/.orbit`.
+
+Why config and not an env var: the prefix is written into every branch name orbit creates (`orbit add`, `orbit switch -c`) **and** it is the selector `orbit prune` matches on to decide which branches are orbit's to delete. Those two moments are often days and sessions apart, so the value has to be stable and durable. A per-invocation env var could differ between them, with two failure modes:
+
+- prefix changed after creation → prune looks under the new prefix, never finds the old branches, and they leak;
+- prefix pointed at a namespace orbit never created (e.g. `release` while real `release/<x>/*` branches exist) → prune treats *foreign* branches as its own and deletes them under `--force`.
+
+Two write-side guards follow from that:
+
+- The value is validated on write (one path segment, legal in a git refname, no leading `-`), because a bad value now persists.
+- Changing it is **refused while any branch still carries the current prefix** (`branch.prefix is part of existing branch names under '<current>/': <repo> (n)`). Reclaim or rename those branches first — the prefix is part of their names, and moving it would orphan them.
+
+Use cases:
 - Teams using different prefixes to avoid conflicts with existing branch naming
 - Multi-layer workspace management schemes distinguishing different levels
 

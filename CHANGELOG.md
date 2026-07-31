@@ -2,24 +2,60 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/),
-and this project adheres to [Semantic Versioning](https://semver.org/).
+Entries follow the CNCF convention — Urgent Upgrade Notes first, then Changes by Kind — and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Changed
+Hardens the destructive surface: `prune` and `sync --force`/`--branch` become machine-enforced root-level operations. Also ships the context-system redesign and retires stop hooks.
 
-- **`orbit context` redesigned around purposes.** `--startup` is the session-start block (cold start → pool roster; populated workspace → each repo's memo + two-layer staleness + conditional per-repo status, with jot queues inlined). Bare `orbit context` is now the **cruise block** (cheap durables + conditional per-repo status: jots / behind upstream / memo state — the in-session counterpart of the startup block) and no longer dumps memos — pull them on demand via `orbit info <repo>`. Keys are `workspace` / `path` / `goal` / `state` (`status` renamed to `state` to avoid clashing with `orbit status`). `--prime` / `--reignite` remain as explicit routing targets for humans and debugging. Command headers (`=== PRIME ===`, `⚙ systems primed`) removed; agent plugins wrap injected blocks in `<orbit-context>` tags.
-- **Session hooks are thin wrappers now.** `session-start.sh` injects `orbit context --startup`; new `session-resume.sh` injects the cruise block on resume/compact (Codex also on `clear`). All cold/resume detection logic moved into `orbit.sh` (testable). OpenCode plugin: first transform injects `--startup` (resume routing is blocked on anomalyco/opencode#5409), cache refreshes inject the light cruise block, and `session.compacted` re-injects it after compaction. The hook behavior contract (injection tiers, `<orbit-context>` tags, event routing matrix, auto-approve semantics) now lives in [`docs/spec-hooks.md`](docs/spec-hooks.md).
-- **`orbit done` warns per repo** in one merged line each — leftover jots (`pop + merge`), thin memo with no capture (`explore + write`), over-budget card (`curate once`) — keeping the card-budget reminder.
-- **Jot aggregation threshold is now per-repo `jot.bufferSize`** (default `memo.minLines` = 4, replacing the hardcoded 10): silent at or below half, `building` note up to the buffer, `overflow` warning past it.
-- **`orbit add` on a thin/missing memo** prints a one-shot stderr naming the `explore.paths` scope (both cases), instead of seeding the jot queue.
-- **`orbit memo` over-budget** prints a one-shot curate stderr; no queue seeding or throttle markers.
+### Urgent Upgrade Notes
 
-### Removed
+- **BREAKING:** `ORBIT_BRANCH_PREFIX` no longer read — use `orbit config branch.prefix` before creating/pruning branches.
+- **BREAKING:** `prune --force` now overrides the data guards too, not just branch protection.
+- **BREAKING:** `prune` and `sync --force`/`--branch` run from the project root only.
+- **BREAKING:** `prune` left the skill's action surface — agents report the need, humans run it.
+- Prune's stderr messages changed — contract in [`docs/spec-warnings.md`](docs/spec-warnings.md) → Refusals and skips.
 
-- **`[seed]` jot sentinel and the gap model** (`orbit context gaps` key, `orbit_list_gaps`, seed/real jot distinction). Thin/over-budget memo state is computed inline on every read and surfaced via add-time stderr, the cruise block, and the done gate — no durable placeholders.
-- **Stop hooks** (`hooks/stop.sh`, `hooks/codex/stop.sh`, and the Stop matchers in all `hooks.json`, incl. OpenCode `session.idle`): their nudges are covered by add-time stderr + cruise block + the done gate. `[nudge]` / `[overlong]` throttle markers removed with them.
+### Changes by Kind
+
+#### Security
+
+- `orbit prune`: root-only, active-session detection via process ancestry, uncommitted-changes skip, bypass-free refusals — guards in [`docs/spec-lifecycle.md`](docs/spec-lifecycle.md) → Prune Safety Guards.
+- Prune also skips top-level non-pool git repos (a `.git` directory is an independent clone, whatever its name) and unmerged jots (`--force` overrides, `--dry-run` reports).
+- `sync --force`/`--branch` root-only; `--branch` keeps unrelated fetch refspecs and rolls back on failure — [`docs/spec-commands.md`](docs/spec-commands.md) → sync.
+- Repo names validated as pool basenames in `sync`/`add`/`info`/`memo`/`clone --name` (path-traversal fix). Charset aligned with GitHub (`[A-Za-z0-9._-]`); leading `.`/`-` rejected — contract in [`docs/spec-commands.md`](docs/spec-commands.md) → Repo Name Contract.
+- Branch prefix moved from env var to `orbit config branch.prefix`; validated, immovable while branches carry it.
+- `orbit config` refuses `repos.*` writes.
+- Auto-approve hooks strip quotes/backslashes per token — `'--force'`/`\-\-force` no longer bypass; `sync --branch` prompts too. (Extends [#25](https://github.com/orbcli/orbit/pull/25).)
+
+#### Feature
+
+- `install.sh --replace-marketplace` — switch plugin marketplace source. ([#16](https://github.com/orbcli/orbit/pull/16))
+- `orbit context` redesigned: `--startup` = session-start block, bare = cruise block; key `status` → `state`. ([#17](https://github.com/orbcli/orbit/pull/17))
+- Session hooks are thin wrappers; new `session-resume.sh` injects the cruise block. ([#17](https://github.com/orbcli/orbit/pull/17), [#19](https://github.com/orbcli/orbit/pull/19))
+- Scoped branch mode is now the default; raw→scoped conversion via `orbit switch -c <same-name>`. ([#18](https://github.com/orbcli/orbit/pull/18))
+- Human-facing output rework: header-first, repo-grouped prune reports. ([#20](https://github.com/orbcli/orbit/pull/20))
+- `orbit done` per-repo one-line warnings (jots / thin memo / over-budget card). ([#17](https://github.com/orbcli/orbit/pull/17))
+- `jot.bufferSize` config replaces the hardcoded aggregation threshold. ([#17](https://github.com/orbcli/orbit/pull/17), [#20](https://github.com/orbcli/orbit/pull/20))
+- One-shot explore/curate stderr on `add` (thin memo) and `memo` (over-budget). ([#17](https://github.com/orbcli/orbit/pull/17))
+
+#### Bug or Regression
+
+- Fetch refspecs reconciled with remote — bare `git fetch` heals after a branch is deleted upstream. ([#21](https://github.com/orbcli/orbit/pull/21))
+- `orbit switch <remote-branch>` always fetches first — no stale checkouts. ([#22](https://github.com/orbcli/orbit/pull/22))
+- Prune's unmerged-branch skip now recognizes squash/rebase merges (content equivalence via `git merge-tree`, `git cherry` fallback) and prints the exact `git branch -D` cleanup command for the human operator.
+- Brief parser, status steering and refspec lifecycle hardened. ([#23](https://github.com/orbcli/orbit/pull/23))
+- Plugin install works on SSH-less machines — `try.sh` defaults to HTTPS. ([#24](https://github.com/orbcli/orbit/pull/24))
+- OpenCode auto-approve matches `--force` token-exactly. ([#25](https://github.com/orbcli/orbit/pull/25))
+- Jot queue stores entries in `[jot "<repo>"]` subsections — names plain git-config keys can't hold (`my_repo`, `2048`) now jot and pop correctly.
+- `orbit clone` rejects a URL whose basename violates the pool-name contract (e.g. `.github`), pointing at `--name`.
+- Workspace/repo inference compares physical paths — commands work through symlinked cwds.
+- Session guard warns when process ancestry is unreadable, instead of failing silently open.
+
+#### Removal
+
+- `[seed]` jot sentinel and the gap model — memo state computed inline. ([#17](https://github.com/orbcli/orbit/pull/17))
+- Stop hooks and `[nudge]`/`[overlong]` markers — covered by stderr + cruise block + done gate. ([#17](https://github.com/orbcli/orbit/pull/17))
 
 ## [0.1.0] - 2026-07-06
 

@@ -93,20 +93,28 @@ const SAFE_SUBCOMMANDS = new Set([
 // hooks/auto-approve.sh (parity contract: docs/spec-hooks.md). Only a bare,
 // un-chained orbit invocation whose subcommand is in the safe tiers is
 // allowed. All matching is token-exact — never substring: `--forceful` or an
-// `--force=x`-style spelling must not trip the destructive guard, while a
-// whitespace-delimited `--force` word conservatively trips it even inside
-// quotes (naive split, fail-safe direction — same as the shell hook).
+// `--force=x`-style spelling must not trip the destructive guard.
 const allowsOrbitCommand = (cmd: string): boolean => {
   // Refuse anything with shell chaining/redirection/substitution.
   if (/[;&|`$()><\n]/.test(cmd)) return false
+  // NOTE: parts come from a naive whitespace split, not a full shell parser.
+  // This deliberately mirrors hooks/auto-approve.sh: enough to detect
+  // whole-word flags like --force / --branch, no emulation of bash quoting
+  // beyond stripping quotes/backslashes per token.
   const parts = cmd.trim().split(/\s+/)
   const binary = (parts[0] ?? "").split("/").pop() ?? ""
   if (binary !== "orbit" && binary !== "orbit.sh") return false
   const sub = parts[1] ?? ""
   if (!SAFE_SUBCOMMANDS.has(sub)) return false
-  // sync --force does git reset --hard on the pool repo — still prompt.
-  // Token match (not substring) — consistent with how sub is parsed above.
-  if (sub === "sync" && parts.some((p) => p === "--force")) return false
+  // sync --force resets the pool repo; sync --branch rewrites pool-wide state
+  // (checked-out branch, origin/HEAD, fetch refspecs every worktree relies on).
+  // Both stay behind a prompt. Strip quotes and backslashes per token first:
+  // bash hands `'--force'`, `--force''` and `\-\-force` to orbit as the very
+  // same `--force`, so the guard must match what the CLI will actually see.
+  if (sub === "sync") {
+    const bare = (p: string): string => p.replace(/['"\\]/g, "")
+    if (parts.some((p) => bare(p) === "--force" || bare(p) === "--branch")) return false
+  }
   return true
 }
 

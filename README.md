@@ -190,7 +190,7 @@ orbit clone <url> [--push <fork-url>] [--name <identity>] [--branch <branch>]
 orbit repos
 orbit info <repo>
 orbit memo [<repo>] [--refresh|--scaffold]
-orbit sync [repo...] [--force] [--branch <branch>]
+orbit sync [repo...] [--force] [--branch <branch>]   # --force / --branch: project root only
 
 # Workspace lifecycle
 orbit new "<goal>" [--name <name>] [--no-goal] [--exec "<cmd>"]
@@ -200,6 +200,8 @@ orbit switch -c [repo] <name>
 orbit jot [<repo>] ["<text>"]
 orbit jot [<repo>] --pop [--json]
 orbit done [--pr <url>...] [--json]
+
+# Cross-workspace cleanup (from project root only)
 orbit prune [workspace] [--older <dur>] [--verify] [--dry-run] [--force]
 
 # Status and context

@@ -38,7 +38,7 @@ teardown() {
   assert_contains "$output" "cannot fetch ref"
 }
 
-@test "add: still works without --ref (backward compat)" {
+@test "add: without --ref checks out the default branch" {
   local proj="$SANDBOX/add-ref-test3"
   clone_project "$proj"
   cd "$proj" && orbit new "ref test" --name ws1 >/dev/null 2>&1

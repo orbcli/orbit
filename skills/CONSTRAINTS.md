@@ -37,11 +37,14 @@ The tiers below are the contract. Anything not in the first two tiers must keep 
 
 | Tier | Subcommands | Side effect | Auto-approve? |
 |------|-------------|-------------|---------------|
-| **Read-only** | `repos` `info` `status` `context` `goal` (read) `jot` (read/pop) `version` `doctor` `completion` | None, or reads workspace/pool metadata. No repo, no remote, no filesystem mutation outside `.orbit` cache | **Yes** |
-| **Idempotent workspace-write** | `add` `switch` `sync` `memo` `goal` (write) `jot` (write) | Mutates the local workspace/worktree or the `.orbit` cache. Re-runnable, reversible, never touches a remote | **Yes** |
-| **Destructive / externally-visible** | `done` `prune` `clone` `config` `new` | Marks lifecycle state, deletes worktrees/branches, writes to `.repos/`, or changes project config | **No — always prompt** |
+| **Read-only** | `repos` `info` `status` `context` `goal` (read) `version` `doctor` `completion` | None, or reads workspace/pool metadata. No repo, no remote, no filesystem mutation outside `.orbit` cache | **Yes** |
+| **Destructive read** | `jot --pop` | Reads *and* deletes the queue in one step — no undo, no archive. Auto-approved because it is the mandatory first half of pop→merge, but the skill must pair it with the memo write in the same turn | **Yes** |
+| **Idempotent workspace-write** | `add` `switch` `sync` (bare / with repo name) `memo` `goal` (write) `jot` (write) | Mutates the local workspace/worktree or the `.orbit` cache. Re-runnable, reversible, never touches a remote | **Yes** |
+| **Destructive / externally-visible** | `done` `prune` `clone` `config` `new` `sync --force` `sync --branch` | Marks lifecycle state, deletes worktrees/branches, writes to `.repos/`, changes project config, or resets/reshapes pool-wide state | **No — always prompt** |
 
-**Why the first two tiers are safe to auto-run:** they cannot lose the user's work or leak outside the machine. Reads have no effect; the idempotent writes only build up the workspace the agent is already working in (worktrees, memos, jots) and are trivially reversible with git. **Why the third tier still prompts:** `prune` deletes worktrees and branches, `done` flips lifecycle state, `clone` writes into the shared pool, and `config` changes project-wide behavior — each is either hard to reverse or visible beyond the current workspace, so the user should stay in the loop.
+**Why the first tiers are safe to auto-run:** they cannot lose the user's work or leak outside the machine. Reads have no effect; the idempotent writes only build up the workspace the agent is already working in (worktrees, memos, jots) and are trivially reversible with git. **Why the last tier still prompts:** `prune` deletes worktrees and branches, `done` flips lifecycle state, `clone` writes into the shared pool, `config` changes project-wide behavior, and `sync --force`/`--branch` reset or re-point the pool every workspace shares — each is either hard to reverse or visible beyond the current workspace, so the user should stay in the loop.
+
+**Flag-level exceptions are part of the contract:** a subcommand in a safe tier does not make all of its flags safe. `sync` is auto-approved bare or with a repo name; `sync --force` (pool `reset --hard`) and `sync --branch` (rewrites the pool's checked-out branch, `origin/HEAD`, and the fetch refspecs other workspaces' worktrees depend on) must prompt — and both run **only from the project root**, since they destroy or re-point state the calling workspace does not own. Hook implementations compare *normalized* tokens (quotes and backslashes stripped), because `'--force'`, `--force''` and `\-\-force` all reach the CLI as the same `--force`.
 
 `new` is excluded on purpose: new workspaces are created at project root, outside the agent's scope (see Anti-Pattern #3), so it should be human-initiated regardless of permissions.
 
@@ -68,12 +71,13 @@ The tiers below are the contract. Anything not in the first two tiers must keep 
       "Bash(orbit completion:*)",
       "Bash(orbit add:*)",
       "Bash(orbit switch:*)",
-      "Bash(orbit sync:*)",
       "Bash(orbit memo:*)"
     ]
   }
 }
 ```
+
+`orbit sync` is deliberately absent: Claude's `Bash(orbit sync:*)` pattern cannot express "allow `sync`, prompt on `--force`/`--branch`", and allowing the prefix would auto-approve a pool `reset --hard`. Use the bundled hook (option 1) to get flag-aware auto-approval for `sync`.
 
 *Other vendors (Qoder, Codex, Cursor, …)* — the same tier mapping applies; only the config dialect differs. Community contributions welcome: add the vendor's allowlist snippet here when its integration is verified.
 
@@ -101,9 +105,8 @@ The tiers below are the contract. Anything not in the first two tiers must keep 
       "orbit add *": "allow",
       "orbit switch": "allow",
       "orbit switch *": "allow",
-      "orbit sync --force *": "ask",
       "orbit sync": "allow",
-      "orbit sync *": "allow",
+      "orbit sync *": "ask",
       "orbit version": "allow",
       "orbit version *": "allow",
       "orbit doctor": "allow",
@@ -174,7 +177,7 @@ Detection granularity is **workspace-level only**. Project root path is never ex
 After the agent launches, **if no `<orbit-context>` block was injected** and the user signals to start working (e.g. `orbit start`), the skill must run `orbit context --startup` — a single call that doubles as workspace detection (success = in a workspace, read the block; failure = not in one, don't apply orbit conventions):
 
 1. Success → read the startup block. It is **lean by design**: a cold start lists the pool by name + brief without dumping memos — the agent pulls a repo's memo on demand via `orbit info <repo>` (progressive loading)
-2. **Workspace state is `done` → remind the user first**, before anything else: state that the workspace is already marked done and ask how to proceed (reopen, prune, or start elsewhere). Do not silently continue the workflow on a done workspace
+2. **Workspace state is `done` → remind the user first**, before anything else: state that the workspace is already marked done and ask how to proceed (reopen, have it reclaimed from the project root, or start elsewhere). Do not silently continue the workflow on a done workspace
 3. Goal is non-empty → begin working based on the goal, entering the Discovery-First workflow
 4. Goal is empty → ask the user what to do
 
@@ -234,7 +237,8 @@ Every skill must guide the agent to discover before acting:
    - **Writeback is terminal**: the memo merge is the *last* action for that repo this session, so every capture (reflection plus any insight surfacing while reporting to the user) must precede the pop→merge. A jot produced *after* writeback is stranded — this session's aggregation is already closed, so it sits orphaned in the queue until a future session. If a real discovery surfaces post-writeback, re-run pop→merge to fold it in rather than leaving it queued
    - **PR impact assessment**: memo describes the pool repo's stable branch state, not the feature branch state. If the PR changes what the card reflects (a new entry point, or a new role for the repo), include a post-merge refresh suggestion: "`orbit sync <repo> && orbit info <repo>` — update the card if roles or entry points changed"
 11. `orbit done --pr <url>` — record PR and mark workspace as reclaimable (see Done Trigger Rules below)
-12. `orbit prune` — reclaim completed workspaces (optional)
+
+The workflow ends at `done`. **`orbit prune` is deliberately not a workflow step and the skill must not document how to run it** — see "Prune is out of scope for the skill" below.
 
 Don't touch repos you haven't worked in.
 
@@ -288,14 +292,26 @@ Brand new project, `.repos/` just initialized with no repos. Agent uses the skil
 | `orbit jot [<repo>] --pop` | Pop all jot entries (consume + delete) | Needs to read/clear workspace .orbit |
 | `orbit switch [-c] [repo] <name>` | Switch/create tracking branch | Needs prefix naming convention + upstream config |
 | `orbit clone <url>` | Add repo when not in pool | Needs to write .repos/ + generate metadata |
-| `orbit sync [repo...] [--force] [--branch <branch>]` | Sync pool repo to upstream latest | Needs to operate on repos inside .repos/ (ff/reset/switch branch) |
+| `orbit sync [repo...] [--force] [--branch <branch>]` | Sync pool repo to upstream latest | Needs to operate on repos inside .repos/ (ff/reset/switch branch) — `--force` / `--branch` are **root-level only** |
 | `orbit done [--pr]` | Mark task complete | Workspace-level semantic, not a git concept |
 | `orbit status` | View workspace status | Aggregates multi-repo branch/ahead/behind |
 | `orbit goal` | Read/set workspace objective | Reads/writes workspace/.orbit goal field |
 | `orbit context [<key>] [--startup|--prime|--reignite] [--json]` | Model-facing context blocks: bare = cruise block (durables + conditional per-repo status: jots / behind / memo state); `--startup` = session-start block (cold start → pool roster; populated → memos + staleness + per-repo status); key = single value (workspace/path/goal/state); `--prime`/`--reignite` are human/debug routing targets | Aggregates workspace durables + per-repo status, needs to read .repos/ |
-| `orbit prune` | Reclaim completed workspaces | Cross-workspace cleanup of worktrees + branches |
+| `orbit prune` | Reclaim completed workspaces | Cross-workspace cleanup of worktrees + branches — **root-level role, not the skill's** (see below) |
 | `orbit config [<key> [<value>]]` | Read/set project configuration | Needs to read/write .repos/.orbit |
 | `orbit doctor` | Environment health check | Checks git/bash version + .repos/ integrity |
+
+### Prune is out of scope for the skill
+
+`orbit prune` must not appear in the skill as a workflow step, a command-map entry, or a procedure. One line of scope — "reclaiming workspaces belongs to whoever operates the project root; report the need and stop" — is the whole treatment.
+
+Three reasons, in order of weight:
+
+1. **The skill's only reader is the one role that must never run it.** The skill enters through `orbit context --startup`, which fails outside a workspace and doubles as workspace detection. So a session that loaded this skill is, by construction, rooted in a workspace — and `prune` refuses to run inside any workspace, and refuses a named target its process ancestry sits in. A procedure its reader cannot execute is not guidance; it is an invitation to look for the way around.
+2. **Describing the guards hands over a bypass map.** The incident behind those guards started with a message that explained the protection (`skipping <ws>: you are currently in this workspace`) — the agent read it as directions and followed them. Enumerating root-only / ancestry / dirty / foreign-repo / jot checks in the agent's own manual is the same disclosure, just earlier and in more detail.
+3. **Enforcement replaces documentation.** The boundary is machine-checked in `orbit.sh` on state the agent cannot change (process ancestry, physical CWD, repo and queue contents), not asked of it in prose. Prose would only add a surface where the rule can be reasoned with.
+
+What the skill *may* state, because these are facts about branch lifecycle rather than instructions to run anything: that scoped-mode branches are cleaned up by prune and raw-mode ones leak, and that `done` marks a workspace reclaimable. The full guard contract is maintainer-facing and lives in [docs/spec-lifecycle.md](../docs/spec-lifecycle.md#prune-safety-guards).
 
 ### Operations the Skill Should NOT Expose
 - Configuring push target — agent uses `git remote set-url --push origin <url>` inside the worktree
