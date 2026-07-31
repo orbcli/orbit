@@ -114,6 +114,7 @@ orbit: prune must be run from the project root
 orbit: cannot prune workspace with an active session: <ws>      # named target
 orbit: skipping <ws>: workspace has an active session            # enumeration
 orbit: skipping <ws>: uncommitted changes in: <repos>; git repos not from the pool: <repos>; unmerged jots in: <repo> (<n>)
+orbit: skipping unmerged branch: <branch> (content already upstream — squash/rebase merge? clean up: git -C "<pool>" branch -D "<branch>")
 orbit: <repo>: left branch outside branch.prefix: <branches>
 orbit: cannot read process ancestry on this host: the active-session guard is inactive
 ```

@@ -2406,7 +2406,13 @@ orbit_branch_content_upstream() {
     [ "$merged_tree" = "$(git -C "$main_repo" rev-parse "$upstream^{tree}" 2>/dev/null)" ]
     return
   fi
-  ! git -C "$main_repo" cherry "$upstream" "$branch" 2>/dev/null | grep -q '^+'
+  # An unresolvable upstream — or any cherry failure — is "cannot tell", not
+  # "content upstream": an empty '+' set would otherwise invert into a false
+  # positive, and the hint hands out branch -D verbatim. Capture first and
+  # match without a pipe (a pipe can SIGPIPE the producer under pipefail).
+  local cherry_out
+  cherry_out=$(git -C "$main_repo" cherry "$upstream" "$branch" 2>/dev/null) || return 1
+  ! grep -q '^+' <<< "$cherry_out"
 }
 
 orbit_branch_protection_delete() {
@@ -2464,7 +2470,7 @@ orbit_branch_protection_delete() {
   # diagnostic accompanying the mutation (stderr).
   local note=""
   if [ -n "$default_branch" ] && orbit_branch_content_upstream "$main_repo" "$branch" "origin/$default_branch"; then
-    note=" (content already upstream — squash/rebase merge? clean up: git -C $main_repo branch -D $branch)"
+    note=" (content already upstream — squash/rebase merge? clean up: git -C \"$main_repo\" branch -D \"$branch\")"
   fi
   if [ "$dry_run_flag" = "1" ]; then
     printf '    would skip unmerged branch: %s%s\n' "$branch" "$note"

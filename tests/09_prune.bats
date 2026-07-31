@@ -668,7 +668,34 @@ setup_project_with_done_workspace() {
   [ "$status" -eq 0 ]
   [ ! -d "$proj/dev" ]
   assert_contains "$output" "skipping unmerged branch: ws/dev/main (content already upstream"
-  assert_contains "$output" "git -C $proj/.repos/myrepo branch -D ws/dev/main"
+  assert_contains "$output" "git -C \"$proj/.repos/myrepo\" branch -D \"ws/dev/main\""
+}
+
+@test "prune: no content-upstream hint when the upstream ref is unresolvable" {
+  local proj="$SANDBOX/prune-squash-noref"
+  local remote="$REMOTES/prune-squash-noref-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  (cd "$proj" && orbit new "noref test" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+
+  echo "feature" > "$proj/dev/myrepo/feature.txt"
+  git -C "$proj/dev/myrepo" add feature.txt
+  git -C "$proj/dev/myrepo" commit -m "feature" >/dev/null 2>&1
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  # origin/HEAD still names main, but the tracking ref is gone and the remote
+  # is unreachable: content equivalence cannot be verified. "Cannot tell" must
+  # not read as "content upstream" — the hint hands out branch -D verbatim.
+  git -C "$proj/.repos/myrepo" update-ref -d refs/remotes/origin/main
+  git -C "$proj/.repos/myrepo" remote set-url origin "$REMOTES/definitely-gone.git" >/dev/null 2>&1
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "skipping unmerged branch: ws/dev/main"
+  [[ "$output" != *"content already upstream"* ]]
 }
 
 @test "prune: --force removes workspace with uncommitted changes" {
