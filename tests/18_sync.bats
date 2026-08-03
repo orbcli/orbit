@@ -428,7 +428,10 @@ _push_update_to() {
   (cd "$proj" && orbit new "scope test" --name dev >/dev/null 2>&1)
   (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
 
-  run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --branch feature"
+  # Parked-ancestor topology: the trailing exit keeps bash from exec-collapsing
+  # the last command (Linux), which would leave a clean ancestry and flip the
+  # guard to the cd-replay variant — the assertion is platform-dependent without it.
+  run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --branch feature; rc=\$?; exit \$rc"
   [ "$status" -ne 0 ]
   assert_contains "$output" "sync --branch should not be initiated from inside workspace dev"
 }
@@ -563,7 +566,8 @@ _push_update_to() {
 
   # --force resets the shared pool, which the calling workspace does not own —
   # same shape as --branch, so it carries the same scope requirement.
-  run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --force"
+  # Parked-ancestor topology: keep the trailing exit (see above).
+  run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --force; rc=\$?; exit \$rc"
   [ "$status" -ne 0 ]
   assert_contains "$output" "sync --force should not be initiated from inside workspace dev"
 }
@@ -611,7 +615,8 @@ _push_update_to() {
   clone_project "$proj"
   (cd "$proj" && orbit new "scope test" --name dev >/dev/null 2>&1)
 
-  run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --force --branch feature"
+  # Parked-ancestor topology: keep the trailing exit (see above).
+  run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --force --branch feature; rc=\$?; exit \$rc"
   [ "$status" -ne 0 ]
   assert_contains "$output" "sync --force/--branch should not be initiated from inside workspace dev"
 }
