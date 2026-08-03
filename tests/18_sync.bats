@@ -419,3 +419,216 @@ _push_update_to() {
   assert_contains "$output" "+refs/heads/*:refs/remotes/origin/*"
   [[ "$output" != *"refs/heads/gone"* ]]
 }
+
+# --- Pool-wide scope: --branch is root-only ---
+
+@test "sync --branch: refuses to run from inside a workspace" {
+  local proj="$SANDBOX/sync-branch-inside-ws"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "scope test" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+
+  # Parked-ancestor topology: the trailing exit keeps bash from exec-collapsing
+  # the last command (Linux), which would leave a clean ancestry and flip the
+  # guard to the cd-replay variant — the assertion is platform-dependent without it.
+  run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --branch feature; rc=\$?; exit \$rc"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "sync --branch should not be initiated from inside workspace dev"
+}
+
+@test "sync --branch: bare sync still works from inside a workspace" {
+  local proj="$SANDBOX/sync-bare-inside-ws"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "scope test" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+
+  run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo"
+  [ "$status" -eq 0 ]
+}
+
+@test "sync --branch: keeps fetch refspecs other branches registered" {
+  local proj="$SANDBOX/sync-branch-refspecs"
+  local remote="$REMOTES/sync-branch-refspecs.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+
+  # A branch another workspace pushed and registered, plus a user wildcard.
+  local tmp
+  tmp=$(mktemp -d "$SANDBOX/_tmp_srs_XXXXXX")
+  git clone "$remote" "$tmp" >/dev/null 2>&1
+  (
+    cd "$tmp"
+    git checkout -q -b feat-b
+    echo b > b.txt && git add b.txt
+    git -c user.email=t@t -c user.name=t commit -q -m "feat b"
+    git push -q origin feat-b
+    git checkout -q -b dev main 2>/dev/null || git checkout -q -b dev
+    echo d > d.txt && git add d.txt
+    git -c user.email=t@t -c user.name=t commit -q -m "dev"
+    git push -q origin dev
+  )
+  git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
+    "+refs/heads/feat-b:refs/remotes/origin/feat-b"
+  git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
+    "+refs/heads/*:refs/remotes/origin/*"
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --branch dev"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "pool: switched myrepo to branch dev"
+
+  # --unset-all used to wipe every entry here, breaking bare fetch in the
+  # worktrees of whoever registered feat-b.
+  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
+  assert_contains "$output" "+refs/heads/feat-b:refs/remotes/origin/feat-b"
+  assert_contains "$output" "+refs/heads/*:refs/remotes/origin/*"
+  assert_contains "$output" "+refs/heads/dev:refs/remotes/origin/dev"
+
+  run git -C "$proj/.repos/myrepo" fetch origin
+  [ "$status" -eq 0 ]
+}
+
+@test "sync --branch: rolls back the refspec change when the fetch fails" {
+  local proj="$SANDBOX/sync-branch-rollback"
+  local remote="$REMOTES/sync-branch-rollback.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+
+  local before
+  before=$(git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch)
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --branch does-not-exist 2>&1"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "cannot fetch branch: does-not-exist"
+
+  # The refspec set is exactly what it was before the failed switch — no
+  # residue pointing at the missing branch, and the old branch still fetchable.
+  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
+  [ "$output" = "$before" ]
+  run git -C "$proj/.repos/myrepo" fetch origin
+  [ "$status" -eq 0 ]
+}
+
+# --- Repo name is a pool basename, never a path ---
+
+@test "sync: refuses a traversing repo name instead of resolving it" {
+  local proj="$SANDBOX/sync-traversal"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "traversal test" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  echo "work in progress" > "$proj/dev/myrepo/wip.txt"
+
+  # ../dev/myrepo lands on the workspace worktree; --force would reset --hard
+  # someone's working branch. The name must be rejected as a name.
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync ../dev/myrepo --force 2>&1"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "invalid repo name"
+  assert_file_exists "$proj/dev/myrepo/wip.txt"
+}
+
+@test "info/memo: refuse a traversing repo name" {
+  local proj="$SANDBOX/name-traversal"
+  clone_project "$proj"
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' info ../.repos/myrepo"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "invalid repo name"
+
+  run bash -c "cd '$proj' && printf '# x\n\nbrief\n' | ORBIT_ROOT='$proj' bash '$ORBIT_CMD' memo ../.repos/myrepo"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "invalid repo name"
+}
+
+@test "repo names: GitHub charset accepted, other characters refused" {
+  local proj="$SANDBOX/name-charset"
+  clone_project "$proj"
+
+  # Dots and mixed case are legal GitHub names and must pass name validation
+  # (the repo just isn't in the pool yet).
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' info My.Repo.io"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "not in pool"
+
+  # Spaces, leading '.' and leading '-' are outside the contract.
+  for bad in 'my repo' '.github' 'my^repo'; do
+    run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' info '$bad'"
+    [ "$status" -ne 0 ]
+    assert_contains "$output" "invalid repo name"
+  done
+}
+
+@test "sync --force: refuses to run from inside a workspace" {
+  local proj="$SANDBOX/sync-force-inside-ws"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "scope test" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+
+  # --force resets the shared pool, which the calling workspace does not own —
+  # same shape as --branch, so it carries the same scope requirement.
+  # Parked-ancestor topology: keep the trailing exit (see above).
+  run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --force; rc=\$?; exit \$rc"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "sync --force should not be initiated from inside workspace dev"
+}
+
+@test "sync --force: blind ancestry withholds the cd replay and states the fact alone" {
+  [ ! -d "/proc/$$" ] || skip "/proc present: ancestry is readable on this host"
+
+  local proj="$SANDBOX/sync-force-blind-no-replay"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "replay" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+
+  local stubs="$SANDBOX/no-ancestry-bin-sync"
+  mkdir -p "$stubs"
+  printf '#!/bin/sh\nexit 1\n' > "$stubs/ps"
+  printf '#!/bin/sh\nexit 1\n' > "$stubs/lsof"
+  chmod +x "$stubs/ps" "$stubs/lsof"
+
+  # cwd misplaced AND ancestry blind: shared guard withholds the replay so a
+  # blind guard never hands back a ready-to-run destructive command.
+  run bash -c "cd '$proj/dev' && PATH='$stubs':\$PATH ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --force 2>&1"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "sync --force must be run from the project root"
+  [[ "$output" != *"&&"* ]]
+  [[ "$output" != *"cd $proj"* ]]
+}
+
+@test "sync --force: replays the intended command when the session is clean" {
+  # cwd misplaced but ancestry readable and clean (cd-then-exec) — mirror of the
+  # prune replay test; see tests/09_prune.bats for the topology rationale.
+  { [ -d "/proc/$$" ] || command -v lsof >/dev/null 2>&1; } || skip "no ancestry facility to prove a clean session"
+
+  local proj="$SANDBOX/sync-force-cd-replay"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "replay" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+
+  run bash -c "cd '$proj' && (cd '$proj/dev' && ORBIT_ROOT='$proj' exec bash '$ORBIT_CMD' sync myrepo --force) 2>&1"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "sync --force must be run from the project root — cd $proj && orbit sync myrepo --force"
+}
+
+@test "sync --force --branch: names both flags when both are given" {
+  local proj="$SANDBOX/sync-both-flags"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "scope test" --name dev >/dev/null 2>&1)
+
+  # Parked-ancestor topology: keep the trailing exit (see above).
+  run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --force --branch feature; rc=\$?; exit \$rc"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "sync --force/--branch should not be initiated from inside workspace dev"
+}
+
+@test "sync --force: still works from the project root" {
+  local proj="$SANDBOX/sync-force-at-root"
+  local remote="$REMOTES/sync-force-at-root.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --force"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "myrepo: reset to origin/"
+}

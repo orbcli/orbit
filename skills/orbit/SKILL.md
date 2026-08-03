@@ -39,7 +39,7 @@ The startup roster already carries every pool repo's name + one-line brief, so a
 
 When no `<orbit-context>` block was injected and the user asks to start working, run `orbit context --startup` — success means you are in a workspace (read the block), failure means you are not:
 1. Read the startup block. It is lean by design: a cold start lists the pool by name + brief and does **not** dump full memos — pull a repo's memo on demand with `orbit info <repo>` once you engage it.
-2. **If the workspace state is `done`, remind the user first** — before doing anything else (this applies to your very first reply of the session, whether the state came from the injected hook block or from your own `orbit context --startup`), tell them the workspace is already marked done and ask how they want to proceed (reopen work, prune, or start elsewhere). Do not silently continue the workflow on a done workspace.
+2. **If the workspace state is `done`, remind the user first** — before doing anything else (this applies to your very first reply of the session, whether the state came from the injected hook block or from your own `orbit context --startup`), tell them the workspace is already marked done and ask how they want to proceed (reopen work, have it reclaimed from the project root, or start elsewhere). Do not silently continue the workflow on a done workspace.
 3. If the goal is non-empty, proceed with the workflow based on the goal. If the block listed pending jots or `memo thin` repos, fold them into memo per Workflow steps 7 and 10 as you get started.
 4. If the goal is empty, ask the user what they want to accomplish.
 
@@ -100,7 +100,7 @@ These steps describe the work itself, independent of who performs it. Run them y
 11. **Mark done.** When the workspace has a goal and you've completed the work (PR created, code committed, tests passing), run the wrap-up sequence from step 10, then `orbit done --pr <url>`. When the workspace has no goal, only run `orbit done` when the user explicitly asks.
     - **The done gate is actionable, not advisory.** `orbit done` does not block — but if its stderr reports any per-repo debt (residual jots / thin memo / over-budget card), **do not leave it there**: go back and execute the named workflow (pop + merge / explore + write / curate once) for each repo, then `orbit done` again. The CLI fires the warning once and does not loop — it's on you to close it.
     - **Session ending before done**: aggregate jot entries into memo, then suggest the user run `orbit done` — do not auto-done, as work may be incomplete.
-12. **Prune.** `orbit prune` cleans up done workspaces (branch cleanup + directory removal).
+    - **`done` is where your work ends.** Reclaiming the workspace afterwards is a project-root operation and not yours to run (see Safety rules). Say the workspace is done and reclaimable, and leave it at that.
 
 Repos you didn't add or work in are not your responsibility.
 
@@ -150,7 +150,7 @@ orbit clone <url> [--push <fork-url>] [--name <repo>] [--branch <branch>]
 orbit repos [--json]
 orbit info <repo> [--json]
 orbit memo [<repo>] [--refresh|--scaffold]
-orbit sync [repo...] [--force] [--branch <branch>]  # updates the POOL repo only — NOT your worktree
+orbit sync [repo...] [--force] [--branch <branch>]  # updates the POOL repo only — NOT your worktree; --force/--branch are destructive and project-root only, report the need instead
 
 # Workspace lifecycle (from inside a workspace)
 orbit new ["<goal>"] [--name <name>] [--exec "<cmd>"] [--no-goal]
@@ -159,7 +159,6 @@ orbit switch [-c] [repo] <name>
 orbit jot [<repo>] ["<text>"]     # push a discovery to the jot queue
 orbit jot [<repo>] --pop [--json]  # pop all entries (consume + delete)
 orbit done [--pr <url>...] [--json]
-orbit prune [workspace] [--older <dur>] [--dry-run] [--force] [--verify]
 
 # Status (from workspace or root)
 orbit status [workspace] [--json]
@@ -255,16 +254,18 @@ Rules:
 
 - **Never access `.repos/` directly.** All repos operations go through orbit commands.
 - **Don't run `orbit new` if already in a workspace.** It creates at project root level.
+- **Reclaiming workspaces is not yours.** `orbit prune` deletes worktrees, branches and workspace directories across the whole project — it belongs to whoever operates the project root, not to a session working inside a workspace. If cleanup comes up, report the need and stop there; don't run it, and don't relocate to make it runnable. The same rule covers `sync --force` / `sync --branch`: they destroy or re-point the shared pool, which your workspace does not own.
 - **Default scope is the current workspace** inferred from CWD. Don't target other workspaces unless explicitly asked.
 - **Understand before your first target action on an added repo.** A *knowledge* gate, not an approval gate: before your first edit / branch / push / tag / release on a repo, complete Workflow steps 3–7 (info → memo → explore). `add` only creates a worktree — it is not understanding and never clears the gate. Normal work clears it at edit time; the trap is jumping straight from `add` to a high-impact action ("just tag a release", publish) on a repo you never read. (Gates on *understanding*, not permission — orbit takes no stance on *whether* you push or commit.)
 
 ## Safe to run freely
 
 These orbit subcommands are read-only or idempotent workspace-writes — run them without asking:
-- **Read-only:** `repos` `info` `status` `context` `goal` (read) `jot --pop` `version` `doctor` `completion`
-- **Idempotent workspace-write:** `add` `switch` `sync` `memo` `jot` `goal` (write)
+- **Read-only:** `repos` `info` `status` `context` `goal` (read) `version` `doctor` `completion`
+- **Destructive read:** `jot --pop` — it *consumes* the queue (read + delete, no undo). Safe to run without asking, but only as the first half of pop→merge: never pop until you're ready to write the memo in the same turn.
+- **Idempotent workspace-write:** `add` `switch` `sync` (bare or with a repo name) `memo` `jot` `goal` (write)
 
-`done` `prune` `clone` `config` `new` are destructive or reach outside the workspace — confirm before running these.
+`done` `clone` `config` `new` are destructive or reach outside the workspace — confirm before running these. `sync --force` and `sync --branch` are not yours either: both destroy or re-point shared pool state and run only from the project root, so report the need rather than trying them (the bare `sync` being safe does not extend to these flags). `prune` is not on your list at all — see Safety rules.
 
 ## Communication
 

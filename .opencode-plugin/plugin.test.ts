@@ -113,3 +113,21 @@ test("allowsOrbitCommand: sync --force prompts, matched token-exactly", () => {
   // quotes (naive tokenization — fail-safe direction, same as the shell hook).
   assert.equal(allowsOrbitCommand('orbit sync --repo "a --force b"'), false)
 })
+
+test("allowsOrbitCommand: shell-equivalent --force spellings all prompt", () => {
+  // bash hands every one of these to orbit as the same `--force`, so a guard
+  // that only matches the bare spelling is a guard with a bypass.
+  assert.equal(allowsOrbitCommand("orbit sync '--force'"), false)
+  assert.equal(allowsOrbitCommand('orbit sync "--force"'), false)
+  assert.equal(allowsOrbitCommand("orbit sync --force''"), false)
+  assert.equal(allowsOrbitCommand("orbit sync \\-\\-force"), false)
+  assert.equal(allowsOrbitCommand("orbit sync backend '--force'"), false)
+})
+
+test("allowsOrbitCommand: sync --branch prompts (pool-wide state, root-only)", () => {
+  assert.equal(allowsOrbitCommand("orbit sync --branch dev"), false)
+  assert.equal(allowsOrbitCommand("orbit sync backend --branch dev"), false)
+  assert.equal(allowsOrbitCommand("orbit sync '--branch' dev"), false)
+  // Lookalike must not trip it.
+  assert.equal(allowsOrbitCommand("orbit sync --branches"), true)
+})

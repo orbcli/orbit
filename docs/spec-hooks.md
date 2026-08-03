@@ -128,13 +128,15 @@ two safe tiers — the tier contract itself lives in
 - Refuses anything with shell chaining/redirection/substitution (`;` `&` `|`
   `` ` `` `$(` `>` `<`, newline) — the normal confirmation prompt happens.
 - Refuses non-orbit binaries and tier-3 subcommands (`done` `prune` `clone`
-  `config` `new`, and `sync --force`).
+  `config` `new`, and `sync --force` / `sync --branch`).
 - Matching is **token-exact** (whitespace split), never substring: `sync
-  --forceful` must not trip the destructive guard, while a
-  whitespace-delimited `--force` word conservatively trips it even inside
-  quotes (naive tokenization, fail-safe direction). Same rule across all
-  integrations — the shell hook pads and matches ` --force `; the OpenCode
-  plugin compares tokens (`allowsOrbitCommand`, test-covered).
+  --forceful` must not trip the destructive guard. Each token is normalized
+  (quotes and backslashes stripped) before comparison, because `'--force'`,
+  `--force''` and `\-\-force` all reach the CLI as the very same `--force` —
+  the guard has to match what the CLI will actually see, not the raw spelling.
+  Same rule across all integrations — the shell hook normalizes each word of
+  `$rest` with globbing disabled; the OpenCode plugin does the same in
+  `allowsOrbitCommand` (test-covered).
 - Claude/Qoder: emits an `allow` decision JSON. Codex wrapper: exit 0 =
   allow, non-zero = prompt. OpenCode: the `permission.ask` hook in plugin.ts
   applies the same tier set (`SAFE_SUBCOMMANDS`).

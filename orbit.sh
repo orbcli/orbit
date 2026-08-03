@@ -3,7 +3,7 @@ set -euo pipefail
 
 ORBIT_VERSION="0.1.0"
 ORBIT_ROOT="${ORBIT_ROOT:-}"
-ORBIT_BRANCH_PREFIX="${ORBIT_BRANCH_PREFIX:-ws}"
+ORBIT_DEFAULT_BRANCH_PREFIX="ws"
 ORBIT_CMD="${0##*/}"
 
 # --- Messages (all decorative output goes to stderr) ---
@@ -108,6 +108,7 @@ Usage:
 
 Config keys (project-level, via '$ORBIT_CMD config <key> <value>'):
   agent.recommend       Launch command recommended after 'new' (e.g. 'claude "orbit start"')
+  branch.prefix         Scoped-mode tracking branch prefix (default: ws)
   memo.minLines         Memo card soft lower bound / thin floor (default: 4)
   memo.maxLines         Memo card hard upper bound / compress + README-fallback cap (default: 16)
   jot.bufferSize        Jot entries per repo before aggregation is nudged (default: memo.minLines = 4)
@@ -116,7 +117,6 @@ Config keys (project-level, via '$ORBIT_CMD config <key> <value>'):
 
 Environment:
   ORBIT_ROOT             Explicit project root (default: discover from CWD)
-  ORBIT_BRANCH_PREFIX    Tracking branch prefix (default: ws)
 EOF
 }
 
@@ -135,11 +135,46 @@ orbit_plural() {
   fi
 }
 
-orbit_require_prefix() {
-  case "$ORBIT_BRANCH_PREFIX" in
-    ''|*/*) orbit_fail "invalid ORBIT_BRANCH_PREFIX: $ORBIT_BRANCH_PREFIX" ;;
-    *) printf '%s\n' "$ORBIT_BRANCH_PREFIX" ;;
+# One path segment, legal inside a git refname, and not something that reads as
+# an option on a command line. git check-ref-format is the authority on the
+# rest (rejects '.'-leading, '..', spaces, control chars).
+orbit_valid_branch_prefix() {
+  case "$1" in
+    ''|*/*|-*) return 1 ;;
   esac
+  git check-ref-format "refs/heads/$1/w/n" >/dev/null 2>&1
+}
+
+# List pool repos holding local branches under <prefix>/, as "repo (n)" pairs.
+# Returns 1 when there are none.
+orbit_branches_under_prefix() {
+  local root="$1" prefix="$2" repo_dir count total=0 hits=""
+  for repo_dir in "$root/.repos"/*/; do
+    [ -d "$repo_dir" ] || continue
+    count=$(git -C "$repo_dir" for-each-ref --format='%(refname:short)' "refs/heads/$prefix/" 2>/dev/null | grep -c . || true)
+    [ "${count:-0}" -gt 0 ] || continue
+    hits="$hits $(basename "$repo_dir") ($count)"
+    total=$((total + count))
+  done
+  [ "$total" -gt 0 ] || return 1
+  printf '%s\n' "${hits# }"
+}
+
+# The tracking-branch prefix is a durable project property, not per-invocation
+# state: it is baked into every branch name orbit creates AND it is the selector
+# prune uses to decide which branches are orbit's to delete. Those two moments
+# must agree — if they can disagree, branches leak (created under one prefix,
+# looked for under another) or, worse, prune claims branches it never created.
+# So it lives in project config, written deliberately and persisting across
+# sessions, rather than in an environment variable any single call can flip.
+orbit_require_prefix() {
+  local prefix="" root
+  if root=$(orbit_find_root 2>/dev/null); then
+    prefix=$(git config --file "$root/.repos/.orbit" --get branch.prefix 2>/dev/null || true)
+  fi
+  [ -n "$prefix" ] || prefix="$ORBIT_DEFAULT_BRANCH_PREFIX"
+  orbit_valid_branch_prefix "$prefix" || { orbit_fail "invalid branch.prefix in project config: $prefix"; return 1; }
+  printf '%s\n' "$prefix"
 }
 
 orbit_find_root() {
@@ -267,6 +302,29 @@ orbit_reserved_workspace() {
     .*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# Print the name of the workspace containing the given path, nothing if none.
+# "Looks like a workspace" = a non-reserved direct child of the project root;
+# any depth below it counts (workspaces host repos and nested dirs). Detection
+# is purely structural — it does NOT require a .orbit marker: workspace metadata
+# is disposable (Principle 3), so a lost or absent .orbit must never quietly
+# disable a destructive-op guard. orbit_reserved_workspace already excludes
+# .repos/.git and every dotdir, so the pool index cannot be mistaken for one.
+orbit_ws_containing_dir() {
+  local root="$1" path="$2" root_phys path_phys rel first
+  root_phys=$(cd "$root" 2>/dev/null && pwd -P) || return 1
+  [ -d "$path" ] || return 1
+  path_phys=$(cd "$path" 2>/dev/null && pwd -P) || return 1
+  case "$path_phys" in
+    "$root_phys") return 1 ;;
+    "$root_phys"/*) ;;
+    *) return 1 ;;
+  esac
+  rel="${path_phys#"$root_phys/"}"
+  first="${rel%%/*}"
+  orbit_reserved_workspace "$first" && return 1
+  printf '%s\n' "$first"
 }
 
 orbit_tracking_branch() {
@@ -400,9 +458,37 @@ orbit_reconcile_fetch_refspecs() {
 
 # --- CWD Inference ---
 
+# A repo name is a pool directory basename, never a path. Callers build
+# destructive targets by concatenation ($root/.repos/$name), so a traversing
+# name ('../<ws>/<repo>') would point the pool operation at a workspace
+# worktree instead — check the argument, not just whether the path it lands on
+# happens to exist.
+# The charset is GitHub's own ([A-Za-z0-9._-]): slashes and spaces are not
+# legal remote repo names either. Two GitHub-legal shapes stay rejected on
+# purpose: a leading '.' (pool loops glob .repos/*/, which skips hidden dirs)
+# and a leading '-' (indistinguishable from an option flag in any argv slot).
+orbit_valid_repo_name() {
+  local name="$1"
+  case "$name" in
+    ''|.*|-*) return 1 ;;
+    *[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  return 0
+}
+
+orbit_require_repo_name() {
+  orbit_valid_repo_name "$1" || orbit_fail "invalid repo name: $1 (expected a pool repo basename: [A-Za-z0-9._-], no leading '.' or '-')"
+}
+
 orbit_infer_workspace() {
   local root="$1" cwd rel first
-  cwd="$(pwd)"
+  # Physical paths on both sides: a cwd reached through a symlink (macOS
+  # /tmp -> /private/tmp) shares no prefix with the logical root, and every
+  # command that infers its workspace would refuse to work there. This is also
+  # what keeps inference and the root-only guards answering the same question
+  # the same way.
+  cwd=$(pwd -P)
+  root=$(cd "$root" 2>/dev/null && pwd -P) || root="$1"
   case "$cwd" in
     "$root") orbit_fail "cannot infer workspace from project root; cd into a workspace first"; return 1 ;;
     "$root"/*) ;;
@@ -417,10 +503,27 @@ orbit_infer_workspace() {
   printf '%s\n' "$first"
 }
 
+# True when the CWD is inside some workspace (the project root itself and
+# reserved dirs are not). Delegates to orbit_ws_containing_dir so the cwd guard
+# and the ancestry guard answer "what counts as a workspace" with one rule.
+# The comparison is on physical paths, because a cwd reached through a symlink
+# (macOS /tmp -> /private/tmp) fails a logical prefix match, and an isolation
+# guard that silently does not fire is the bug class this whole family of checks
+# exists to prevent — which is also why an unreadable cwd answers "inside":
+# a deleted working directory cannot be proven to be outside a workspace, and
+# guessing "outside" is exactly the silent non-firing to avoid. The refusal that
+# follows names the project root, which is the fix for a deleted cwd anyway.
+orbit_cwd_inside_workspace() {
+  local cwd
+  cwd=$(pwd -P 2>/dev/null) || return 0
+  orbit_ws_containing_dir "$1" "$cwd" >/dev/null
+}
+
 orbit_infer_repo() {
-  local root="$1" ws="$2" cwd rel repo_name
-  cwd="$(pwd)"
-  local ws_dir="$root/$ws"
+  local root="$1" ws="$2" cwd rel repo_name ws_dir
+  # Physical on both sides, same reason as orbit_infer_workspace.
+  cwd=$(pwd -P)
+  ws_dir=$(cd "$root/$ws" 2>/dev/null && pwd -P) || ws_dir="$root/$ws"
   case "$cwd" in
     "$ws_dir") return 1 ;;
     "$ws_dir"/*) ;;
@@ -428,11 +531,152 @@ orbit_infer_repo() {
   esac
   rel="${cwd#"$ws_dir/"}"
   repo_name="${rel%%/*}"
-  if [ -d "$ws_dir/$repo_name/.git" ] || [ -f "$ws_dir/$repo_name/.git" ]; then
+  if [ -d "$root/$ws/$repo_name/.git" ] || [ -f "$root/$ws/$repo_name/.git" ]; then
     printf '%s\n' "$repo_name"
     return 0
   fi
   return 1
+}
+
+# --- Process Ancestry ---
+
+# Ancestor cwds are a property of this process, not of any candidate: collect
+# them once per run. Re-walking per candidate costs a ps + lsof round-trip per
+# ancestor on macOS, which scales with the number of workspaces for no gain.
+ORBIT_ANCESTRY_CACHED=0
+ORBIT_ANCESTOR_CWDS=""
+
+# Print the cwd of a process; nothing if unreadable (exited, permissions).
+# On hosts with neither /proc nor lsof this prints nothing for every pid and
+# session detection degrades to the root-level guard — orbit doctor warns.
+# `|| true` keeps the function safe under set -e in any calling context.
+orbit_process_cwd() {
+  local pid="$1"
+  if [ -d "/proc/$pid" ]; then
+    readlink "/proc/$pid/cwd" 2>/dev/null || true
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | awk '/^n\//{print substr($0,2); exit}' || true
+  fi
+}
+
+# Print a process's parent pid. Prefers /proc (no external command, and works
+# where busybox ps lacks -o); falls back to ps. In /proc/<pid>/stat the comm
+# field can itself contain spaces and parens, so fields are read after the last
+# ')': state, then ppid.
+orbit_process_ppid() {
+  local pid="$1" stat rest
+  if [ -r "/proc/$pid/stat" ]; then
+    stat=$(cat "/proc/$pid/stat" 2>/dev/null) || stat=""
+    if [ -n "$stat" ]; then
+      rest=${stat##*') '}
+      # shellcheck disable=SC2086  # deliberate word split into positionals
+      set -- $rest
+      [ "$#" -ge 2 ] && { printf '%s\n' "$2"; return 0; }
+    fi
+  fi
+  ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || true
+}
+
+# Walk the ppid chain once and cache every readable ancestor cwd.
+# Announces its own blind spot: if not a single ancestor cwd could be read, the
+# guard cannot see anything, and a guard that silently does nothing is how the
+# original incident happened. The check is on the *result*, not on which
+# facility is present — a host can have /proc yet no usable ps, and vice versa.
+orbit_collect_ancestor_cwds() {
+  [ "$ORBIT_ANCESTRY_CACHED" = "1" ] && return 0
+  ORBIT_ANCESTRY_CACHED=1
+  local pid cwd depth=0
+  pid=$(orbit_process_ppid $$)
+  # Cap the walk at 32 ancestors: deep enough for any realistic shell/agent
+  # stack, and bounds the loop should ps ever report a cyclic ppid chain.
+  # Ancestors beyond the cap are (deliberately) not checked.
+  while [ "$depth" -lt 32 ]; do
+    case "$pid" in ''|*[!0-9]*|0|1) break ;; esac
+    cwd=$(orbit_process_cwd "$pid")
+    if [ -n "$cwd" ]; then
+      ORBIT_ANCESTOR_CWDS="$ORBIT_ANCESTOR_CWDS$cwd
+"
+    fi
+    pid=$(orbit_process_ppid "$pid")
+    depth=$((depth + 1))
+  done
+  if [ -z "$ORBIT_ANCESTOR_CWDS" ]; then
+    printf 'orbit: cannot read process ancestry on this host: the initiation guard is inactive\n' >&2
+  fi
+}
+
+# Return 0 if any ancestor process has its cwd inside $1.
+# The invoking shell's cwd is agent-controllable (cd), so "is this session
+# rooted in <dir>" must be checked on the process tree — a shell can cd out,
+# but the session's ancestor chain keeps its launch cwd. Positive match only:
+# unreadable cwds are skipped and the walk continues.
+orbit_session_workspace() {
+  local root="$1" cwd ws
+  # orbit_ws_containing_dir physical-normalizes each ancestor cwd itself
+  # (lsof//proc report resolved paths).
+  orbit_collect_ancestor_cwds
+  [ -n "$ORBIT_ANCESTOR_CWDS" ] || return 1
+  while IFS= read -r cwd; do
+    [ -n "$cwd" ] || continue
+    if ws=$(orbit_ws_containing_dir "$root" "$cwd"); then
+      printf '%s\n' "$ws"
+      return 0
+    fi
+  done <<EOF
+$ORBIT_ANCESTOR_CWDS
+EOF
+  return 1
+}
+
+# Shared guard for destructive root-scoped operations (prune, sync --force /
+# --branch). One rule: the invocation must come from a process tree standing
+# entirely outside every workspace.
+#   $1 root  $2 subcommand name (replay prefix)  $3 display name (message
+#   prefix, may name flags)  $4+ original args (for the cd replay)
+# Refuses (orbit_fail + return 1) when blocked; returns 0 when it may proceed.
+# Every failure path returns explicitly rather than leaning on the caller's
+# set -e, so the guard stays correct even if a future caller invokes it in a
+# condition context (which would disable set -e for its whole body).
+orbit_require_root_scope() {
+  local root="$1" subcmd="$2" display="$3"
+  shift 3
+  local ws_hit
+
+  # Walk the ancestry HERE, in this shell. orbit_session_workspace is called in
+  # a command substitution below, and a subshell's assignments never reach the
+  # caller — reading ORBIT_ANCESTOR_CWDS after it would always see the empty
+  # initial value and mistake a readable ancestry for a blind one. Collecting
+  # first also lets the subshell inherit the cache: one walk, one blind-spot
+  # warning.
+  orbit_collect_ancestor_cwds
+
+  # Primary, target-independent guard: any ancestor process rooted inside any
+  # workspace aborts the whole invocation. A parent's cwd can't be cd'd away,
+  # so there is no remedy to offer — state the fact and stop.
+  if ws_hit=$(orbit_session_workspace "$root"); then
+    orbit_fail "$display should not be initiated from inside workspace $ws_hit"
+    return 1
+  fi
+
+  # Fallback guard: orbit's own cwd is misplaced into a workspace.
+  if orbit_cwd_inside_workspace "$root"; then
+    # Replay the intended command ONLY when the ancestry actually ran and came
+    # back clean (ORBIT_ANCESTOR_CWDS populated above). When it was blind (no
+    # readable ancestor cwd), we cannot vouch the session isn't rooted in a
+    # workspace, so handing back a ready-to-run `cd <root> && orbit ...` could
+    # walk the operator straight into deleting the live workspace they are in
+    # — give the fact only.
+    if [ -z "$ORBIT_ANCESTOR_CWDS" ]; then
+      orbit_fail "$display must be run from the project root"
+      return 1
+    fi
+    local replay="" arg
+    for arg in "$@"; do replay="$replay $(printf '%q' "$arg")"; done
+    orbit_fail "$display must be run from the project root — cd $(printf '%q' "$root") && orbit $subcmd$replay"
+    return 1
+  fi
+
+  return 0
 }
 
 orbit_ensure_workspace_orbit() {
@@ -591,7 +835,7 @@ orbit_collect_repo_status() {
       ws/"$ws_name"/*) is_scoped=1 ;;
       *) is_scoped=0 ;;
     esac
-    count=$(git config --file "$orbit_file" --get-all "jot.$name" 2>/dev/null | grep -c . || true)
+    count=$(git config --file "$orbit_file" --get-all "jot.$name.entry" 2>/dev/null | grep -c . || true)
     [ -n "$count" ] || count=0
     level=$(orbit_jot_level "$count" "$buf")
     behind=$(orbit_repo_upstream_behind "$d")
@@ -822,7 +1066,11 @@ orbit_clone() {
 
   if [ -z "$repo_name" ]; then
     repo_name=$(orbit_repo_basename "$remote") || return 1
+    # A URL basename outside the name contract (e.g. an org's .github repo) is
+    # not a dead end — the repo just needs a pool identity picked by hand.
+    orbit_valid_repo_name "$repo_name" || orbit_fail "cannot use URL basename as repo name: $repo_name (pick a pool name with --name)"
   fi
+  orbit_require_repo_name "$repo_name"
 
   local dst="$root/.repos/$repo_name"
   [ ! -e "$dst" ] || orbit_fail "repo already exists: $repo_name"
@@ -992,6 +1240,7 @@ orbit_add() {
     esac
   done
   [ -n "$repo_name" ] || orbit_fail "usage: orbit add <repo> [--ref <tag/branch>] [-s|--silent]"
+  orbit_require_repo_name "$repo_name"
 
   local root
   root=$(orbit_require_root) || return 1
@@ -1183,6 +1432,10 @@ orbit_switch() {
 
 orbit_sync_one() {
   local repo_name="$1" root="$2" force="$3" new_branch="$4" ws="${5:-}"
+  if ! orbit_valid_repo_name "$repo_name"; then
+    printf "orbit: invalid repo name: %s (expected a pool repo basename: [A-Za-z0-9._-], no leading '.' or '-')\n" "$repo_name" >&2
+    return 1
+  fi
   local repo_dir="$root/.repos/$repo_name"
   [ -d "$repo_dir" ] || { printf 'orbit: %s: repo not in pool, skipping\n' "$repo_name" >&2; return 1; }
 
@@ -1190,10 +1443,18 @@ orbit_sync_one() {
   branch=$(orbit_default_branch "$repo_dir" 2>/dev/null) || { printf 'orbit: %s: cannot determine default branch (remote is empty or missing origin/HEAD; push an initial commit first)\n' "$repo_name" >&2; return 1; }
 
   if [ -n "$new_branch" ]; then
-    git -C "$repo_dir" config --unset-all remote.origin.fetch 2>/dev/null || true
-    git -C "$repo_dir" config --add remote.origin.fetch "+refs/heads/$new_branch:refs/remotes/origin/$new_branch"
+    # Retire only the refspec of the branch being replaced. --unset-all would
+    # also drop refspecs other workspaces registered for their own branches
+    # (breaking every bare fetch in their worktrees) and any user-configured
+    # wildcard — neither is this command's to remove.
+    orbit_remove_fetch_refspec "$repo_dir" "+refs/heads/$branch:refs/remotes/origin/$branch"
+    orbit_add_fetch_refspec "$repo_dir" "$new_branch"
     if ! git -C "$repo_dir" fetch origin "$new_branch" 2>/dev/null; then
       printf 'orbit: %s: cannot fetch branch: %s\n' "$repo_name" "$new_branch" >&2
+      # Roll back to the pre-switch refspec set so a failed switch does not
+      # leave the pool unable to fetch its previous branch.
+      orbit_remove_fetch_refspec "$repo_dir" "+refs/heads/$new_branch:refs/remotes/origin/$new_branch"
+      orbit_add_fetch_refspec "$repo_dir" "$branch"
       return 1
     fi
     if git -C "$repo_dir" rev-parse --verify --quiet "refs/heads/$new_branch" >/dev/null 2>&1; then
@@ -1234,7 +1495,7 @@ orbit_sync_one() {
     printf '%s: reset to origin/%s\n' "$repo_name" "$branch"
   else
     if ! git -C "$repo_dir" merge --ff-only "origin/$branch" 2>/dev/null; then
-      printf 'orbit: %s: fast-forward failed (local diverged from upstream), use --force to reset\n' "$repo_name" >&2
+      printf 'orbit: %s: fast-forward failed (local diverged from upstream), use --force to reset the pool checkout (worktrees are untouched)\n' "$repo_name" >&2
       return 1
     fi
     local head_after
@@ -1264,6 +1525,7 @@ orbit_sync_one() {
 
 orbit_sync() {
   local force=0 new_branch="" repos=()
+  local orig_args=("$@")
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1278,6 +1540,22 @@ orbit_sync() {
 
   local root
   root=$(orbit_require_root) || return 1
+
+  # Destructive pool operations are root-scoped. --force discards the pool's
+  # local commits; --branch re-points the pool's checked-out branch, its
+  # origin/HEAD, and the fetch refspecs every workspace's worktrees rely on.
+  # Neither destroys anything the calling workspace owns — which is precisely
+  # why the call must come from the scope that does own the pool. Bare sync
+  # (ff-only) cannot lose data and stays callable from anywhere.
+  if [ "$force" -eq 1 ] || [ -n "$new_branch" ]; then
+    local scoped_flags=""
+    [ "$force" -eq 1 ] && scoped_flags="--force"
+    if [ -n "$new_branch" ]; then
+      [ -n "$scoped_flags" ] && scoped_flags="$scoped_flags/"
+      scoped_flags="$scoped_flags--branch"
+    fi
+    orbit_require_root_scope "$root" "sync" "sync $scoped_flags" ${orig_args[@]+"${orig_args[@]}"}
+  fi
 
   local ws_ctx=""
   ws_ctx=$(orbit_infer_workspace "$root" 2>/dev/null) || ws_ctx=""
@@ -1569,7 +1847,9 @@ orbit_jot() {
       -*) orbit_fail "unknown option: $1" ;;
       *)
         if [ -z "$repo_name" ]; then
-          if [ -d "$root/$ws/$1/.git" ] || [ -f "$root/$ws/$1/.git" ]; then
+          # Only a plain pool-repo name can name a repo here; a path-like
+          # argument is treated as jot text, never resolved as a worktree.
+          if orbit_valid_repo_name "$1" && { [ -d "$root/$ws/$1/.git" ] || [ -f "$root/$ws/$1/.git" ]; }; then
             repo_name="$1"
           else
             if [ -n "$text" ]; then
@@ -1601,8 +1881,8 @@ orbit_jot() {
       while IFS= read -r line; do
         [ -n "$line" ] || continue
         entries+=("$line")
-      done < <(git config --file "$orbit_file" --get-all "jot.$repo_name" 2>/dev/null || true)
-      git config --file "$orbit_file" --unset-all "jot.$repo_name" 2>/dev/null || true
+      done < <(git config --file "$orbit_file" --get-all "jot.$repo_name.entry" 2>/dev/null || true)
+      git config --file "$orbit_file" --unset-all "jot.$repo_name.entry" 2>/dev/null || true
       local out
       out="{$(orbit_json_kv repo "$repo_name"),\"entries\":["
       local first=1
@@ -1614,8 +1894,8 @@ orbit_jot() {
       out+="],$(orbit_json_kv_raw count "${#entries[@]}")}"
       printf '%s\n' "$out"
     else
-      git config --file "$orbit_file" --get-all "jot.$repo_name" 2>/dev/null || true
-      git config --file "$orbit_file" --unset-all "jot.$repo_name" 2>/dev/null || true
+      git config --file "$orbit_file" --get-all "jot.$repo_name.entry" 2>/dev/null || true
+      git config --file "$orbit_file" --unset-all "jot.$repo_name.entry" 2>/dev/null || true
     fi
     return 0
   fi
@@ -1643,10 +1923,13 @@ orbit_jot() {
 
   [ -n "$text" ] || orbit_fail "aborting: empty jot"
 
-  git config --file "$orbit_file" --add "jot.$repo_name" "$text"
+  # Subsection form ([jot "<repo>"] entry), matching repos.<name>.url: a plain
+  # jot.<repo> key cannot hold every contract-legal repo name (my_repo, 2048 —
+  # git-config key segments reject '_' and leading digits), a subsection can.
+  git config --file "$orbit_file" --add "jot.$repo_name.entry" "$text"
 
   local count buf half
-  count=$(git config --file "$orbit_file" --get-all "jot.$repo_name" 2>/dev/null | grep -c . || true)
+  count=$(git config --file "$orbit_file" --get-all "jot.$repo_name.entry" 2>/dev/null | grep -c . || true)
   buf=$(orbit_jot_buffer_size "$root")
   half=$(( buf / 2 ))
   if [ "$count" -gt "$buf" ]; then
@@ -1910,6 +2193,7 @@ orbit_info() {
   done
 
   [ -n "$repo_name" ] || orbit_fail "usage: orbit info [--json] <repo>"
+  orbit_require_repo_name "$repo_name"
 
   local root
   root=$(orbit_require_root) || return 1
@@ -2028,6 +2312,7 @@ orbit_memo() {
 
   local root
   root=$(orbit_require_root) || return 1
+  orbit_require_repo_name "$repo_name"
   local repo_dir="$root/.repos/$repo_name"
   [ -d "$repo_dir" ] || orbit_fail "repo not in pool: $repo_name"
 
@@ -2174,6 +2459,30 @@ orbit_collect_workspace_branches() {
   printf '%s\n' "${branches[@]+${branches[@]}}" | sort -u
 }
 
+# True when every change on <branch> is already contained in <upstream>'s
+# tree — the signature of a squash/rebase merge, which rewrites SHAs and
+# therefore defeats the ancestor check. Ordered by cost: `git merge-tree`
+# first (O(merged paths), independent of commit count, and definitive in BOTH
+# directions when it exits 0 — a differing tree proves the branch adds
+# content); `git cherry` only when merge-tree cannot answer (git < 2.38, or a
+# conflicting merge), since it costs O(commits × diff) over the whole range
+# and only catches 1:1 patch equivalence. merge-tree writes a few tree
+# objects to the ODB (invisible git-internal cache, also under --dry-run).
+orbit_branch_content_upstream() {
+  local main_repo="$1" branch="$2" upstream="$3" merged_tree
+  if merged_tree=$(git -C "$main_repo" merge-tree --write-tree "$upstream" "$branch" 2>/dev/null); then
+    [ "$merged_tree" = "$(git -C "$main_repo" rev-parse "$upstream^{tree}" 2>/dev/null)" ]
+    return
+  fi
+  # An unresolvable upstream — or any cherry failure — is "cannot tell", not
+  # "content upstream": an empty '+' set would otherwise invert into a false
+  # positive, and the hint hands out branch -D verbatim. Capture first and
+  # match without a pipe (a pipe can SIGPIPE the producer under pipefail).
+  local cherry_out
+  cherry_out=$(git -C "$main_repo" cherry "$upstream" "$branch" 2>/dev/null) || return 1
+  ! grep -q '^+' <<< "$cherry_out"
+}
+
 orbit_branch_protection_delete() {
   local main_repo="$1" branch="$2" pr_urls_str="$3" force_flag="$4" verify_flag="$5" dry_run_flag="$6"
   # Returns 0 if the branch was (or would be) deleted, 1 if skipped.
@@ -2221,18 +2530,27 @@ orbit_branch_protection_delete() {
     return 0
   fi
 
-  # Layer 3: skip — in dry-run the skip is part of the report (stdout); in a
-  # real run it is a diagnostic accompanying the mutation (stderr).
+  # Layer 3: skip — but a squash/rebase merge rewrites SHAs and defeats the
+  # ancestor check above, so a branch can be unmerged in form yet fully merged
+  # in content. Name that case and hand the operator the exact cleanup
+  # command: prune runs at the project root, where the operator is human.
+  # In dry-run the skip is part of the report (stdout); in a real run it is a
+  # diagnostic accompanying the mutation (stderr).
+  local note=""
+  if [ -n "$default_branch" ] && orbit_branch_content_upstream "$main_repo" "$branch" "origin/$default_branch"; then
+    note=" (content already upstream — squash/rebase merge? clean up: git -C \"$main_repo\" branch -D \"$branch\")"
+  fi
   if [ "$dry_run_flag" = "1" ]; then
-    printf '    would skip unmerged branch: %s\n' "$branch"
+    printf '    would skip unmerged branch: %s%s\n' "$branch" "$note"
   else
-    printf 'orbit: skipping unmerged branch: %s\n' "$branch" >&2
+    printf 'orbit: skipping unmerged branch: %s%s\n' "$branch" "$note" >&2
   fi
   return 1
 }
 
 orbit_prune() {
   local older="" dry_run=0 force=0 verify=0 target_ws=""
+  local orig_args=("$@")
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -2248,15 +2566,9 @@ orbit_prune() {
   local root
   root=$(orbit_require_root) || return 1
 
-  # Self-protection: if currently inside a workspace that would be pruned, error out
-  local cwd
-  cwd="$(pwd)"
-  if [ -n "$target_ws" ]; then
-    case "$cwd" in
-      "$root/$target_ws"|"$root/$target_ws"/*)
-        orbit_fail "cannot prune workspace you are currently in: $target_ws" ;;
-    esac
-  fi
+  # Prune is a root-level destructive operation: target-independent guard,
+  # shared with the other root-scoped commands (see orbit_require_root_scope).
+  orbit_require_root_scope "$root" "prune" "prune" ${orig_args[@]+"${orig_args[@]}"}
 
   local older_seconds=0
   if [ -n "$older" ]; then
@@ -2337,23 +2649,77 @@ orbit_prune() {
       fi
     fi
 
-    # Self-protection check for each candidate
-    case "$cwd" in
-      "$root/$ws"|"$root/$ws"/*)
-        printf 'orbit: skipping %s: you are currently in this workspace\n' "$ws" >&2
-        continue ;;
-    esac
-
-    # Collect repo worktrees first so the header can lead the report
-    local ws_repo_dirs=()
+    # Collect repo worktrees first so the header can lead the report.
+    # foreign_repos: git repos in the workspace that are NOT worktrees of a pool
+    # repo. A pool worktree always has a .git *file* (gitdir pointer); a .git
+    # *directory* is an independent clone even when it sits under a pool repo's
+    # name — its objects live in its own .git, so the rm -rf below destroys
+    # history that exists nowhere else. The scan is deliberately top-level:
+    # guard scope is the workspace's direct children (see spec-lifecycle).
+    local ws_repo_dirs=() foreign_repos=()
     for repo_dir in "$ws_dir"/*/; do
       [ -d "$repo_dir" ] || continue
       [ -d "$repo_dir/.git" ] || [ -f "$repo_dir/.git" ] || continue
       local repo_name
       repo_name=$(basename "$repo_dir")
-      [ -d "$root/.repos/$repo_name" ] || continue
-      ws_repo_dirs+=("$repo_dir")
+      if [ -f "$repo_dir/.git" ] && [ -d "$root/.repos/$repo_name" ]; then
+        ws_repo_dirs+=("$repo_dir")
+      else
+        foreign_repos+=("$repo_name")
+      fi
     done
+
+    # Data protection: never destroy uncommitted changes without --force.
+    # Branch deletion has merged-checks below, but worktree removal nukes
+    # working-tree state outright — gate it here. The guard must cover
+    # everything rm -rf destroys, not just the pool-backed worktrees: a repo
+    # with no pool counterpart loses its object database too.
+    #
+    # All reasons are collected before reporting: --force releases them as one
+    # decision, so the operator has to see the whole set to make that decision
+    # once, instead of fixing one reason per run and being surprised by the next.
+    if [ "$force" = "0" ]; then
+      local skip_reasons=""
+      local dirty_repos=()
+      for repo_dir in ${ws_repo_dirs[@]+"${ws_repo_dirs[@]}"}; do
+        # An unreadable status is "cannot tell", not "clean" — treat it as dirty.
+        local st_out st_rc=0
+        st_out=$(git -C "$repo_dir" status --porcelain 2>/dev/null) || st_rc=$?
+        if [ "$st_rc" -ne 0 ] || [ -n "$st_out" ]; then
+          dirty_repos+=("$(basename "$repo_dir")")
+        fi
+      done
+      [ "${#dirty_repos[@]}" -gt 0 ] && skip_reasons="uncommitted changes in: ${dirty_repos[*]}"
+
+      if [ "${#foreign_repos[@]}" -gt 0 ]; then
+        [ -n "$skip_reasons" ] && skip_reasons="$skip_reasons; "
+        skip_reasons="${skip_reasons}git repos not from the pool: ${foreign_repos[*]}"
+      fi
+
+      # Knowledge protection: jots live in the workspace .orbit, which rm -rf
+      # takes with it. done only warns once; this is the last checkpoint before
+      # the queue is gone for good.
+      local jotted_repos=() jot_repo jot_count
+      while IFS= read -r jot_repo; do
+        [ -n "$jot_repo" ] || continue
+        jot_count=$(git config --file "$ws_dir/.orbit" --get-all "jot.$jot_repo.entry" 2>/dev/null | grep -c . || true)
+        [ "${jot_count:-0}" -gt 0 ] || continue
+        jotted_repos+=("$jot_repo ($jot_count)")
+      done < <(git config --file "$ws_dir/.orbit" --name-only --get-regexp '^jot\..*\.entry$' 2>/dev/null | sed 's/^jot\.//; s/\.entry$//' | sort -u || true)
+      if [ "${#jotted_repos[@]}" -gt 0 ]; then
+        [ -n "$skip_reasons" ] && skip_reasons="$skip_reasons; "
+        skip_reasons="${skip_reasons}unmerged jots in: ${jotted_repos[*]}"
+      fi
+
+      if [ -n "$skip_reasons" ]; then
+        if [ "$dry_run" = "1" ]; then
+          printf 'would skip: %s (%s)\n' "$ws" "$skip_reasons"
+        else
+          printf 'orbit: skipping %s: %s\n' "$ws" "$skip_reasons" >&2
+        fi
+        continue
+      fi
+    fi
 
     local n_deleted=0 n_skipped=0 n_worktrees=0
 
@@ -2384,8 +2750,11 @@ orbit_prune() {
       if [ "$dry_run" = "1" ]; then
         printf '    would remove worktree\n'
       else
-        git -C "$main_repo" worktree remove "$repo_dir" --force 2>/dev/null || true
-        printf '    removed worktree\n'
+        if git -C "$main_repo" worktree remove "$repo_dir" --force 2>/dev/null; then
+          printf '    removed worktree\n'
+        else
+          printf '    worktree not registered to the pool repo; left to directory removal\n'
+        fi
       fi
       n_worktrees=$((n_worktrees + 1))
 
@@ -2398,6 +2767,29 @@ orbit_prune() {
           n_skipped=$((n_skipped + 1))
         fi
       done <<< "$ws_branches"
+
+      # Branches shaped like this workspace's but outside the configured prefix
+      # are not orbit's to delete — raw-mode branches, or branches created while
+      # branch.prefix held a different value (config is cache: losing it reverts
+      # the prefix to the default and would orphan them silently). Git is the
+      # structural source of truth here, so the branch names are the record —
+      # name them rather than let them leak unseen.
+      local ws_prefix left_behind=() lb
+      ws_prefix=$(orbit_require_prefix) || return 1
+      while IFS= read -r lb; do
+        [ -n "$lb" ] || continue
+        case "$lb" in
+          "$ws_prefix/$ws/"*) continue ;;
+          */"$ws"/*) left_behind+=("$lb") ;;
+        esac
+      done < <(git -C "$main_repo" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null || true)
+      if [ "${#left_behind[@]}" -gt 0 ]; then
+        if [ "$dry_run" = "1" ]; then
+          printf '    would leave branch outside branch.prefix: %s\n' "${left_behind[*]}"
+        else
+          printf 'orbit: %s: left branch outside branch.prefix: %s\n' "$repo_name" "${left_behind[*]}" >&2
+        fi
+      fi
 
       # Clean leftover upstream config sections (branches that were skipped)
       if [ "$dry_run" = "0" ]; then
@@ -2487,6 +2879,15 @@ orbit_doctor() {
     printf '[WARN] gh not found (optional, enables PR-aware prune)\n'
   fi
 
+  # Prune's session-rooted guard is best-effort: it reads ancestor cwds via
+  # /proc (Linux) or lsof (macOS). Without either, only the root-level guard
+  # applies — surface that instead of failing silently open.
+  if [ -d "/proc/$$" ] || command -v lsof >/dev/null 2>&1; then
+    printf '[OK]   process ancestry (/proc or lsof; prune initiation guard)\n'
+  else
+    printf '[WARN] no /proc and no lsof: prune cannot detect sessions rooted in a workspace (root-level guard still applies)\n'
+  fi
+
   # 4. Project structure (if in orbit project)
   local root
   if root=$(orbit_find_root 2>/dev/null); then
@@ -2559,6 +2960,32 @@ orbit_config() {
 
   [ "$#" -le 2 ] || orbit_fail "usage: orbit config <key> [<value> | --unset]"
   local value="$2"
+
+  # repos.* is the pool index orbit maintains, not project configuration. It is
+  # rebuildable (Principle 3), but relying on that to excuse hand-editing means
+  # the safety of this command rests on another principle rather than on itself.
+  case "$key" in
+    repos.*) orbit_fail "repos.* is pool index data, not project config; refresh it with memo <repo> --refresh" ;;
+  esac
+
+  # branch.prefix is embedded in every branch orbit has already created and is
+  # what prune matches on to find them again. A bad value would persist, and a
+  # changed one would orphan the existing branches — validate on write, and
+  # refuse to move it while any branch still carries the current one.
+  if [ "$key" = "branch.prefix" ]; then
+    local target="$value" current existing
+    [ "$value" = "--unset" ] && target="$ORBIT_DEFAULT_BRANCH_PREFIX"
+    if ! orbit_valid_branch_prefix "$target"; then
+      orbit_fail "invalid branch.prefix: $target (one path segment, valid in a git refname)"
+      return 1
+    fi
+    current=$(orbit_require_prefix) || return 1
+    if [ "$target" != "$current" ] && existing=$(orbit_branches_under_prefix "$root" "$current"); then
+      orbit_fail "branch.prefix is part of existing branch names under '$current/': $existing"
+      return 1
+    fi
+  fi
+
   if [ "$value" = "--unset" ]; then
     git config --file "$orbit_file" --unset "$key" 2>/dev/null || true
     printf 'unset: %s\n' "$key"
@@ -2865,7 +3292,7 @@ orbit_context_reignite() {
           memo_behind=$(git -C "$root/.repos/$name" rev-list "$stored".."$current" --count 2>/dev/null || echo 0)
         fi
       fi
-      count=$(git config --file "$ws_dir/.orbit" --get-all "jot.$name" 2>/dev/null | grep -c . || true)
+      count=$(git config --file "$ws_dir/.orbit" --get-all "jot.$name.entry" 2>/dev/null | grep -c . || true)
       [ -n "$count" ] || count=0
       level=$(orbit_jot_level "$count" "$buf")
       behind=$(orbit_repo_upstream_behind "$d")
@@ -2889,7 +3316,7 @@ orbit_context_reignite() {
         [ "$ef" -eq 1 ] || out+=','
         ef=0
         out+="\"$(orbit_json_escape "$jline")\""
-      done < <(git config --file "$ws_dir/.orbit" --get-all "jot.$name" 2>/dev/null || true)
+      done < <(git config --file "$ws_dir/.orbit" --get-all "jot.$name.entry" 2>/dev/null || true)
       out+='],'
       if [ -f "$md_file" ]; then
         out+="$(orbit_json_kv memo "$(cat "$md_file")")"
@@ -2939,7 +3366,7 @@ orbit_context_reignite() {
       fi
     fi
 
-    count=$(git config --file "$ws_dir/.orbit" --get-all "jot.$name" 2>/dev/null | grep -c . || true)
+    count=$(git config --file "$ws_dir/.orbit" --get-all "jot.$name.entry" 2>/dev/null | grep -c . || true)
     [ -n "$count" ] || count=0
     level=$(orbit_jot_level "$count" "$buf")
     behind=$(orbit_repo_upstream_behind "$d")
@@ -2984,7 +3411,7 @@ orbit_context_reignite() {
         while IFS= read -r jline; do
           [ -n "$jline" ] || continue
           printf '  - %s\n' "$jline"
-        done < <(git config --file "$ws_dir/.orbit" --get-all "jot.$name" 2>/dev/null || true)
+        done < <(git config --file "$ws_dir/.orbit" --get-all "jot.$name.entry" 2>/dev/null || true)
       else
         printf 'jots: %s entries queued — pop to view: orbit jot %s --pop\n' "$count" "$name"
       fi
@@ -3102,8 +3529,8 @@ _orbit() {
           ;;
         sync)
           _arguments \
-            '--force[Force reset to upstream]' \
-            '--branch[Switch tracking branch]:branch:' \
+            '--force[Reset pool checkout to upstream, discarding local commits (project root only)]' \
+            '--branch[Switch pool tracking branch (project root only)]:branch:' \
             '*:repo:_orbit_repos'
           ;;
         status)
@@ -3162,7 +3589,7 @@ _orbit() {
           _arguments \
             '--older[Filter by age]:days:' \
             '--dry-run[Show what would be pruned]' \
-            '--force[Skip confirmation]' \
+            '--force[Destroy uncommitted changes and unmerged branches]' \
             '--verify[Verify before pruning]' \
             '*:workspace:_orbit_workspaces'
           ;;

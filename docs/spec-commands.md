@@ -44,8 +44,8 @@ orbit memo <repo>                        # Write per-repo markdown from stdin (f
 orbit memo <repo> --refresh              # Refresh only a single repo's index entry (no .md write)
 orbit memo <repo> --scaffold             # Generate skeleton template to stdout (no file write, no index update)
 orbit sync [repo...]                     # fetch + fast-forward pool repo's tracking branch
-orbit sync [repo...] --force             # fetch + reset --hard (force sync when locally diverged)
-orbit sync [repo...] --branch <branch>   # Switch pool repo's tracking branch
+orbit sync [repo...] --force             # fetch + reset --hard (force sync when locally diverged; project root only)
+orbit sync [repo...] --branch <branch>   # Switch pool repo's tracking branch (project root only)
 
 # Workspace lifecycle
 orbit new ["<goal>"] [--name <name>] [--exec "<cmd>"] [--no-goal]  # Create workspace (implicit init; goal source: positional arg, else editor when interactive/ORBIT_EDITOR set, else stdin — empty aborts; --no-goal for an intentionally goal-less workspace. --exec runs the given command after creation; without it, agent.recommend config (if set) is printed as a launch hint, not executed)
@@ -55,6 +55,8 @@ orbit switch -c [repo] <name>                   # Create new tracking branch fro
 orbit jot [<repo>] ["<text>"]                   # Push a discovery to the jot queue
 orbit jot [<repo>] --pop [--json]               # Pop all entries (consume + delete)
 orbit done [--pr <url>...] [--json]          # Mark workspace as done
+
+# Cross-workspace cleanup (from project root only)
 orbit prune [workspace] [--older <dur>] [--verify] [--dry-run] [--force]  # Reclaim workspace
 
 # Status queries
@@ -69,7 +71,7 @@ orbit context [<key>] [--startup|--prime|--reignite] [--json] # Context blocks o
 orbit config                             # List all project configuration
 orbit config <key>                       # Read configuration value
 orbit config <key> <value>               # Set configuration value
-orbit config <key> --unset               # Delete configuration entry
+orbit config <key> --unset               # Delete configuration entry (writes to repos.* are refused — pool index, not config)
 
 # Diagnostics and completion
 orbit doctor                             # Environment health check
@@ -114,11 +116,12 @@ There is no standalone `orbit init` command. Commands that require `.repos/` (`c
 | `orbit jot` | ✗ error | ✓ (repo must be specified) | ✓ (repo inferred from CWD) |
 | `orbit switch` | ✗ error | ✓ (repo must be specified) | ✓ (repo inferred from CWD) |
 | `orbit done` | ✗ error | ✓ | ✓ (convenient for manual use) |
-| `orbit prune` | ✓ | ✓ (but checks self; errors if it would be pruned) | same as workspace |
+| `orbit prune` | ✓ (refuses the invocation when the process tree stands inside any workspace; skips dirty, foreign-repo and unmerged-jot candidates — see Prune Safety Guards in spec-lifecycle.md) | ✗ error (root-level only) | ✗ error (root-level only) |
 | `orbit status` | ✓ (requires `status <ws>` to specify) | ✓ (current workspace) | ✓ (current workspace) |
 | `orbit goal` | ✗ (not within workspace, error) | ✓ | ✓ |
 | `orbit context` | ✗ error | ✓ | ✓ |
 | `orbit sync` | ✓ (syncs all repos) | ✓ (syncs repos in workspace) | ✓ (syncs current repo) |
+| `orbit sync --force` / `--branch` | ✓ | ✗ error (root-level only) | ✗ error (root-level only) |
 | `orbit doctor` | ✓ | ✓ | ✓ |
 | `orbit version` | ✓ | ✓ | ✓ |
 | `orbit completion` | ✓ | ✓ | ✓ |
@@ -132,6 +135,15 @@ Commands requiring workspace context (`orbit add`, `orbit done`, `orbit goal`, `
 `orbit switch` additionally requires repo context (a workspace may contain multiple repos):
 - Executed within a worktree subdirectory → repo inferred from CWD (which worktree the current directory belongs to)
 - Executed at workspace root → `repo` parameter must be explicitly provided; otherwise error: "multiple repos in workspace, specify which one"
+
+## Repo Name Contract
+
+A repo name is a pool directory basename under `.repos/`, never a path — callers build destructive targets by concatenation (`$root/.repos/<name>`), so a traversing name (`../<ws>/<repo>`) would point a pool operation at a workspace worktree instead. Every command taking a repo name (`clone --name`, `add`, `info`, `memo`, `sync`) validates the argument itself, not just whether the path it lands on exists; `orbit jot` uses the same rule as a discriminator (a non-name argument is jot text, never resolved as a worktree):
+
+- Charset is GitHub's own: `[A-Za-z0-9._-]` — slashes, spaces and other characters are rejected (they are not legal remote repo names either).
+- Empty names and names starting with `.` or `-` are rejected. The latter two are GitHub-legal but unsupported on purpose: pool loops glob `.repos/*/`, which skips hidden directories, and a leading `-` is indistinguishable from an option flag in any argv slot.
+- Rejection is a refusal: `invalid repo name: <name> (expected a pool repo basename: [A-Za-z0-9._-], no leading '.' or '-')` — registered in [spec-warnings.md](spec-warnings.md#refusals-and-skips-deliberately-no-named-action).
+- A remote whose URL basename is outside the contract is still reachable: `orbit clone` names the escape hatch (`cannot use URL basename as repo name: <name> (pick a pool name with --name)`) — the pool identity and the remote name are decoupled, so any repo can enter the pool under a contract-legal name.
 
 ## orbit clone Option Semantics
 
@@ -168,12 +180,12 @@ orbit jot [<repo>] ["<text>"]    # push
 orbit jot [<repo>] --pop [--json]  # pop all entries (consume + delete)
 ```
 
-**Storage**: workspace `.orbit` file, `[jot]` section (git-config multi-value):
+**Storage**: workspace `.orbit` file, per-repo `[jot "<repo>"]` subsection (git-config multi-value; format contract and rationale in [spec-metadata.md](spec-metadata.md)):
 
 ```ini
-[jot]
-	backend = entry point is cmd/main.go
-	backend = uses Echo router
+[jot "backend"]
+	entry = entry point is cmd/main.go
+	entry = uses Echo router
 ```
 
 Jot entries are real discoveries only — orbit writes no system placeholders into the queue. Every entry counts as real capture.
@@ -241,10 +253,12 @@ orbit sync [repo...] [--force] [--branch <branch>]
 | `--force` | `fetch` + `reset --hard` | Locally diverged or ff failed |
 | `--branch <new>` | Switch fetch refspec + fetch + checkout | Change tracking branch |
 
-**`--branch` detailed flow:**
-1. `git config --unset-all remote.origin.fetch`
+**Scope**: bare `sync` is callable from anywhere — `merge --ff-only` cannot lose data (it refuses on divergence). `--force` and `--branch` are **project root only**: both destroy or re-point state in the shared pool, which no single workspace owns, so the call has to come from the scope that does. They share `prune`'s initiation guard (`orbit_require_root_scope`; refusal messages in spec-warnings.md).
+
+**`--branch` detailed flow** (root-level only — it rewrites pool-wide state every workspace's worktrees depend on, so it is refused from inside any workspace, same rule as `prune`):
+1. Remove the fetch refspec of the branch being replaced (`orbit_remove_fetch_refspec`) — never `--unset-all`: refspecs other workspaces registered for their own branches, and user-configured wildcards, must survive
 2. `git config --add remote.origin.fetch "+refs/heads/<new>:refs/remotes/origin/<new>"`
-3. `git fetch origin <new>`
+3. `git fetch origin <new>` — on failure the refspec change is rolled back, so a failed switch leaves the pool able to fetch its previous branch
 4. `git checkout <new>` (if doesn't exist locally: `git checkout -b <new> origin/<new>`)
 5. `git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/<new>`
 6. If memo already exists: stderr outputs "memo may not apply to new branch"
@@ -272,6 +286,7 @@ Environment health check; does not require being inside an orbit project.
   - bash version >= 3.2 (critical)
   - jq availability (optional, improves JSON handling)
   - gh availability (optional, enables PR-aware prune)
+  - process-ancestry facility (`/proc` or `lsof`) — warns when neither is present, since prune's initiation guard degrades to the root-level cwd check
 - If inside an orbit project: additionally reports `.repos/` structural integrity, repo count, workspace count
 - Exit code: 0 = all critical checks pass, 1 = critical failure exists
 - Output format: `[OK]` / `[FAIL]` / `[WARN]` prefixed lines, human-readable

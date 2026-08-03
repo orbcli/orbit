@@ -57,3 +57,9 @@ teardown() {
   assert_contains "$output" "repos in pool"
   assert_contains "$output" "1"
 }
+
+@test "doctor: reports the process-ancestry facility for the prune initiation guard" {
+  run bash -c "cd '$SANDBOX' && bash '$ORBIT_CMD' doctor"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "process ancestry"
+}

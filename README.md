@@ -28,9 +28,9 @@ I built Orbit because I was tired of copy-pasting context between repo sessions 
 |------|---------|---------|-----------|------------|
 | Agent memory | Low — stale | ✗ None | — | ✗ Per-session |
 | Web search | Medium — fragments | ✗ None | — | ✗ None |
-| Add directory | High — per-dir | ✓ Per-repo | ✓ Yes | ✗ Virtual scope |
+| Add directory | High — per-dir | ✓ Per-repo | ✓ Yes | ✗ No unified tree |
 | RAG | Medium — loses structure | ✗ Lost in chunks | ✗ Read-only | ✗ Per-query |
-| **Orbit** | **High — grep, trace** | **✓ Full git** | **✓ Commit, push** | **✓ Workspace-scoped** |
+| **Orbit** | **High — grep, trace** | **✓ Full git** | **✓ Commit, push** | **✓ Unified tree** |
 
 **Parallel isolation.** Each workspace is an independent multi-repo worktree combination. Multiple agents work in parallel, each in its own workspace — no branch conflicts, no state leaking between tasks. Reusing a single workspace across tasks means branch contamination and agent interference; isolation is what makes multi-task, multi-agent practical.
 
@@ -190,7 +190,7 @@ orbit clone <url> [--push <fork-url>] [--name <identity>] [--branch <branch>]
 orbit repos
 orbit info <repo>
 orbit memo [<repo>] [--refresh|--scaffold]
-orbit sync [repo...] [--force] [--branch <branch>]
+orbit sync [repo...] [--force] [--branch <branch>]   # --force / --branch: project root only
 
 # Workspace lifecycle
 orbit new "<goal>" [--name <name>] [--no-goal] [--exec "<cmd>"]
@@ -200,6 +200,8 @@ orbit switch -c [repo] <name>
 orbit jot [<repo>] ["<text>"]
 orbit jot [<repo>] --pop [--json]
 orbit done [--pr <url>...] [--json]
+
+# Cross-workspace cleanup (from project root only)
 orbit prune [workspace] [--older <dur>] [--verify] [--dry-run] [--force]
 
 # Status and context

@@ -22,7 +22,7 @@ setup_workspace_with_repo() {
   clone_project "$proj"
   cd "$proj" && orbit new --name ws1 --no-goal >/dev/null 2>&1
   cd "$proj/ws1" && orbit add myrepo >/dev/null 2>&1
-  git config --file "$proj/ws1/.orbit" --unset-all jot.myrepo 2>/dev/null || true
+  git config --file "$proj/ws1/.orbit" --unset-all jot.myrepo.entry 2>/dev/null || true
 }
 
 # --- push mode ---
@@ -33,7 +33,7 @@ setup_workspace_with_repo() {
   cd "$proj/ws1"
   orbit jot myrepo "entry point is cmd/main.go" 2>/dev/null
   local entries
-  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null)
+  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo.entry 2>/dev/null)
   assert_contains "$entries" "entry point is cmd/main.go"
 }
 
@@ -43,7 +43,7 @@ setup_workspace_with_repo() {
   cd "$proj/ws1/myrepo"
   orbit jot "uses Echo router" 2>/dev/null
   local entries
-  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null)
+  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo.entry 2>/dev/null)
   assert_contains "$entries" "uses Echo router"
 }
 
@@ -53,7 +53,7 @@ setup_workspace_with_repo() {
   cd "$proj/ws1"
   echo "stdin note" | orbit jot myrepo 2>/dev/null
   local entries
-  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null)
+  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo.entry 2>/dev/null)
   assert_contains "$entries" "stdin note"
 }
 
@@ -65,7 +65,7 @@ setup_workspace_with_repo() {
   orbit jot myrepo "note two" 2>/dev/null
   orbit jot myrepo "note three" 2>/dev/null
   local count
-  count=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null | wc -l | tr -d ' ')
+  count=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo.entry 2>/dev/null | wc -l | tr -d ' ')
   [ "$count" -eq 3 ]
 }
 
@@ -84,7 +84,7 @@ setup_workspace_with_repo() {
   assert_contains "$output" "note B"
 
   local remaining
-  remaining=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null || true)
+  remaining=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo.entry 2>/dev/null || true)
   [ -z "$remaining" ]
 }
 
@@ -109,11 +109,31 @@ setup_workspace_with_repo() {
   orbit jot myrepo --pop >/dev/null 2>/dev/null
 
   local be
-  be=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null || true)
+  be=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo.entry 2>/dev/null || true)
   [ -z "$be" ]
   local fe
-  fe=$(git config --file "$proj/ws1/.orbit" --get-all jot.frontend 2>/dev/null)
+  fe=$(git config --file "$proj/ws1/.orbit" --get-all jot.frontend.entry 2>/dev/null)
   assert_contains "$fe" "frontend note"
+}
+
+@test "jot: round-trips repo names a plain config key cannot hold" {
+  local proj="$SANDBOX/jot-subsection"
+  setup_workspace_with_repo "$proj"
+  # my_repo and 2048 are contract-legal but invalid as git-config key segments
+  # ('_' and a leading digit) — the subsection form must carry them.
+  cd "$proj" && orbit clone "$SHARED_REMOTE" --name my_repo >/dev/null 2>&1
+  cd "$proj" && orbit clone "$SHARED_REMOTE" --name 2048 >/dev/null 2>&1
+  cd "$proj/ws1" && orbit add my_repo >/dev/null 2>&1 && orbit add 2048 >/dev/null 2>&1
+
+  run orbit jot my_repo "underscore note"
+  [ "$status" -eq 0 ]
+  run orbit jot 2048 "digit note"
+  [ "$status" -eq 0 ]
+
+  run orbit jot my_repo --pop
+  assert_contains "$output" "underscore note"
+  run orbit jot 2048 --pop
+  assert_contains "$output" "digit note"
 }
 
 # --- buffer-size warn levels (jot.bufferSize, default memo.minLines = 4) ---
@@ -183,7 +203,7 @@ setup_workspace_with_repo() {
   assert_contains "$stderr_output" "explore . (depth 1)"
   # and the jot queue stays clean — no system placeholders
   local entries
-  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null || true)
+  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo.entry 2>/dev/null || true)
   [ -z "$entries" ]
 }
 
@@ -198,7 +218,7 @@ setup_workspace_with_repo() {
   assert_contains "$stderr_output" "memo for myrepo is thin"
   assert_contains "$stderr_output" "explore . (depth 1)"
   local entries
-  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null || true)
+  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo.entry 2>/dev/null || true)
   [ -z "$entries" ]
 }
 
@@ -210,7 +230,7 @@ setup_workspace_with_repo() {
   cd "$proj" && orbit new --name ws1 --no-goal >/dev/null 2>&1
   cd "$proj/ws1" && orbit add myrepo >/dev/null 2>&1
   local entries
-  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null || true)
+  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo.entry 2>/dev/null || true)
   [ -z "$entries" ]
 }
 
@@ -227,7 +247,7 @@ setup_workspace_with_repo() {
   stderr_output=$(printf '# myrepo\n\nBrief.\n- a\n- b\n- c\n- d\n' | orbit memo myrepo 2>&1 >/dev/null)
   assert_contains "$stderr_output" "over budget"
   local entries
-  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo 2>/dev/null || true)
+  entries=$(git config --file "$proj/ws1/.orbit" --get-all jot.myrepo.entry 2>/dev/null || true)
   [ -z "$entries" ]
 }
 

@@ -100,3 +100,21 @@ teardown() {
   run bash -c "ORBIT_ROOT='$proj' bash '$ORBIT_CMD' clone '$SHARED_REMOTE' --name dup-repo"
   [ "$status" -ne 0 ]
 }
+
+@test "clone: URL basename outside the name contract points at --name" {
+  local proj="$SANDBOX/clone-dot-basename"
+  mkdir -p "$proj/.repos"
+  touch "$proj/.repos/.orbit"
+  TEST_PROJECT="$proj"
+
+  # An org's .github repo: legal on GitHub, outside the pool name contract.
+  local remote="$SANDBOX/remotes/.github"
+  mkdir -p "$remote" && git init --bare "$remote" >/dev/null 2>&1
+
+  run bash -c "ORBIT_ROOT='$proj' bash '$ORBIT_CMD' clone '$remote'"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "pick a pool name with --name"
+
+  cd "$proj" && orbit clone "$remote" --name org-github >/dev/null 2>&1
+  assert_dir_exists "$proj/.repos/org-github"
+}

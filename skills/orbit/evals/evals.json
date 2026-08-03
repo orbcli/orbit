@@ -46,7 +46,7 @@
     {
       "id": 8,
       "prompt": "My work in this workspace is finished and the PR is merged. Mark it done and clean it up.",
-      "expected_output": "Use `orbit done` (with --pr if PR URL is available) to mark the workspace as done, then use `orbit prune` to clean up the completed workspace.",
+      "expected_output": "Use `orbit done` (with --pr if PR URL is available) to mark the workspace as done, and report that it is now reclaimable. Reclaiming it is a project-root operation outside this session's scope: hand that back to the user rather than running `orbit prune` or relocating in order to run it.",
       "files": []
     },
     {

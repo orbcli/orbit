@@ -147,18 +147,19 @@ Long-lived workspace scenarios:
 
 All commands that write to workspace `.orbit` (`orbit add`, `orbit done`, `orbit goal`, `orbit jot`) auto-create the file if it doesn't exist (backfilling `created`).
 
-`orbit jot` writes to the `[jot]` section using git-config multi-value (same key, multiple values):
+`orbit jot` writes to a per-repo `[jot "<repo>"]` subsection using git-config multi-value (same key, multiple values). Subsection form matches `repos.<name>.url`: a plain `jot.<repo>` key cannot hold every contract-legal repo name (`my_repo`, `2048` — git-config key segments reject `_` and leading digits), a subsection can:
 
 ```ini
-[jot]
-	backend = entry point: cmd/server/main.go — start here to trace startup
-	backend = role: owns the public /auth API — add for any login/accounts task
-	frontend = entry point: src/main.tsx — app bootstrap
+[jot "backend"]
+	entry = entry point: cmd/server/main.go — start here to trace startup
+	entry = role: owns the public /auth API — add for any login/accounts task
+[jot "frontend"]
+	entry = entry point: src/main.tsx — app bootstrap
 ```
 
 Entries are card-scoped: a role or an MVP/VIP entry point the card needs (jot only feeds the card). Deep structure (framework choice, module internals) is out of card scope and is not jotted. Every entry is a real discovery — orbit writes no system placeholders into the queue.
 
-`orbit jot <repo> --pop` outputs all values for the specified repo key, then removes them via `git config --unset-all`. Pop is consume-on-read — entries are deleted after retrieval.
+`orbit jot <repo> --pop` outputs all values in the repo's `[jot "<repo>"]` subsection, then removes them via `git config --unset-all`. Pop is consume-on-read — entries are deleted after retrieval.
 
 After `orbit done` writes:
 

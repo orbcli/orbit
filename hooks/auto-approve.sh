@@ -52,11 +52,34 @@ case "$subcmd" in
   *) exit 0 ;;
 esac
 
-# sync --force does `git reset --hard` on the pool repo (destructive) — still prompt.
+# Strip quotes and backslashes from a single shell token. The result is the
+# shape orbit actually receives as an argument after bash parsing — the
+# TypeScript twin is bare() in .opencode-plugin/plugin.ts.
+normalize_token() {
+  local tok="$1"
+  tok=${tok//\'/}
+  tok=${tok//\"/}
+  tok=${tok//\\/}
+  printf '%s\n' "$tok"
+}
+
+# sync --force resets the pool repo; sync --branch rewrites pool-wide state
+# (checked-out branch, origin/HEAD, fetch refspecs every worktree relies on).
+# Both are destructive — still prompt.
+#
+# Match on normalized tokens, not raw text: bash passes `'--force'`,
+# `--force''` and `\-\-force` to orbit as the very same `--force`, so
+# normalizing per token is what makes the guard match what the CLI will
+# actually see. Tokens are still compared whole — a `--forceful` or
+# `--force=x` spelling must not trip it.
 if [ "$subcmd" = "sync" ]; then
-  case " $rest " in
-    *" --force "*) exit 0 ;;
-  esac
+  set -f  # word-split $rest without letting a '*' argument glob the filesystem
+  for tok in $rest; do
+    case "$(normalize_token "$tok")" in
+      --force|--branch) exit 0 ;;
+    esac
+  done
+  set +f
 fi
 
 printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"orbit %s: read-only / idempotent workspace command auto-approved by the orbit plugin"}}\n' "$subcmd"

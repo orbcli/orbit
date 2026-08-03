@@ -42,7 +42,8 @@ cd ..
 orbit done --pr https://github.com/org/backend/pull/42
 orbit done --pr https://github.com/org/frontend/pull/43
 
-# (human) Reclaim after PRs are merged
+# (human) Reclaim after PRs are merged — prune runs from the project root only
+cd ..
 orbit prune task-01
 ```
 
