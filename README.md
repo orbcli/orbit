@@ -28,9 +28,9 @@ I built Orbit because I was tired of copy-pasting context between repo sessions 
 |------|---------|---------|-----------|------------|
 | Agent memory | Low — stale | ✗ None | — | ✗ Per-session |
 | Web search | Medium — fragments | ✗ None | — | ✗ None |
-| Add directory | High — per-dir | ✓ Per-repo | ✓ Yes | ✗ Virtual scope |
+| Add directory | High — per-dir | ✓ Per-repo | ✓ Yes | ✗ No unified tree |
 | RAG | Medium — loses structure | ✗ Lost in chunks | ✗ Read-only | ✗ Per-query |
-| **Orbit** | **High — grep, trace** | **✓ Full git** | **✓ Commit, push** | **✓ Workspace-scoped** |
+| **Orbit** | **High — grep, trace** | **✓ Full git** | **✓ Commit, push** | **✓ Unified tree** |
 
 **Parallel isolation.** Each workspace is an independent multi-repo worktree combination. Multiple agents work in parallel, each in its own workspace — no branch conflicts, no state leaking between tasks. Reusing a single workspace across tasks means branch contamination and agent interference; isolation is what makes multi-task, multi-agent practical.
 

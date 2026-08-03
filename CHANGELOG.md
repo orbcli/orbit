@@ -12,7 +12,7 @@ Hardens the destructive surface: `prune` and `sync --force`/`--branch` become ma
 
 - **BREAKING:** `ORBIT_BRANCH_PREFIX` no longer read — use `orbit config branch.prefix` before creating/pruning branches.
 - **BREAKING:** `prune --force` now overrides the data guards too, not just branch protection.
-- **BREAKING:** `prune` and `sync --force`/`--branch` run from the project root only.
+- **BREAKING:** `prune` and `sync --force`/`--branch` run from the project root only — enforced on the **process tree**, not just the cwd: the whole invocation is refused when any ancestor process stands inside a workspace, whichever workspace is targeted. "Inside a workspace" is structural (any non-reserved directory directly under the root, `.repos` and dotdirs excluded), so a plain junk directory at the root is refused too. No flag releases it (`--force`, `--dry-run`, `--verify` included); run from a shell started outside every workspace.
 - **BREAKING:** `prune` left the skill's action surface — agents report the need, humans run it.
 - Prune's stderr messages changed — contract in [`docs/spec-warnings.md`](docs/spec-warnings.md) → Refusals and skips.
 
@@ -20,7 +20,8 @@ Hardens the destructive surface: `prune` and `sync --force`/`--branch` become ma
 
 #### Security
 
-- `orbit prune`: root-only, active-session detection via process ancestry, uncommitted-changes skip, bypass-free refusals — guards in [`docs/spec-lifecycle.md`](docs/spec-lifecycle.md) → Prune Safety Guards.
+- `orbit prune`: root-only, target-independent initiation guard via process ancestry, uncommitted-changes skip, bypass-free refusals — guards in [`docs/spec-lifecycle.md`](docs/spec-lifecycle.md) → Prune Safety Guards.
+- Refusals replay the intended command (`cd <root> && orbit <cmd> <args>`, your argv verbatim) only when the ancestry walk ran and came back clean; a blind walk (no `/proc`, no `lsof`, no usable `ps`) states the fact alone — a guard that cannot see must not hand out a ready-to-run destructive command. Workspace detection needs no `.orbit` marker either: metadata is disposable, and a guard a lost file can disable is no guard.
 - Prune also skips top-level non-pool git repos (a `.git` directory is an independent clone, whatever its name) and unmerged jots (`--force` overrides, `--dry-run` reports).
 - `sync --force`/`--branch` root-only; `--branch` keeps unrelated fetch refspecs and rolls back on failure — [`docs/spec-commands.md`](docs/spec-commands.md) → sync.
 - Repo names validated as pool basenames in `sync`/`add`/`info`/`memo`/`clone --name` (path-traversal fix). Charset aligned with GitHub (`[A-Za-z0-9._-]`); leading `.`/`-` rejected — contract in [`docs/spec-commands.md`](docs/spec-commands.md) → Repo Name Contract.

@@ -91,17 +91,19 @@ Naming `memo <repo>` on the screening notes would be wrong: you cannot write an 
 
 ## Refusals and skips (deliberately no named action)
 
-A third class: a destructive command declining to act. These state the fact and stop — naming a way forward is exactly what they must not do. The rule comes from a real incident: `prune`'s old skip line (`skipping <ws>: you are currently in this workspace`) read as an instruction, and the agent followed it — `cd` out, prune by name, workspace gone. **Audit every refusal by assuming the receiver will do what it says.**
+A third class: a destructive command declining to act. These state the fact and stop — naming a way forward is exactly what they must not do. The rule comes from a real incident: `prune`'s old skip line (`skipping <ws>: you are currently in this workspace`) read as an instruction, and the agent followed it — `cd` out, prune by name, workspace gone. **Audit every refusal by assuming the receiver will do what it says.** The one exception that may keep a remedy: the root-level guard replays `cd <root> && orbit <cmd>` only when the ancestry is **readable and confirmed clean** and orbit's own cwd is misplaced — there, "run from the project root" is the intended usage, not a bypass. When the ancestry is unreadable the guard cannot vouch the session is clean, so it drops the replay and states the fact alone (a blind guard must never hand out a ready-to-run destructive command).
 
 | Refusal | Command + condition | Source |
 |:--------|:--------------------|:-------|
-| `prune must be run from the project root` | `orbit prune` with CWD inside any workspace (aborts) | `orbit_prune` |
-| `sync --force must be run from the project root` (or `--force/--branch` when both are given) | `orbit sync` with a destructive flag and CWD inside any workspace (aborts) | `orbit_sync` |
-| `cannot prune workspace with an active session: <ws>` | `orbit prune <ws>`, an ancestor process is rooted in it (aborts) | `orbit_prune` |
-| `skipping <ws>: workspace has an active session` | `orbit prune` enumeration, ancestor rooted in the candidate | `orbit_prune` |
+| `prune must be run from the project root — cd <root> && orbit prune <args>` | `orbit prune` with CWD inside a workspace AND a readable, clean ancestry (aborts) | `orbit_prune` |
+| `prune must be run from the project root` (no replay) | `orbit prune` with CWD inside a workspace but ancestry unreadable — blind guard withholds the replay (aborts) | `orbit_prune` |
+| `prune should not be initiated from inside workspace <ws>` | `orbit prune […]`: an ancestor cwd is inside any workspace, at any depth (aborts the whole invocation, named and enumeration alike) | `orbit_prune` |
 | `skipping <ws>: <reason>[; <reason>...]` | `orbit prune` without `--force`; reasons are `uncommitted changes in: <repos>` / `git repos not from the pool: <repos>` / `unmerged jots in: <repo> (<n>)`, all applicable ones joined by `; ` | `orbit_prune` |
-| `cannot read process ancestry on this host: the active-session guard is inactive` | `orbit prune`, not one ancestor cwd could be read (no `/proc`, no `lsof`, or no usable `ps`) | `orbit_collect_ancestor_cwds` |
+| `cannot read process ancestry on this host: the initiation guard is inactive` | `orbit prune`, not one ancestor cwd could be read (no `/proc`, no `lsof`, or no usable `ps`) | `orbit_collect_ancestor_cwds` |
 | `skipping unmerged branch: <branch> (content already upstream — squash/rebase merge? clean up: git -C "<pool>" branch -D "<branch>")` | `orbit prune` branch cleanup: ancestor check fails but the branch's content is fully in `origin/<default>` (cost-ordered detection: `git merge-tree` ≥ 2.38, else `git cherry`; an unresolvable upstream never fires the hint) | `orbit_branch_protection_delete` |
+| `sync <flags> should not be initiated from inside workspace <ws>` | `orbit sync --force` / `--branch`: an ancestor cwd is inside any workspace (aborts; shared guard with `prune` — `orbit_require_root_scope`) | `orbit_sync` |
+| `sync <flags> must be run from the project root — cd <root> && orbit sync <args>` | `orbit sync --force` / `--branch` with CWD inside a workspace AND a readable, clean ancestry (aborts) | `orbit_sync` |
+| `sync <flags> must be run from the project root` (no replay) | `orbit sync --force` / `--branch` with CWD inside a workspace but ancestry unreadable — blind guard withholds the replay (aborts) | `orbit_sync` |
 | `branch.prefix is part of existing branch names under '<current>/': <repo> (n)` | `orbit config branch.prefix <new>` while branches still carry the current prefix (aborts) | `orbit_config` |
 | `invalid branch.prefix: <value>` | `orbit config branch.prefix` with a value that is not one refname-legal segment (aborts) | `orbit_config` |
 | `invalid repo name: <name> (expected a pool repo basename: [A-Za-z0-9._-], no leading '.' or '-')` | `clone --name` / `add` / `info` / `memo` / `sync` with a repo name outside the contract in [spec-commands.md](spec-commands.md#repo-name-contract) (aborts; `sync` skips that argument) | `orbit_require_repo_name` / `orbit_sync_one` |

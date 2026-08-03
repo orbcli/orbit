@@ -346,7 +346,7 @@ orbit prune --force               # Skip branch + data protections
 
 > **Note**: `prune` will delete candidate workspace directories. Branches are only cleaned when protection conditions are met (branches are preserved without `--force` if unmerged). It's recommended to use `--dry-run` first to preview what will be cleaned.
 >
-> `prune` must be run from the project root — it refuses to run inside any workspace. It also skips a workspace your session is rooted in (detected via process ancestry, not CWD, so `cd`-ing out first does not bypass it), and — unless `--force` is given — workspaces with uncommitted changes, workspaces holding a git repo that isn't from the pool (a `git clone` made inside the workspace: its objects live nowhere else), and workspaces with jots that were never merged into a memo.
+> `prune` must be run from the project root — it refuses the invocation when any process in the invoking shell's ancestry is rooted inside a workspace (detected via process ancestry, not CWD, so `cd`-ing out first does not bypass it). If only your own CWD is inside a workspace and the ancestry check can run and comes back clean, it replays the exact command to run from the root. Unless `--force` is given, it also skips workspaces with uncommitted changes, workspaces holding a git repo that isn't from the pool (a `git clone` made inside the workspace: its objects live nowhere else), and workspaces with jots that were never merged into a memo.
 
 ## 11. Environment Variables
 
@@ -491,7 +491,7 @@ Checks:
 - git version (≥ 2.20; bootstrapping the first commit of an empty repo needs ≥ 2.42, since `orbit add` uses `git worktree add --orphan`)
 - bash version (≥ 3.2)
 - Optional tools (jq, gh)
-- Process-ancestry facility (`/proc` on Linux, `lsof` on macOS) — prune's session-rooted guard is best-effort and needs one of them; without either it warns and prune falls back to the root-level guard only
+- Process-ancestry facility (`/proc` on Linux, `lsof` on macOS) — prune's initiation guard is best-effort and needs one of them; without either it warns, the guard is inactive, and a misplaced cwd gets no cd replay
 - Project structure (`.repos/` existence, repo count, workspace count)
 
 `orbit doctor` can be executed from anywhere; being inside an orbit project is not required. It also prints the orbit runtime version, which you can query on its own with `orbit version` (aliases: `--version`, `-v`).

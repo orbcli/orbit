@@ -304,6 +304,29 @@ orbit_reserved_workspace() {
   esac
 }
 
+# Print the name of the workspace containing the given path, nothing if none.
+# "Looks like a workspace" = a non-reserved direct child of the project root;
+# any depth below it counts (workspaces host repos and nested dirs). Detection
+# is purely structural — it does NOT require a .orbit marker: workspace metadata
+# is disposable (Principle 3), so a lost or absent .orbit must never quietly
+# disable a destructive-op guard. orbit_reserved_workspace already excludes
+# .repos/.git and every dotdir, so the pool index cannot be mistaken for one.
+orbit_ws_containing_dir() {
+  local root="$1" path="$2" root_phys path_phys rel first
+  root_phys=$(cd "$root" 2>/dev/null && pwd -P) || return 1
+  [ -d "$path" ] || return 1
+  path_phys=$(cd "$path" 2>/dev/null && pwd -P) || return 1
+  case "$path_phys" in
+    "$root_phys") return 1 ;;
+    "$root_phys"/*) ;;
+    *) return 1 ;;
+  esac
+  rel="${path_phys#"$root_phys/"}"
+  first="${rel%%/*}"
+  orbit_reserved_workspace "$first" && return 1
+  printf '%s\n' "$first"
+}
+
 orbit_tracking_branch() {
   local prefix ws name
   prefix=$(orbit_require_prefix) || return 1
@@ -481,24 +504,19 @@ orbit_infer_workspace() {
 }
 
 # True when the CWD is inside some workspace (the project root itself and
-# reserved dirs are not). Root-only commands gate on this instead of
-# orbit_infer_workspace: the comparison is on physical paths, because a cwd
-# reached through a symlink (macOS /tmp -> /private/tmp) fails a logical prefix
-# match, and an isolation guard that silently does not fire is the bug class
-# this whole family of checks exists to prevent.
+# reserved dirs are not). Delegates to orbit_ws_containing_dir so the cwd guard
+# and the ancestry guard answer "what counts as a workspace" with one rule.
+# The comparison is on physical paths, because a cwd reached through a symlink
+# (macOS /tmp -> /private/tmp) fails a logical prefix match, and an isolation
+# guard that silently does not fire is the bug class this whole family of checks
+# exists to prevent — which is also why an unreadable cwd answers "inside":
+# a deleted working directory cannot be proven to be outside a workspace, and
+# guessing "outside" is exactly the silent non-firing to avoid. The refusal that
+# follows names the project root, which is the fix for a deleted cwd anyway.
 orbit_cwd_inside_workspace() {
-  local root="$1" root_phys cwd_phys rel first
-  root_phys=$(cd "$root" 2>/dev/null && pwd -P) || return 1
-  cwd_phys=$(pwd -P)
-  case "$cwd_phys" in
-    "$root_phys") return 1 ;;
-    "$root_phys"/*) ;;
-    *) return 1 ;;
-  esac
-  rel="${cwd_phys#"$root_phys/"}"
-  first="${rel%%/*}"
-  orbit_reserved_workspace "$first" && return 1
-  return 0
+  local cwd
+  cwd=$(pwd -P 2>/dev/null) || return 0
+  orbit_ws_containing_dir "$1" "$cwd" >/dev/null
 }
 
 orbit_infer_repo() {
@@ -583,7 +601,7 @@ orbit_collect_ancestor_cwds() {
     depth=$((depth + 1))
   done
   if [ -z "$ORBIT_ANCESTOR_CWDS" ]; then
-    printf 'orbit: cannot read process ancestry on this host: the active-session guard is inactive\n' >&2
+    printf 'orbit: cannot read process ancestry on this host: the initiation guard is inactive\n' >&2
   fi
 }
 
@@ -592,22 +610,73 @@ orbit_collect_ancestor_cwds() {
 # rooted in <dir>" must be checked on the process tree — a shell can cd out,
 # but the session's ancestor chain keeps its launch cwd. Positive match only:
 # unreadable cwds are skipped and the walk continues.
-orbit_session_rooted_in() {
-  local target="$1" cwd
-  # Normalize to the physical path: lsof//proc report resolved cwds, so a
-  # logical target (e.g. under /var -> /private/var) would never match.
-  target=$(cd "$target" 2>/dev/null && pwd -P) || return 1
+orbit_session_workspace() {
+  local root="$1" cwd ws
+  # orbit_ws_containing_dir physical-normalizes each ancestor cwd itself
+  # (lsof//proc report resolved paths).
   orbit_collect_ancestor_cwds
   [ -n "$ORBIT_ANCESTOR_CWDS" ] || return 1
   while IFS= read -r cwd; do
     [ -n "$cwd" ] || continue
-    case "$cwd" in
-      "$target"|"$target"/*) return 0 ;;
-    esac
+    if ws=$(orbit_ws_containing_dir "$root" "$cwd"); then
+      printf '%s\n' "$ws"
+      return 0
+    fi
   done <<EOF
 $ORBIT_ANCESTOR_CWDS
 EOF
   return 1
+}
+
+# Shared guard for destructive root-scoped operations (prune, sync --force /
+# --branch). One rule: the invocation must come from a process tree standing
+# entirely outside every workspace.
+#   $1 root  $2 subcommand name (replay prefix)  $3 display name (message
+#   prefix, may name flags)  $4+ original args (for the cd replay)
+# Refuses (orbit_fail + return 1) when blocked; returns 0 when it may proceed.
+# Every failure path returns explicitly rather than leaning on the caller's
+# set -e, so the guard stays correct even if a future caller invokes it in a
+# condition context (which would disable set -e for its whole body).
+orbit_require_root_scope() {
+  local root="$1" subcmd="$2" display="$3"
+  shift 3
+  local ws_hit
+
+  # Walk the ancestry HERE, in this shell. orbit_session_workspace is called in
+  # a command substitution below, and a subshell's assignments never reach the
+  # caller — reading ORBIT_ANCESTOR_CWDS after it would always see the empty
+  # initial value and mistake a readable ancestry for a blind one. Collecting
+  # first also lets the subshell inherit the cache: one walk, one blind-spot
+  # warning.
+  orbit_collect_ancestor_cwds
+
+  # Primary, target-independent guard: any ancestor process rooted inside any
+  # workspace aborts the whole invocation. A parent's cwd can't be cd'd away,
+  # so there is no remedy to offer — state the fact and stop.
+  if ws_hit=$(orbit_session_workspace "$root"); then
+    orbit_fail "$display should not be initiated from inside workspace $ws_hit"
+    return 1
+  fi
+
+  # Fallback guard: orbit's own cwd is misplaced into a workspace.
+  if orbit_cwd_inside_workspace "$root"; then
+    # Replay the intended command ONLY when the ancestry actually ran and came
+    # back clean (ORBIT_ANCESTOR_CWDS populated above). When it was blind (no
+    # readable ancestor cwd), we cannot vouch the session isn't rooted in a
+    # workspace, so handing back a ready-to-run `cd <root> && orbit ...` could
+    # walk the operator straight into deleting the live workspace they are in
+    # — give the fact only.
+    if [ -z "$ORBIT_ANCESTOR_CWDS" ]; then
+      orbit_fail "$display must be run from the project root"
+      return 1
+    fi
+    local replay="" arg
+    for arg in "$@"; do replay="$replay $(printf '%q' "$arg")"; done
+    orbit_fail "$display must be run from the project root — cd $(printf '%q' "$root") && orbit $subcmd$replay"
+    return 1
+  fi
+
+  return 0
 }
 
 orbit_ensure_workspace_orbit() {
@@ -1456,6 +1525,7 @@ orbit_sync_one() {
 
 orbit_sync() {
   local force=0 new_branch="" repos=()
+  local orig_args=("$@")
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1484,9 +1554,7 @@ orbit_sync() {
       [ -n "$scoped_flags" ] && scoped_flags="$scoped_flags/"
       scoped_flags="$scoped_flags--branch"
     fi
-    if orbit_cwd_inside_workspace "$root"; then
-      orbit_fail "sync $scoped_flags must be run from the project root"
-    fi
+    orbit_require_root_scope "$root" "sync" "sync $scoped_flags" ${orig_args[@]+"${orig_args[@]}"}
   fi
 
   local ws_ctx=""
@@ -2482,6 +2550,7 @@ orbit_branch_protection_delete() {
 
 orbit_prune() {
   local older="" dry_run=0 force=0 verify=0 target_ws=""
+  local orig_args=("$@")
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -2497,19 +2566,9 @@ orbit_prune() {
   local root
   root=$(orbit_require_root) || return 1
 
-  # Prune is a root-level destructive operation: refuse from inside ANY
-  # workspace (workspace = agent scope boundary; cross-scope destructive ops
-  # belong to the scope above).
-  if orbit_cwd_inside_workspace "$root"; then
-    orbit_fail "prune must be run from the project root"
-  fi
-
-  # Session protection: a shell can cd anywhere, so "currently inside" is not
-  # checkable via cwd — check the process ancestry instead. A session rooted
-  # in the target stays rooted there no matter where its shells cd.
-  if [ -n "$target_ws" ] && orbit_session_rooted_in "$root/$target_ws"; then
-    orbit_fail "cannot prune workspace with an active session: $target_ws"
-  fi
+  # Prune is a root-level destructive operation: target-independent guard,
+  # shared with the other root-scoped commands (see orbit_require_root_scope).
+  orbit_require_root_scope "$root" "prune" "prune" ${orig_args[@]+"${orig_args[@]}"}
 
   local older_seconds=0
   if [ -n "$older" ]; then
@@ -2609,17 +2668,6 @@ orbit_prune() {
         foreign_repos+=("$repo_name")
       fi
     done
-
-    # Session protection per candidate (enumeration path): never prune a
-    # workspace the current session is rooted in.
-    if orbit_session_rooted_in "$ws_dir"; then
-      if [ "$dry_run" = "1" ]; then
-        printf 'would skip: %s (workspace has an active session)\n' "$ws"
-      else
-        printf 'orbit: skipping %s: workspace has an active session\n' "$ws" >&2
-      fi
-      continue
-    fi
 
     # Data protection: never destroy uncommitted changes without --force.
     # Branch deletion has merged-checks below, but worktree removal nukes
@@ -2835,7 +2883,7 @@ orbit_doctor() {
   # /proc (Linux) or lsof (macOS). Without either, only the root-level guard
   # applies — surface that instead of failing silently open.
   if [ -d "/proc/$$" ] || command -v lsof >/dev/null 2>&1; then
-    printf '[OK]   process ancestry (/proc or lsof; prune session guard)\n'
+    printf '[OK]   process ancestry (/proc or lsof; prune initiation guard)\n'
   else
     printf '[WARN] no /proc and no lsof: prune cannot detect sessions rooted in a workspace (root-level guard still applies)\n'
   fi

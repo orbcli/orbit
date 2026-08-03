@@ -430,7 +430,7 @@ _push_update_to() {
 
   run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --branch feature"
   [ "$status" -ne 0 ]
-  assert_contains "$output" "sync --branch must be run from the project root"
+  assert_contains "$output" "sync --branch should not be initiated from inside workspace dev"
 }
 
 @test "sync --branch: bare sync still works from inside a workspace" {
@@ -565,7 +565,45 @@ _push_update_to() {
   # same shape as --branch, so it carries the same scope requirement.
   run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --force"
   [ "$status" -ne 0 ]
+  assert_contains "$output" "sync --force should not be initiated from inside workspace dev"
+}
+
+@test "sync --force: blind ancestry withholds the cd replay and states the fact alone" {
+  [ ! -d "/proc/$$" ] || skip "/proc present: ancestry is readable on this host"
+
+  local proj="$SANDBOX/sync-force-blind-no-replay"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "replay" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+
+  local stubs="$SANDBOX/no-ancestry-bin-sync"
+  mkdir -p "$stubs"
+  printf '#!/bin/sh\nexit 1\n' > "$stubs/ps"
+  printf '#!/bin/sh\nexit 1\n' > "$stubs/lsof"
+  chmod +x "$stubs/ps" "$stubs/lsof"
+
+  # cwd misplaced AND ancestry blind: shared guard withholds the replay so a
+  # blind guard never hands back a ready-to-run destructive command.
+  run bash -c "cd '$proj/dev' && PATH='$stubs':\$PATH ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --force 2>&1"
+  [ "$status" -ne 0 ]
   assert_contains "$output" "sync --force must be run from the project root"
+  [[ "$output" != *"&&"* ]]
+  [[ "$output" != *"cd $proj"* ]]
+}
+
+@test "sync --force: replays the intended command when the session is clean" {
+  # cwd misplaced but ancestry readable and clean (cd-then-exec) — mirror of the
+  # prune replay test; see tests/09_prune.bats for the topology rationale.
+  { [ -d "/proc/$$" ] || command -v lsof >/dev/null 2>&1; } || skip "no ancestry facility to prove a clean session"
+
+  local proj="$SANDBOX/sync-force-cd-replay"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "replay" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+
+  run bash -c "cd '$proj' && (cd '$proj/dev' && ORBIT_ROOT='$proj' exec bash '$ORBIT_CMD' sync myrepo --force) 2>&1"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "sync --force must be run from the project root — cd $proj && orbit sync myrepo --force"
 }
 
 @test "sync --force --branch: names both flags when both are given" {
@@ -575,7 +613,7 @@ _push_update_to() {
 
   run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --force --branch feature"
   [ "$status" -ne 0 ]
-  assert_contains "$output" "sync --force/--branch must be run from the project root"
+  assert_contains "$output" "sync --force/--branch should not be initiated from inside workspace dev"
 }
 
 @test "sync --force: still works from the project root" {

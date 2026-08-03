@@ -116,7 +116,7 @@ There is no standalone `orbit init` command. Commands that require `.repos/` (`c
 | `orbit jot` | ✗ error | ✓ (repo must be specified) | ✓ (repo inferred from CWD) |
 | `orbit switch` | ✗ error | ✓ (repo must be specified) | ✓ (repo inferred from CWD) |
 | `orbit done` | ✗ error | ✓ | ✓ (convenient for manual use) |
-| `orbit prune` | ✓ (skips active-session, dirty, foreign-repo and unmerged-jot candidates — see Prune Safety Guards in spec-lifecycle.md) | ✗ error (root-level only) | ✗ error (root-level only) |
+| `orbit prune` | ✓ (refuses the invocation when the process tree stands inside any workspace; skips dirty, foreign-repo and unmerged-jot candidates — see Prune Safety Guards in spec-lifecycle.md) | ✗ error (root-level only) | ✗ error (root-level only) |
 | `orbit status` | ✓ (requires `status <ws>` to specify) | ✓ (current workspace) | ✓ (current workspace) |
 | `orbit goal` | ✗ (not within workspace, error) | ✓ | ✓ |
 | `orbit context` | ✗ error | ✓ | ✓ |
@@ -253,7 +253,7 @@ orbit sync [repo...] [--force] [--branch <branch>]
 | `--force` | `fetch` + `reset --hard` | Locally diverged or ff failed |
 | `--branch <new>` | Switch fetch refspec + fetch + checkout | Change tracking branch |
 
-**Scope**: bare `sync` is callable from anywhere — `merge --ff-only` cannot lose data (it refuses on divergence). `--force` and `--branch` are **project root only**: both destroy or re-point state in the shared pool, which no single workspace owns, so the call has to come from the scope that does. Inside a workspace they abort with `sync <flags> must be run from the project root`.
+**Scope**: bare `sync` is callable from anywhere — `merge --ff-only` cannot lose data (it refuses on divergence). `--force` and `--branch` are **project root only**: both destroy or re-point state in the shared pool, which no single workspace owns, so the call has to come from the scope that does. They share `prune`'s initiation guard (`orbit_require_root_scope`; refusal messages in spec-warnings.md).
 
 **`--branch` detailed flow** (root-level only — it rewrites pool-wide state every workspace's worktrees depend on, so it is refused from inside any workspace, same rule as `prune`):
 1. Remove the fetch refspec of the branch being replaced (`orbit_remove_fetch_refspec`) — never `--unset-all`: refspecs other workspaces registered for their own branches, and user-configured wildcards, must survive
@@ -286,7 +286,7 @@ Environment health check; does not require being inside an orbit project.
   - bash version >= 3.2 (critical)
   - jq availability (optional, improves JSON handling)
   - gh availability (optional, enables PR-aware prune)
-  - process-ancestry facility (`/proc` or `lsof`) — warns when neither is present, since prune's session-rooted guard degrades to the root-level guard
+  - process-ancestry facility (`/proc` or `lsof`) — warns when neither is present, since prune's initiation guard degrades to the root-level cwd check
 - If inside an orbit project: additionally reports `.repos/` structural integrity, repo count, workspace count
 - Exit code: 0 = all critical checks pass, 1 = critical failure exists
 - Output format: `[OK]` / `[FAIL]` / `[WARN]` prefixed lines, human-readable

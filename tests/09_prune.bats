@@ -540,7 +540,7 @@ setup_project_with_done_workspace() {
 
   run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
   [ "$status" -ne 0 ]
-  assert_contains "$output" "must be run from the project root"
+  assert_contains "$output" "prune should not be initiated from inside workspace dev"
   assert_dir_exists "$proj/dev"
 }
 
@@ -562,25 +562,46 @@ setup_project_with_done_workspace() {
   # the ancestry guard.
   run bash -c "cd '$proj/dev' && (cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune dev); rc=\$?; exit \$rc"
   [ "$status" -ne 0 ]
-  assert_contains "$output" "cannot prune workspace with an active session: dev"
+  assert_contains "$output" "prune should not be initiated from inside workspace dev"
   assert_dir_exists "$proj/dev"
 }
 
-@test "prune: skips workspace with an active session on the enumeration path" {
+@test "prune: refuses enumeration outright when a shell ancestor is rooted in a workspace" {
   local proj="$SANDBOX/prune-rooted-enum"
   clone_project "$proj"
   (cd "$proj" && orbit new "rooted enum test" --name dev >/dev/null 2>&1)
   (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
   (cd "$proj/dev" && orbit done >/dev/null 2>&1)
 
-  # same parked-ancestor topology as above — keep the subshell + trailing exit
+  # same parked-ancestor topology as above — keep the subshell + trailing exit.
+  # Initiation-context guard: the whole invocation is invalid (no per-candidate
+  # skip-and-continue), because the process tree stands inside a workspace.
   run bash -c "cd '$proj/dev' && (cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1); rc=\$?; exit \$rc"
-  [ "$status" -eq 0 ]
-  assert_contains "$output" "skipping dev: workspace has an active session"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "prune should not be initiated from inside workspace dev"
   assert_dir_exists "$proj/dev"
 }
 
-@test "prune: announces an inactive session guard when ancestry is unreadable" {
+@test "prune: refuses to prune ANOTHER workspace when rooted in one (target-independent guard)" {
+  local proj="$SANDBOX/prune-rooted-other"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "home" --name dev >/dev/null 2>&1)
+  (cd "$proj" && orbit new "other" --name other >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  (cd "$proj/other" && orbit add myrepo >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+  (cd "$proj/other" && orbit done >/dev/null 2>&1)
+
+  # parked in dev, pruning done "other" from the root: the guard no longer
+  # asks WHICH workspace is targeted — standing inside any workspace is enough
+  run bash -c "cd '$proj/dev' && (cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune other); rc=\$?; exit \$rc"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "prune should not be initiated from inside workspace dev"
+  assert_dir_exists "$proj/other"
+  assert_dir_exists "$proj/dev"
+}
+
+@test "prune: announces an inactive initiation guard when ancestry is unreadable" {
   # On a /proc host the ancestry is always readable — the blind-spot path
   # cannot be constructed there.
   [ ! -d "/proc/$$" ] || skip "/proc present: ancestry is readable on this host"
@@ -602,7 +623,80 @@ setup_project_with_done_workspace() {
   cd "$SANDBOX"
   run bash -c "cd '$proj' && PATH='$stubs':\$PATH ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
   [ "$status" -eq 0 ]
-  assert_contains "$output" "cannot read process ancestry on this host: the active-session guard is inactive"
+  assert_contains "$output" "cannot read process ancestry on this host: the initiation guard is inactive"
+}
+
+@test "prune: blind ancestry withholds the cd replay and states the fact alone" {
+  [ ! -d "/proc/$$" ] || skip "/proc present: ancestry is readable on this host"
+
+  local proj="$SANDBOX/prune-blind-no-replay"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "replay" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  local stubs="$SANDBOX/no-ancestry-bin"
+  mkdir -p "$stubs"
+  printf '#!/bin/sh\nexit 1\n' > "$stubs/ps"
+  printf '#!/bin/sh\nexit 1\n' > "$stubs/lsof"
+  chmod +x "$stubs/ps" "$stubs/lsof"
+
+  # cwd misplaced AND ancestry blind: the guard cannot vouch the session is
+  # clean, so it must NOT hand back a ready-to-run `cd <root> && orbit ...`.
+  run bash -c "cd '$proj/dev' && PATH='$stubs':\$PATH ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run 2>&1"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "prune must be run from the project root"
+  [[ "$output" != *"&&"* ]]
+  [[ "$output" != *"cd $proj"* ]]
+  assert_dir_exists "$proj/dev"
+}
+
+@test "prune: root-level guard replays the intended command when the session is clean" {
+  # Construct "orbit's own cwd misplaced, ancestry readable and clean" via a
+  # cd-then-exec: the outer shell stays at the root, only orbit's cwd is inside
+  # the workspace. Needs some ancestry facility — with none, the blind path
+  # (previous test) applies instead.
+  { [ -d "/proc/$$" ] || command -v lsof >/dev/null 2>&1; } || skip "no ancestry facility to prove a clean session"
+
+  local proj="$SANDBOX/prune-cd-replay"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "replay" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+
+  run bash -c "cd '$proj' && (cd '$proj/dev' && ORBIT_ROOT='$proj' exec bash '$ORBIT_CMD' prune dev) 2>&1"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "prune must be run from the project root — cd $proj && orbit prune dev"
+  assert_dir_exists "$proj/dev"
+}
+
+@test "prune: refuses when the cwd itself is unreadable (deleted directory)" {
+  local proj="$SANDBOX/prune-deleted-cwd"
+  clone_project "$proj"
+  (cd "$proj" && orbit new "deleted cwd" --name dev >/dev/null 2>&1)
+  (cd "$proj/dev" && orbit done >/dev/null 2>&1)
+  mkdir -p "$proj/dev/sub"
+
+  # An unreadable cwd cannot be proven to be outside a workspace: `pwd -P` fails,
+  # so the guard must answer "inside" rather than guess "outside" and proceed.
+  cd "$SANDBOX"
+  run bash -c "cd '$proj/dev/sub' && rmdir '$proj/dev/sub' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "prune must be run from the project root"
+  assert_dir_exists "$proj/dev"
+}
+
+@test "prune: refuses from a non-workspace junk dir at the root (structural, no .orbit needed)" {
+  local proj="$SANDBOX/prune-junk-dir"
+  clone_project "$proj"
+  # a plain directory at the project root — never an orbit workspace, no .orbit.
+  # Metadata is disposable, so the guard is structural: a non-reserved child of
+  # the root is refused regardless of any marker.
+  mkdir -p "$proj/notes"
+  run bash -c "cd '$proj/notes' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "should not be initiated from inside workspace notes"
+  assert_dir_exists "$proj/notes"
 }
 
 # --- Data protection: uncommitted changes ---
@@ -852,7 +946,7 @@ setup_project_with_done_workspace() {
 
 # --- Guard invariants ---
 
-@test "prune: --force does not bypass the active-session guard" {
+@test "prune: --force does not bypass the cwd guard" {
   local proj="$SANDBOX/prune-force-session"
   clone_project "$proj"
   (cd "$proj" && orbit new "force session" --name dev >/dev/null 2>&1)
@@ -860,11 +954,11 @@ setup_project_with_done_workspace() {
   (cd "$proj/dev" && orbit done >/dev/null 2>&1)
 
   # --force releases the DATA guards (dirty / foreign / jots) by design; it must
-  # never release the session guard — that one protects the session's own footing.
+  # never release the initiation guard — that one protects the session's own footing.
   # Parked-ancestor topology: keep the subshell + trailing exit.
   run bash -c "cd '$proj/dev' && (cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune dev --force); rc=\$?; exit \$rc"
   [ "$status" -ne 0 ]
-  assert_contains "$output" "cannot prune workspace with an active session: dev"
+  assert_contains "$output" "prune should not be initiated from inside workspace dev"
   assert_dir_exists "$proj/dev"
 }
 
@@ -876,7 +970,7 @@ setup_project_with_done_workspace() {
 
   run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --force"
   [ "$status" -ne 0 ]
-  assert_contains "$output" "must be run from the project root"
+  assert_contains "$output" "prune should not be initiated from inside workspace dev"
   assert_dir_exists "$proj/dev"
 }
 
@@ -892,7 +986,7 @@ setup_project_with_done_workspace() {
 
   run bash -c "cd -L '$SANDBOX/dev-link' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
   [ "$status" -ne 0 ]
-  assert_contains "$output" "must be run from the project root"
+  assert_contains "$output" "prune should not be initiated from inside workspace dev"
   assert_dir_exists "$proj/dev"
 }
 

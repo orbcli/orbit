@@ -93,8 +93,8 @@ The time source for `--older` is the `done-at` field in the workspace `.orbit` f
 
 `orbit prune` is a root-level destructive operation and guards against destroying live work:
 
-- **Root-level only**: it refuses to run when the CWD is inside any workspace — cross-scope destructive ops belong to the scope above (workspace = agent scope boundary). The comparison is on physical paths, so a cwd reached through a symlink cannot slip past it.
-- **Active-session protection**: it never prunes a workspace the current session is rooted in. The check walks the process ancestry (per-ancestor cwd via `lsof` on macOS, `/proc/<pid>/cwd` on Linux; parent pids from `/proc/<pid>/stat` when available, else `ps`) instead of trusting the invoking shell's CWD — a shell can `cd` out, but a session's launch directory stays on its process tree. Target paths are normalized to physical form (`pwd -P`) so symlinked roots (e.g. `/var` → `/private/var`) still match the resolved cwds reported by the OS. On the enumeration path the candidate is skipped; on the named-target path prune errors out. The ancestry walk is best-effort and **announces its own blind spot**: if not a single ancestor cwd could be read (no `/proc`, no `lsof`, or a `ps` without `-o` support), prune says the guard is inactive rather than proceeding as if it had checked (`orbit doctor` reports the facility too).
+- **Root-level only**: it refuses to run when the CWD is inside any workspace — cross-scope destructive ops belong to the scope above (workspace = agent scope boundary). The comparison is on physical paths, so a symlinked cwd cannot slip past. The refusal replays the intended command (`cd <root> && orbit prune <args>`), but only when the ancestry is readable and confirmed clean (next guard); when the ancestry is unreadable the replay is dropped and the refusal states the fact alone.
+- **Initiation-context protection (target-independent)**: prune refuses the whole invocation — named target and enumeration alike, one message — when any ancestor process's cwd is inside ANY workspace, at any depth (where the process tree stands, not which workspace is targeted). The check walks the process ancestry (per-ancestor cwd via `lsof` on macOS, `/proc/<pid>/cwd` on Linux; ppids from `/proc/<pid>/stat` when available, else `ps`) instead of trusting any shell's CWD — a shell can `cd`, but a session's launch directory stays on its process tree. Workspace detection is **structural**: any non-reserved direct child of the root (`.repos` and dotdirs excluded). It deliberately does **not** require a `.orbit` marker — workspace metadata is disposable (Principle 3), and a guard that a lost `.orbit` could silently disable would be no guard; a plain junk directory at the root is treated as workspace-like and refused too. The walk is best-effort and **announces its own blind spot**: with not one ancestor cwd readable (no `/proc`, no `lsof`, no usable `ps`), prune says the guard is inactive rather than proceeding as if it had checked (`orbit doctor` reports the facility too).
 - **Uncommitted-changes protection**: a candidate with a dirty worktree (uncommitted or untracked changes) is skipped unless `--force` is given; `--dry-run` reports it as `would skip`. An unreadable `git status` counts as dirty — "cannot tell" is not "clean".
 - **Foreign-repo protection**: a candidate holding a top-level git repo with no pool counterpart is skipped unless `--force` is given. A pool worktree always has a `.git` *file* (gitdir pointer), so a `.git` *directory* is an independent clone even under a pool repo's name — typically a `git clone` run inside the workspace. Its objects live in its own `.git`, so the workspace removal would destroy history that exists nowhere else — the worktree guards do not cover it.
 - **Unmerged-jot protection**: a candidate whose workspace `.orbit` still holds jot entries is skipped unless `--force` is given, with the per-repo counts named. `done` warns about residual jots once; this is the last checkpoint before the queue is destroyed with the directory.
@@ -103,20 +103,20 @@ Guard scope is the workspace's **top level**: the data guards enumerate every di
 
 The three data guards report **together**: all applicable reasons are joined into one skip line (`; `-separated) rather than surfacing one per run, because `--force` releases them as a single decision and the operator needs the whole set to make it once.
 
-`--force` releases the three **data** guards (uncommitted changes, foreign repo, unmerged jots) and the branch protections. It does **not** release the root-level or active-session guards: those protect the ground the running session stands on, not data the user can choose to discard.
+`--force` releases the three **data** guards (uncommitted changes, foreign repo, unmerged jots) and the branch protections. It does **not** release the initiation guards (root-level / ancestry): those protect where the running session stands, not data the user can choose to discard.
 
 Branch cleanup reports what it leaves: a local branch shaped like this workspace's (`*/<workspace>/*`) but outside the configured `branch.prefix` is named rather than silently left behind — it is not orbit's to delete (a raw-mode branch, or one created while the prefix held another value). Git holds the branch names, so they remain the recoverable record even if the config that named them is lost.
 
 The exact messages an agent sees (message text is part of the contract):
 
 ```text
-orbit: prune must be run from the project root
-orbit: cannot prune workspace with an active session: <ws>      # named target
-orbit: skipping <ws>: workspace has an active session            # enumeration
+orbit: prune should not be initiated from inside workspace <ws>            # any ancestor cwd ∈ any workspace (abort; named & enumeration alike)
+orbit: prune must be run from the project root — cd <root> && orbit prune <args>   # only orbit's own cwd misplaced, ancestry readable and clean
+orbit: prune must be run from the project root                             # cwd misplaced but ancestry unreadable — fact only, no replay
 orbit: skipping <ws>: uncommitted changes in: <repos>; git repos not from the pool: <repos>; unmerged jots in: <repo> (<n>)
 orbit: skipping unmerged branch: <branch> (content already upstream — squash/rebase merge? clean up: git -C "<pool>" branch -D "<branch>")
 orbit: <repo>: left branch outside branch.prefix: <branches>
-orbit: cannot read process ancestry on this host: the active-session guard is inactive
+orbit: cannot read process ancestry on this host: the initiation guard is inactive
 ```
 
 Under `--dry-run` each skip is reported on stdout as `would skip: <ws> (<reasons>)`. None of these name `--force`: a refusal must not double as instructions for getting around it.
