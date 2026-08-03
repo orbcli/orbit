@@ -538,7 +538,10 @@ setup_project_with_done_workspace() {
   (cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1)
   (cd "$proj/dev" && orbit done >/dev/null 2>&1)
 
-  run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
+  # Parked-ancestor topology: the trailing exit keeps bash from exec-collapsing
+  # the last command (Linux), which would replace this shell with orbit and
+  # leave a clean ancestry — the assertion is platform-dependent without it.
+  run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune; rc=\$?; exit \$rc"
   [ "$status" -ne 0 ]
   assert_contains "$output" "prune should not be initiated from inside workspace dev"
   assert_dir_exists "$proj/dev"
@@ -968,7 +971,8 @@ setup_project_with_done_workspace() {
   (cd "$proj" && orbit new "force root" --name dev >/dev/null 2>&1)
   (cd "$proj/dev" && orbit done >/dev/null 2>&1)
 
-  run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --force"
+  # Parked-ancestor topology: keep the trailing exit (see above).
+  run bash -c "cd '$proj/dev' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --force; rc=\$?; exit \$rc"
   [ "$status" -ne 0 ]
   assert_contains "$output" "prune should not be initiated from inside workspace dev"
   assert_dir_exists "$proj/dev"
@@ -984,7 +988,9 @@ setup_project_with_done_workspace() {
   # with the root — a logical comparison would let prune run inside the workspace.
   ln -s "$proj/dev" "$SANDBOX/dev-link"
 
-  run bash -c "cd -L '$SANDBOX/dev-link' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
+  # Parked-ancestor topology: keep the trailing exit (see above). The guard's
+  # physical normalization must see through the symlink either way.
+  run bash -c "cd -L '$SANDBOX/dev-link' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune; rc=\$?; exit \$rc"
   [ "$status" -ne 0 ]
   assert_contains "$output" "prune should not be initiated from inside workspace dev"
   assert_dir_exists "$proj/dev"
