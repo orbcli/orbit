@@ -347,6 +347,8 @@ orbit prune --force               # Skip branch + data protections
 > **Note**: `prune` will delete candidate workspace directories. Branches are only cleaned when protection conditions are met (branches are preserved without `--force` if unmerged). It's recommended to use `--dry-run` first to preview what will be cleaned.
 >
 > `prune` must be run from the project root — it refuses the invocation when any process in the invoking shell's ancestry is rooted inside a workspace (detected via process ancestry, not CWD, so `cd`-ing out first does not bypass it). If only your own CWD is inside a workspace and the ancestry check can run and comes back clean, it replays the exact command to run from the root. Unless `--force` is given, it also skips workspaces with uncommitted changes, workspaces holding a git repo that isn't from the pool (a `git clone` made inside the workspace: its objects live nowhere else), and workspaces with jots that were never merged into a memo.
+>
+> Beyond workspace directories, `prune` also reclaims **residue**: scoped branches whose workspace is already gone (grouped by that workspace, same merged/unmerged protection), and untraceable raw branches (no remote copy, no workspace — report only, with review/delete commands for you to dispose of by hand). Kept branches end in one closing suggestion per workspace: `orbit prune <ws> --force` — run it only after confirming nothing un-persisted would be lost.
 
 ## 11. Environment Variables
 

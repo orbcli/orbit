@@ -1062,3 +1062,333 @@ setup_project_with_done_workspace() {
   run git -C "$proj/.repos/myrepo" for-each-ref --format='%(refname:short)' refs/heads/team/
   assert_contains "$output" "team/dev/feature"
 }
+
+# --- Residue: ghost workspaces & untraceable branches ---
+
+@test "prune: ghost residue — unmerged scoped branch of a reclaimed workspace is named and kept" {
+  local proj="$SANDBOX/prune-ghost"
+  local remote="$REMOTES/prune-ghost-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  cd "$proj" && orbit new "ghost test" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+
+  git -C "$proj/dev/myrepo" checkout -b ws/dev/feat >/dev/null 2>&1
+  echo "wip" > "$proj/dev/myrepo/wip.txt"
+  git -C "$proj/dev/myrepo" add wip.txt
+  git -C "$proj/dev/myrepo" commit -m "wip" >/dev/null 2>&1
+  git -C "$proj/dev/myrepo" checkout ws/dev/main >/dev/null 2>&1
+
+  cd "$proj/dev" && orbit done >/dev/null 2>&1
+  cd "$SANDBOX"
+
+  # first prune: dir removed; ws/dev/main merged-deleted; feat kept + closing hint
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  [ ! -d "$proj/dev" ]
+  assert_contains "$output" "skipping unmerged branch: ws/dev/feat"
+  assert_contains "$output" "orbit prune dev --force"
+
+  # second prune: dev is a ghost — residue group, feat named and kept
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "residue: dev (reclaimed workspace)"
+  assert_contains "$output" "skipping unmerged branch: ws/dev/feat"
+  run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/heads/ws/dev/feat
+  [ "$status" -eq 0 ]
+}
+
+@test "prune: targeted ghost prune --force deletes the residue branches" {
+  local proj="$SANDBOX/prune-ghost-force"
+  local remote="$REMOTES/prune-ghost-force-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  cd "$proj" && orbit new "ghost force" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+
+  git -C "$proj/dev/myrepo" checkout -b ws/dev/feat >/dev/null 2>&1
+  echo "wip" > "$proj/dev/myrepo/wip.txt"
+  git -C "$proj/dev/myrepo" add wip.txt
+  git -C "$proj/dev/myrepo" commit -m "wip" >/dev/null 2>&1
+  git -C "$proj/dev/myrepo" checkout ws/dev/main >/dev/null 2>&1
+
+  cd "$proj/dev" && orbit done >/dev/null 2>&1
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune >/dev/null 2>&1"
+  [ "$status" -eq 0 ]
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune dev --force 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "deleted branch (force): ws/dev/feat"
+  run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/heads/ws/dev/feat
+  [ "$status" -ne 0 ]
+}
+
+@test "prune: reports untraceable raw branches with status and delete command" {
+  local proj="$SANDBOX/prune-raw-residue"
+  local remote="$REMOTES/prune-raw-residue-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  cd "$proj" && orbit new "raw residue" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+
+  # untraceable: raw name, no remote copy, not checked out
+  git -C "$proj/dev/myrepo" checkout -b raw-orphan >/dev/null 2>&1
+  echo "x" > "$proj/dev/myrepo/x.txt"
+  git -C "$proj/dev/myrepo" add x.txt
+  git -C "$proj/dev/myrepo" commit -m "x" >/dev/null 2>&1
+  git -C "$proj/dev/myrepo" checkout ws/dev/main >/dev/null 2>&1
+
+  # excluded: has a remote copy
+  git -C "$proj/.repos/myrepo" branch raw-pushed origin/main >/dev/null 2>&1
+  git -C "$proj/.repos/myrepo" update-ref refs/remotes/origin/raw-pushed origin/main
+
+  # excluded: upstream under a DIFFERENT name (release-style tracked branch)
+  git -C "$proj/.repos/myrepo" branch release-1.2 origin/main >/dev/null 2>&1
+  git -C "$proj/.repos/myrepo" update-ref refs/remotes/origin/release-x origin/main
+  git -C "$proj/.repos/myrepo" config branch.release-1.2.remote origin
+  git -C "$proj/.repos/myrepo" config branch.release-1.2.merge refs/heads/release-x
+
+  # excluded: checked out in a live workspace's worktree
+  cd "$proj" && orbit new "active" --name live >/dev/null 2>&1
+  cd "$proj/live" && orbit add myrepo >/dev/null 2>&1
+  git -C "$proj/live/myrepo" checkout -b raw-active >/dev/null 2>&1
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "untraceable branches (raw, no remote, no workspace)"
+  assert_contains "$output" "myrepo: raw-orphan (unmerged)"
+  assert_contains "$output" 'git -C ".repos/myrepo" branch -D raw-orphan'
+  [[ "$output" != *"raw-pushed"* ]]
+  [[ "$output" != *"raw-active"* ]]
+  [[ "$output" != *"release-1.2"* ]]
+}
+
+@test "prune: report does not leak git's native branch-deletion output" {
+  local proj="$SANDBOX/prune-no-native-leak"
+  clone_project "$proj"
+  cd "$proj" && orbit new "no leak" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+  cd "$proj/dev" && orbit done >/dev/null 2>&1
+  cd "$SANDBOX"
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "deleted branch (merged): ws/dev/main"
+  [[ "$output" != *"Deleted branch"* ]]
+}
+
+@test "prune --dry-run: ghost residue reported with would-forms, nothing deleted" {
+  local proj="$SANDBOX/prune-ghost-dry"
+  local remote="$REMOTES/prune-ghost-dry-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  cd "$proj" && orbit new "ghost dry" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+
+  git -C "$proj/dev/myrepo" checkout -b ws/dev/feat >/dev/null 2>&1
+  echo "wip" > "$proj/dev/myrepo/wip.txt"
+  git -C "$proj/dev/myrepo" add wip.txt
+  git -C "$proj/dev/myrepo" commit -m "wip" >/dev/null 2>&1
+  git -C "$proj/dev/myrepo" checkout ws/dev/main >/dev/null 2>&1
+
+  cd "$proj/dev" && orbit done >/dev/null 2>&1
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune >/dev/null 2>&1"
+  [ "$status" -eq 0 ]
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "residue: dev (reclaimed workspace)"
+  assert_contains "$output" "would skip unmerged branch: ws/dev/feat"
+  assert_contains "$output" "would keep 1 branch"
+  run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/heads/ws/dev/feat
+  [ "$status" -eq 0 ]
+}
+
+@test "prune: single-segment prefixed branch is raw residue, not a ghost that aborts the run" {
+  local proj="$SANDBOX/prune-single-segment"
+  local remote="$REMOTES/prune-single-segment-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+
+  # hand-made branch under the prefix but without the <prefix>/<ws>/<name>
+  # shape; --no-track keeps it untraceable (no configured upstream)
+  git -C "$proj/.repos/myrepo" branch --no-track ws/lonely origin/main >/dev/null 2>&1
+
+  # the run must complete (exit 0) and file the branch under raw residue
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "untraceable branches (raw, no remote, no workspace)"
+  assert_contains "$output" "myrepo: ws/lonely (merged)"
+  # raw arm of the three-condition: residue present ⇒ NOT "nothing to prune"
+  [[ "$output" != *"nothing to prune"* ]]
+  run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/heads/ws/lonely
+  [ "$status" -eq 0 ]
+
+  # no workspace named lonely exists — targeting it is a plain not-found
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune lonely 2>&1"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "workspace not found or not marked done: lonely"
+}
+
+@test "prune: raw residue disposal commands are shell-quoted" {
+  local proj="$SANDBOX/prune-quoted-cmds"
+  local remote="$REMOTES/prune-quoted-cmds-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  cd "$proj" && orbit new "quoted" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+
+  # git allows shell metacharacters in ref names; an agent copy-pasting the
+  # disposal command must not execute them
+  git -C "$proj/dev/myrepo" checkout -b 'evil;name' >/dev/null 2>&1
+  echo "x" > "$proj/dev/myrepo/x.txt"
+  git -C "$proj/dev/myrepo" add x.txt
+  git -C "$proj/dev/myrepo" commit -m "x" >/dev/null 2>&1
+  git -C "$proj/dev/myrepo" checkout ws/dev/main >/dev/null 2>&1
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" 'git -C ".repos/myrepo" branch -D evil\;name'
+  [[ "$output" != *'branch -D evil;name'* ]]
+}
+
+@test "prune: raw current-branch skip does NOT feed the closing block (scoped only)" {
+  local proj="$SANDBOX/prune-raw-skip"
+  local remote="$REMOTES/prune-raw-skip-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  cd "$proj" && orbit new "raw skip" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+
+  git -C "$proj/dev/myrepo" checkout -b wip-raw >/dev/null 2>&1
+  echo "wip" > "$proj/dev/myrepo/wip.txt"
+  git -C "$proj/dev/myrepo" add wip.txt
+  git -C "$proj/dev/myrepo" commit -m "wip" >/dev/null 2>&1
+
+  cd "$proj/dev" && orbit done >/dev/null 2>&1
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "skipping unmerged branch: wip-raw"
+  assert_contains "$output" "untraceable branches (raw, no remote, no workspace)"
+  assert_contains "$output" "myrepo: wip-raw"
+  # a raw skip must not produce a scoped force suggestion — the suggested
+  # command would error out (no ghost residue exists for a raw branch)
+  [[ "$output" != *"branch kept"* ]]
+  [[ "$output" != *"orbit prune dev --force"* ]]
+  [[ "$output" != *"nothing to prune"* ]]
+}
+
+@test "prune: closing block streams to stderr in a real run, stdout in dry-run" {
+  local proj="$SANDBOX/prune-streams"
+  local remote="$REMOTES/prune-streams-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  cd "$proj" && orbit new "streams" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+
+  git -C "$proj/dev/myrepo" checkout -b ws/dev/feat >/dev/null 2>&1
+  echo "wip" > "$proj/dev/myrepo/wip.txt"
+  git -C "$proj/dev/myrepo" add wip.txt
+  git -C "$proj/dev/myrepo" commit -m "wip" >/dev/null 2>&1
+  git -C "$proj/dev/myrepo" checkout ws/dev/main >/dev/null 2>&1
+
+  cd "$proj/dev" && orbit done >/dev/null 2>&1
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune >/dev/null 2>&1"
+  [ "$status" -eq 0 ]
+
+  # real run: report on stdout, diagnostics (skip + closing block) on stderr
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune >'$SANDBOX/o.txt' 2>'$SANDBOX/e.txt'"
+  [ "$status" -eq 0 ]
+  run cat "$SANDBOX/o.txt"
+  assert_contains "$output" "residue: dev (reclaimed workspace)"
+  [[ "$output" != *"branch kept"* ]]
+  run cat "$SANDBOX/e.txt"
+  assert_contains "$output" "skipping unmerged branch: ws/dev/feat"
+  assert_contains "$output" "branch kept"
+  assert_contains "$output" "orbit prune dev --force"
+
+  # dry-run: everything is report → stdout
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run >'$SANDBOX/o2.txt' 2>'$SANDBOX/e2.txt'"
+  [ "$status" -eq 0 ]
+  run cat "$SANDBOX/o2.txt"
+  assert_contains "$output" "would keep 1 branch"
+  run cat "$SANDBOX/e2.txt"
+  [[ "$output" != *"would keep"* ]]
+}
+
+@test "prune: targeted ghost prune without --force processes residue, keeps unmerged" {
+  local proj="$SANDBOX/prune-ghost-targeted"
+  local remote="$REMOTES/prune-ghost-targeted-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  cd "$proj" && orbit new "targeted" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+
+  git -C "$proj/dev/myrepo" checkout -b ws/dev/feat >/dev/null 2>&1
+  echo "wip" > "$proj/dev/myrepo/wip.txt"
+  git -C "$proj/dev/myrepo" add wip.txt
+  git -C "$proj/dev/myrepo" commit -m "wip" >/dev/null 2>&1
+  git -C "$proj/dev/myrepo" checkout ws/dev/main >/dev/null 2>&1
+
+  cd "$proj/dev" && orbit done >/dev/null 2>&1
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune >/dev/null 2>&1"
+  [ "$status" -eq 0 ]
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune dev 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "residue: dev (reclaimed workspace)"
+  assert_contains "$output" "skipping unmerged branch: ws/dev/feat"
+  [[ "$output" != *"not found"* ]]
+  run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/heads/ws/dev/feat
+  [ "$status" -eq 0 ]
+}
+
+@test "prune: raw residue report streams to stderr in a real run, stdout in dry-run" {
+  local proj="$SANDBOX/prune-raw-streams"
+  local remote="$REMOTES/prune-raw-streams-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  cd "$proj" && orbit new "raw streams" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+
+  git -C "$proj/dev/myrepo" checkout -b raw-orphan >/dev/null 2>&1
+  echo "x" > "$proj/dev/myrepo/x.txt"
+  git -C "$proj/dev/myrepo" add x.txt
+  git -C "$proj/dev/myrepo" commit -m "x" >/dev/null 2>&1
+  git -C "$proj/dev/myrepo" checkout ws/dev/main >/dev/null 2>&1
+  cd "$proj/dev" && orbit done >/dev/null 2>&1
+  cd "$SANDBOX"
+
+  # real run: raw report is a diagnostic → stderr
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune >'$SANDBOX/o.txt' 2>'$SANDBOX/e.txt'"
+  [ "$status" -eq 0 ]
+  run cat "$SANDBOX/e.txt"
+  assert_contains "$output" "untraceable branches (raw, no remote, no workspace)"
+  run cat "$SANDBOX/o.txt"
+  [[ "$output" != *"untraceable branches"* ]]
+
+  # dry-run: everything is report → stdout
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run >'$SANDBOX/o2.txt' 2>'$SANDBOX/e2.txt'"
+  [ "$status" -eq 0 ]
+  run cat "$SANDBOX/o2.txt"
+  assert_contains "$output" "untraceable branches (raw, no remote, no workspace)"
+  run cat "$SANDBOX/e2.txt"
+  [[ "$output" != *"untraceable branches"* ]]
+}

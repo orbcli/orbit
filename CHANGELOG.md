@@ -21,6 +21,7 @@ Hardens the destructive surface: `prune` and `sync --force`/`--branch` become ma
 #### Security
 
 - `orbit prune`: root-only, target-independent initiation guard via process ancestry, uncommitted-changes skip, bypass-free refusals — guards in [`docs/spec-lifecycle.md`](docs/spec-lifecycle.md) → Prune Safety Guards.
+- `prune` now reclaims **residue**: ghost-workspace scoped branches (grouped by the reclaimed workspace, same merged/unmerged protection; `orbit prune <ws> --force` force-deletes a ghost's branches) and untraceable raw branches (reported with status + shell-quoted native delete commands, never auto-deleted). Kept branches end in a closing suggestion block. Git's own `Deleted branch …` chatter no longer leaks into the report — [`docs/spec-lifecycle.md`](docs/spec-lifecycle.md) → Prune Residue.
 - Refusals replay the intended command (`cd <root> && orbit <cmd> <args>`, your argv verbatim) only when the ancestry walk ran and came back clean; a blind walk (no `/proc`, no `lsof`, no usable `ps`) states the fact alone — a guard that cannot see must not hand out a ready-to-run destructive command. Workspace detection needs no `.orbit` marker either: metadata is disposable, and a guard a lost file can disable is no guard.
 - Prune also skips top-level non-pool git repos (a `.git` directory is an independent clone, whatever its name) and unmerged jots (`--force` overrides, `--dry-run` reports).
 - `sync --force`/`--branch` root-only; `--branch` keeps unrelated fetch refspecs and rolls back on failure — [`docs/spec-commands.md`](docs/spec-commands.md) → sync.
@@ -45,6 +46,7 @@ Hardens the destructive surface: `prune` and `sync --force`/`--branch` become ma
 - Fetch refspecs reconciled with remote — bare `git fetch` heals after a branch is deleted upstream. ([#21](https://github.com/orbcli/orbit/pull/21))
 - `orbit switch <remote-branch>` always fetches first — no stale checkouts. ([#22](https://github.com/orbcli/orbit/pull/22))
 - Prune's unmerged-branch skip now recognizes squash/rebase merges (content equivalence via `git merge-tree`, `git cherry` fallback) and prints the exact `git branch -D` cleanup command for the human operator.
+- Workspace-name validation actually rejects ref-illegal names (space, `~ ^ : ? * [ \`) — the bracket expression had a stray `]` that let every such name through (e.g. `orbit new --name 'dev*'`).
 - Brief parser, status steering and refspec lifecycle hardened. ([#23](https://github.com/orbcli/orbit/pull/23))
 - Plugin install works on SSH-less machines — `try.sh` defaults to HTTPS. ([#24](https://github.com/orbcli/orbit/pull/24))
 - OpenCode auto-approve matches `--force` token-exactly. ([#25](https://github.com/orbcli/orbit/pull/25))

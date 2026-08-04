@@ -105,6 +105,15 @@ The three data guards report **together**: all applicable reasons are joined int
 
 `--force` releases the three **data** guards (uncommitted changes, foreign repo, unmerged jots) and the branch protections. It does **not** release the initiation guards (root-level / ancestry): those protect where the running session stands, not data the user can choose to discard.
 
+## Prune Residue
+
+The candidate set extends beyond workspace directories: **ghost workspaces** (scoped branches `<prefix>/<ws>/…` whose directory is already reclaimed) and **untraceable raw branches**. Both derive from the structural truth sources (git refs, filesystem) — no metadata store is consulted.
+
+- **Ghost residue**: grouped by the reclaimed `<ws>`, each branch runs through the same protection layers as a live prune (merged/PR-merged → deleted, unmerged → skipped, `--force` → force-deleted). A targeted `orbit prune <ws>` with no directory but residue branches processes the ghost group instead of erroring.
+- **Untraceable raw branches** (not scoped-shaped — a single-segment `<prefix>/<name>` does not qualify — no `origin/<name>` copy, not checked out in any worktree): report only, never deleted by orbit — listed with merged status and the exact native `branch -D` command for the human operator. Review commands use each repo's actual default branch (`orbit_default_branch`); when it cannot be determined, the review range is omitted. Every suggested command is shell-quoted (`%q`) — ref names may carry metacharacters (`;` `&&` `$()` …) and the receiver copy-pastes them. Raw-mode branches and branches created under a former prefix only ever appear in this report — no automatic deletion path exists for them.
+- **Closing block**: after the whole report, kept scoped branches get one force-delete suggestion per workspace (`orbit prune <ws> --force`), gated behind the confirm-useless caveat.
+- `nothing to prune` prints only when there are no live candidates, no ghosts, and no untraceable branches.
+
 Branch cleanup reports what it leaves: a local branch shaped like this workspace's (`*/<workspace>/*`) but outside the configured `branch.prefix` is named rather than silently left behind — it is not orbit's to delete (a raw-mode branch, or one created while the prefix held another value). Git holds the branch names, so they remain the recoverable record even if the config that named them is lost.
 
 The exact messages an agent sees (message text is part of the contract):
@@ -117,6 +126,10 @@ orbit: skipping <ws>: uncommitted changes in: <repos>; git repos not from the po
 orbit: skipping unmerged branch: <branch> (content already upstream — squash/rebase merge? clean up: git -C "<pool>" branch -D "<branch>")
 orbit: <repo>: left branch outside branch.prefix: <branches>
 orbit: cannot read process ancestry on this host: the initiation guard is inactive
+residue: <ws> (reclaimed workspace)                                     # ghost group header (report)
+orbit: N branches kept — review: git -C .repos/<repo> log origin/<default>..<branch>   # closing block
+orbit: after confirming the content is no longer needed (nothing un-persisted would be lost): orbit prune <ws> --force
+orbit: untraceable branches (raw, no remote, no workspace) — human disposal:   # raw residue report
 ```
 
 Under `--dry-run` each skip is reported on stdout as `would skip: <ws> (<reasons>)`. None of these name `--force`: a refusal must not double as instructions for getting around it.

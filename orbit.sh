@@ -1178,7 +1178,7 @@ orbit_new() {
     orbit_fail "workspace name too long (${#name} chars, max 50): $name"
   fi
   case "$name" in
-    *[[:space:]~^:?*[\\]]* | .* | */ | *..* | *//* )
+    *[[:space:]~^:?*[\\]* | .* | */ | *..* | *//* )
       orbit_fail "invalid workspace name (git branch ref rules): $name" ;;
   esac
 
@@ -2491,7 +2491,7 @@ orbit_branch_protection_delete() {
     if [ "$dry_run_flag" = "1" ]; then
       printf '    would force-delete branch: %s\n' "$branch"
     else
-      git -C "$main_repo" branch -D "$branch" 2>/dev/null || true
+      git -C "$main_repo" branch -D "$branch" >/dev/null 2>&1 || true
       printf '    deleted branch (force): %s\n' "$branch"
     fi
     return 0
@@ -2510,7 +2510,7 @@ orbit_branch_protection_delete() {
       if [ "$dry_run_flag" = "1" ]; then
         printf '    would delete branch (PR merged): %s\n' "$branch"
       else
-        git -C "$main_repo" branch -D "$branch" 2>/dev/null || true
+        git -C "$main_repo" branch -D "$branch" >/dev/null 2>&1 || true
         printf '    deleted branch (PR merged): %s\n' "$branch"
       fi
       return 0
@@ -2524,7 +2524,7 @@ orbit_branch_protection_delete() {
     if [ "$dry_run_flag" = "1" ]; then
       printf '    would delete branch (merged): %s\n' "$branch"
     else
-      git -C "$main_repo" branch -d "$branch" 2>/dev/null || true
+      git -C "$main_repo" branch -d "$branch" >/dev/null 2>&1 || true
       printf '    deleted branch (merged): %s\n' "$branch"
     fi
     return 0
@@ -2546,6 +2546,125 @@ orbit_branch_protection_delete() {
     printf 'orbit: skipping unmerged branch: %s%s\n' "$branch" "$note" >&2
   fi
   return 1
+}
+
+# --- Residue: ghost workspaces and untraceable branches ---
+# Candidates derive only from the structural truth sources (git refs +
+# filesystem), never from disposable metadata: a ghost workspace is named by
+# its scoped branches (<prefix>/<ws>/…), a raw branch's traceability by
+# refs/remotes and the worktree list.
+
+# Print names of workspaces whose directory is gone but which still have
+# scoped branches in some pool repo ("ghosts"). Caller dedups (sort -u).
+orbit_prune_ghost_workspaces() {
+  local root="$1" prefix repo_dir br ws
+  prefix=$(orbit_require_prefix) || return 1
+  for repo_dir in "$root/.repos"/*/; do
+    [ -d "$repo_dir/.git" ] || continue
+    while IFS= read -r br; do
+      [ -n "$br" ] || continue
+      case "$br" in "$prefix"/*/*) ;; *) continue ;; esac   # full shape only; a single-segment name is raw residue
+      ws="${br#"$prefix"/}"
+      ws="${ws%%/*}"
+      [ -n "$ws" ] || continue
+      orbit_reserved_workspace "$ws" && continue
+      [ -d "$root/$ws" ] || printf '%s\n' "$ws"
+    done < <(git -C "$repo_dir" for-each-ref --format='%(refname:short)' "refs/heads/$prefix/" 2>/dev/null || true)
+  done
+}
+
+# Process one ghost workspace: run every scoped branch through the same
+# protection layers a live prune would (merged/PR-merged → delete, unmerged →
+# skip, --force → force delete). Skipped branches feed the closing block via
+# ORBIT_KEPT_COUNT / ORBIT_KEPT_WS. Returns 0 when any branch was found.
+orbit_prune_ghost_group() {
+  local root="$1" ws="$2" force="$3" verify="$4" dry_run="$5"
+  local prefix repo_dir repo_name branch found=0
+  prefix=$(orbit_require_prefix) || return 1
+  for repo_dir in "$root/.repos"/*/; do
+    [ -d "$repo_dir/.git" ] || continue
+    repo_name=$(basename "$repo_dir")
+    local branches=()
+    while IFS= read -r branch; do
+      [ -n "$branch" ] && branches+=("$branch")
+    done < <(git -C "$repo_dir" for-each-ref --format='%(refname:short)' "refs/heads/$prefix/$ws/" 2>/dev/null || true)
+    [ "${#branches[@]}" -gt 0 ] || continue
+    if [ "$found" = "0" ]; then printf 'residue: %s (reclaimed workspace)\n' "$ws"; found=1; fi
+    printf '  %s:\n' "$repo_name"
+    for branch in "${branches[@]}"; do
+      if ! orbit_branch_protection_delete "$repo_dir" "$branch" "" "$force" "$verify" "$dry_run"; then
+        ORBIT_KEPT_COUNT=$((ORBIT_KEPT_COUNT + 1))
+        # Newline-separated list + literal match: workspace names can contain
+        # glob characters — a space-joined list would word-split AND pathname-
+        # expand at the project root, retargeting the closing block's
+        # suggestion at a DIFFERENT workspace.
+        if ! printf '%s\n' "$ORBIT_KEPT_WS" | grep -Fxq -- "$ws"; then
+          ORBIT_KEPT_WS="${ORBIT_KEPT_WS:+$ORBIT_KEPT_WS
+}$ws"
+        fi
+      fi
+    done
+  done
+  [ "$found" = "1" ]
+}
+
+# Report branches that cannot be traced to anything: not scoped-shaped, no
+# remote copy (no origin/<name>), not checked out in any worktree. These are
+# never deleted by orbit — listed with merged status plus the exact native
+# commands, for the human operator to dispose of. Real run → stderr, dry-run →
+# stdout. Sets ORBIT_RAW_COUNT.
+orbit_prune_raw_residue() {
+  local root="$1" dry_run="$2"
+  local prefix repo_dir repo_name branch default_branch
+  prefix=$(orbit_require_prefix) || return 1
+  local raw_entries="" raw_deletes=""
+  for repo_dir in "$root/.repos"/*/; do
+    [ -d "$repo_dir/.git" ] || continue
+    repo_name=$(basename "$repo_dir")
+    local checked_out=" " wt_line
+    while IFS= read -r wt_line; do
+      case "$wt_line" in
+        branch\ refs/heads/*) checked_out="$checked_out${wt_line#branch refs/heads/} " ;;
+      esac
+    done < <(git -C "$repo_dir" worktree list --porcelain 2>/dev/null || true)
+    default_branch=$(orbit_default_branch "$repo_dir" 2>/dev/null || true)
+    while IFS= read -r branch; do
+      [ -n "$branch" ] || continue
+      case "$branch" in "$prefix/"*/*) continue ;; esac        # scoped → residue path
+      case "$checked_out" in *" $branch "*) continue ;; esac   # live in a worktree
+      # Remote copy = traceable: same-name ref, or a configured upstream under
+      # another name. Read branch.<name>.merge directly and map by convention
+      # (refs/heads/X → refs/remotes/<remote>/X) — @{upstream} resolution goes
+      # through fetch refspecs, which a single-branch pool clone doesn't cover.
+      git -C "$repo_dir" rev-parse --verify --quiet "origin/$branch" >/dev/null 2>&1 && continue
+      local merge_ref remote_short
+      merge_ref=$(git -C "$repo_dir" config --get "branch.$branch.merge" 2>/dev/null || true)
+      if [ -n "$merge_ref" ]; then
+        remote_short="${merge_ref#refs/heads/}"
+        git -C "$repo_dir" rev-parse --verify --quiet "origin/$remote_short" >/dev/null 2>&1 && continue
+      fi
+      local status_word="unknown" review=""
+      if [ -n "$default_branch" ]; then
+        review=" — review: git -C \".repos/$repo_name\" log $(printf '%q' "origin/$default_branch..$branch")"
+        status_word="unmerged"
+        git -C "$repo_dir" merge-base --is-ancestor "$branch" "origin/$default_branch" 2>/dev/null && status_word="merged"
+      fi
+      raw_entries="$raw_entries  $repo_name: $branch ($status_word)$review
+"
+      # Ref names may carry shell metacharacters (`;` `&&` `$()` …) — the
+      # operator copy-pastes this, so quote it the way the replay does.
+      raw_deletes="$raw_deletes  git -C \".repos/$repo_name\" branch -D $(printf '%q' "$branch")
+"
+      ORBIT_RAW_COUNT=$((ORBIT_RAW_COUNT + 1))
+    done < <(git -C "$repo_dir" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null || true)
+  done
+  [ "$ORBIT_RAW_COUNT" -gt 0 ] || return 1
+  {
+    printf 'orbit: untraceable branches (raw, no remote, no workspace) — human disposal:\n'
+    printf '%s' "$raw_entries"
+    printf 'orbit: after confirming the content is no longer needed (nothing un-persisted would be lost), force-delete:\n'
+    printf '%s' "$raw_deletes"
+  } | { if [ "$dry_run" = "1" ]; then cat; else cat >&2; fi }
 }
 
 orbit_prune() {
@@ -2613,16 +2732,28 @@ orbit_prune() {
     candidates+=("$ws_name")
   done
 
+  # Ghost workspaces: scoped branches whose workspace directory is already
+  # reclaimed. Collected before the not-found check so a targeted ghost prunes
+  # its residue instead of erroring.
+  local ghost_ws=()
+  while IFS= read -r g; do [ -n "$g" ] && ghost_ws+=("$g"); done \
+    < <(orbit_prune_ghost_workspaces "$root" | sort -u)
+
   if [ -n "$target_ws" ] && [ "${#candidates[@]}" -eq 0 ]; then
-    orbit_fail "workspace not found or not marked done: $target_ws"
+    local targeted_ghost=0 g
+    for g in ${ghost_ws[@]+"${ghost_ws[@]}"}; do
+      [ "$g" = "$target_ws" ] && targeted_ghost=1
+    done
+    [ "$targeted_ghost" = "1" ] || orbit_fail "workspace not found or not marked done: $target_ws"
   fi
 
-  if [ "${#candidates[@]}" -eq 0 ]; then
-    printf 'nothing to prune\n'
-    return 0
-  fi
+  # Run-scoped collectors for the closing block and the raw report: reset
+  # here, appended by the live loop / orbit_prune_ghost_group /
+  # orbit_prune_raw_residue. Not exported — one prune run, one collector set;
+  # any future caller of those functions must reset first.
+  ORBIT_KEPT_COUNT=0 ORBIT_KEPT_WS="" ORBIT_RAW_COUNT=0
 
-  for ws in "${candidates[@]}"; do
+  for ws in ${candidates[@]+"${candidates[@]}"}; do
     local ws_dir="$root/$ws"
     local orbit_file="$ws_dir/.orbit"
 
@@ -2759,12 +2890,27 @@ orbit_prune() {
       n_worktrees=$((n_worktrees + 1))
 
       # Delete branches (config sections are removed by git along with the branch)
+      local ws_prefix
+      ws_prefix=$(orbit_require_prefix) || return 1
       while IFS= read -r branch; do
         [ -n "$branch" ] || continue
         if orbit_branch_protection_delete "$main_repo" "$branch" "$pr_urls_str" "$force" "$verify" "$dry_run"; then
           n_deleted=$((n_deleted + 1))
         else
           n_skipped=$((n_skipped + 1))
+          # Only scoped skips feed the closing block: `orbit prune <ws>
+          # --force` resolves through ghost residue, which exists only for
+          # prefix-shaped branches. A raw skip is the raw-residue report's
+          # job — counting it here would suggest a command that errors out.
+          case "$branch" in
+            "$ws_prefix/$ws/"*)
+              ORBIT_KEPT_COUNT=$((ORBIT_KEPT_COUNT + 1))
+              if ! printf '%s\n' "$ORBIT_KEPT_WS" | grep -Fxq -- "$ws"; then
+                ORBIT_KEPT_WS="${ORBIT_KEPT_WS:+$ORBIT_KEPT_WS
+}$ws"
+              fi
+              ;;
+          esac
         fi
       done <<< "$ws_branches"
 
@@ -2774,8 +2920,7 @@ orbit_prune() {
       # the prefix to the default and would orphan them silently). Git is the
       # structural source of truth here, so the branch names are the record —
       # name them rather than let them leak unseen.
-      local ws_prefix left_behind=() lb
-      ws_prefix=$(orbit_require_prefix) || return 1
+      local left_behind=() lb
       while IFS= read -r lb; do
         [ -n "$lb" ] || continue
         case "$lb" in
@@ -2819,6 +2964,45 @@ orbit_prune() {
         "$n_deleted" "$(orbit_plural "$n_deleted" branch branches)" "$n_skipped"
     fi
   done
+
+  # Ghost residue: scoped branches whose workspace directory is gone. Same
+  # protection layers as a live prune; a targeted run only touches its ghost.
+  for g in ${ghost_ws[@]+"${ghost_ws[@]}"}; do
+    if [ -n "$target_ws" ] && [ "$g" != "$target_ws" ]; then continue; fi
+    # `|| true`: enumeration and this scan share the shape predicate, so an
+    # empty group can only mean the branch vanished mid-run — never abort.
+    orbit_prune_ghost_group "$root" "$g" "$force" "$verify" "$dry_run" || true
+  done
+
+  # Untraceable raw branches: enumeration only (a targeted run is focused).
+  if [ -z "$target_ws" ]; then
+    orbit_prune_raw_residue "$root" "$dry_run" || true
+  fi
+
+  # Closing block: kept scoped branches get one force-delete suggestion per
+  # workspace, gated behind the confirm-useless caveat. Diagnostics (stderr)
+  # in a real run, part of the report (stdout) in dry-run.
+  if [ "$ORBIT_KEPT_COUNT" -gt 0 ]; then
+    {
+      if [ "$dry_run" = "1" ]; then
+        printf 'would keep %d %s — review: git -C .repos/<repo> log origin/<default>..<branch>\n' \
+          "$ORBIT_KEPT_COUNT" "$(orbit_plural "$ORBIT_KEPT_COUNT" branch branches)"
+      else
+        printf 'orbit: %d %s kept — review: git -C .repos/<repo> log origin/<default>..<branch>\n' \
+          "$ORBIT_KEPT_COUNT" "$(orbit_plural "$ORBIT_KEPT_COUNT" branch branches)"
+      fi
+      while IFS= read -r g; do
+        [ -n "$g" ] || continue
+        printf 'orbit: after confirming the content is no longer needed (nothing un-persisted would be lost): orbit prune %q --force\n' "$g"
+      done <<EOF
+$ORBIT_KEPT_WS
+EOF
+    } | { if [ "$dry_run" = "1" ]; then cat; else cat >&2; fi }
+  fi
+
+  if [ "${#candidates[@]}" -eq 0 ] && [ "${#ghost_ws[@]}" -eq 0 ] && [ "$ORBIT_RAW_COUNT" -eq 0 ]; then
+    printf 'nothing to prune\n'
+  fi
 }
 
 # --- Doctor ---

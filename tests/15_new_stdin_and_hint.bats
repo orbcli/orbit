@@ -89,3 +89,22 @@ teardown() {
   [ "$status" -eq 0 ]
   assert_contains "$output" "$proj/new-ws"
 }
+
+@test "new: rejects workspace names that violate git ref rules" {
+  local proj="$SANDBOX/new-bad-names"
+  mkdir -p "$proj/.repos"
+  touch "$proj/.repos/.orbit"
+  TEST_PROJECT="$proj"
+
+  local bad
+  for bad in "foo bar" "dev*" "a?b" "x[y" 'x\y' "a..b" ".dot" "trail/"; do
+    run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' new 'goal' --name '$bad' 2>&1"
+    [ "$status" -ne 0 ]
+    assert_contains "$output" "invalid workspace name"
+  done
+
+  # sanity: normal names still pass validation (fail later only on dup/goal rules)
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' new 'goal' --name ok-name_1.2 2>&1"
+  [ "$status" -eq 0 ]
+  [ -d "$proj/ok-name_1.2" ]
+}

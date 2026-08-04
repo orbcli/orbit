@@ -116,7 +116,7 @@ There is no standalone `orbit init` command. Commands that require `.repos/` (`c
 | `orbit jot` | ✗ error | ✓ (repo must be specified) | ✓ (repo inferred from CWD) |
 | `orbit switch` | ✗ error | ✓ (repo must be specified) | ✓ (repo inferred from CWD) |
 | `orbit done` | ✗ error | ✓ | ✓ (convenient for manual use) |
-| `orbit prune` | ✓ (refuses the invocation when the process tree stands inside any workspace; skips dirty, foreign-repo and unmerged-jot candidates — see Prune Safety Guards in spec-lifecycle.md) | ✗ error (root-level only) | ✗ error (root-level only) |
+| `orbit prune` | ✓ (refuses the invocation when the process tree stands inside any workspace; skips dirty, foreign-repo and unmerged-jot candidates; also processes residue — ghost-workspace scoped branches and untraceable raw branches, see spec-lifecycle.md → Prune Residue) | ✗ error (root-level only) | ✗ error (root-level only) |
 | `orbit status` | ✓ (requires `status <ws>` to specify) | ✓ (current workspace) | ✓ (current workspace) |
 | `orbit goal` | ✗ (not within workspace, error) | ✓ | ✓ |
 | `orbit context` | ✗ error | ✓ | ✓ |
@@ -144,6 +144,14 @@ A repo name is a pool directory basename under `.repos/`, never a path — calle
 - Empty names and names starting with `.` or `-` are rejected. The latter two are GitHub-legal but unsupported on purpose: pool loops glob `.repos/*/`, which skips hidden directories, and a leading `-` is indistinguishable from an option flag in any argv slot.
 - Rejection is a refusal: `invalid repo name: <name> (expected a pool repo basename: [A-Za-z0-9._-], no leading '.' or '-')` — registered in [spec-warnings.md](spec-warnings.md#refusals-and-skips-deliberately-no-named-action).
 - A remote whose URL basename is outside the contract is still reachable: `orbit clone` names the escape hatch (`cannot use URL basename as repo name: <name> (pick a pool name with --name)`) — the pool identity and the remote name are decoupled, so any repo can enter the pool under a contract-legal name.
+
+## Workspace Name Contract
+
+A workspace name becomes a git ref component (`<prefix>/<workspace>/<branch>`), so `orbit new` validates it against git branch ref rules before creating anything:
+
+- Rejected: whitespace, `~ ^ : ? * [ \`, leading `.`, trailing `/`, `..` sequences, `//` sequences — message: `invalid workspace name (git branch ref rules): <name>`.
+- Length cap: 50 chars (`invalid workspace name too long`), leaving room for the `<prefix>/` prefix and branch name within git's 255-char ref limit.
+- Validation applies only to `orbit new --name` and the auto-generated `task-NN` names (always valid by construction). It is a refusal, not a normalization — the name is used verbatim everywhere else (directories, refs, config keys).
 
 ## orbit clone Option Semantics
 
