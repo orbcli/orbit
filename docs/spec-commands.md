@@ -57,7 +57,7 @@ orbit jot [<repo>] --pop [--json]               # Pop all entries (consume + del
 orbit done [--pr <url>...] [--json]          # Mark workspace as done
 
 # Cross-workspace cleanup (from project root only)
-orbit prune [workspace] [--older <dur>] [--verify] [--dry-run] [--force]  # Reclaim workspace
+orbit prune [workspace] [--older <dur>] [--dry-run] [--force]  # Reclaim workspace
 
 # Status queries
 orbit status [--json]                        # Current workspace status
@@ -116,7 +116,7 @@ There is no standalone `orbit init` command. Commands that require `.repos/` (`c
 | `orbit jot` | ✗ error | ✓ (repo must be specified) | ✓ (repo inferred from CWD) |
 | `orbit switch` | ✗ error | ✓ (repo must be specified) | ✓ (repo inferred from CWD) |
 | `orbit done` | ✗ error | ✓ | ✓ (convenient for manual use) |
-| `orbit prune` | ✓ (refuses the invocation when the process tree stands inside any workspace; skips dirty, foreign-repo and unmerged-jot candidates; also processes residue — ghost-workspace scoped branches and untraceable raw branches, see spec-lifecycle.md → Prune Residue) | ✗ error (root-level only) | ✗ error (root-level only) |
+| `orbit prune` | ✓ (refuses the invocation when the process tree stands inside any workspace; non-force validates the full blocker set — data guards plus branch verdicts — and leaves a workspace **untouched** when any blocker holds (all-or-nothing); also cleans residue — ghost-workspace scoped branches, untraceable raw branches and pool maintenance, see spec-lifecycle.md → Prune Safety Guards / Residue Cleanup) | ✗ error (root-level only) | ✗ error (root-level only) |
 | `orbit status` | ✓ (requires `status <ws>` to specify) | ✓ (current workspace) | ✓ (current workspace) |
 | `orbit goal` | ✗ (not within workspace, error) | ✓ | ✓ |
 | `orbit context` | ✗ error | ✓ | ✓ |
@@ -147,10 +147,11 @@ A repo name is a pool directory basename under `.repos/`, never a path — calle
 
 ## Workspace Name Contract
 
-A workspace name becomes a git ref component (`<prefix>/<workspace>/<branch>`), so `orbit new` validates it against git branch ref rules before creating anything:
+A workspace name becomes both a directory directly under the root and a git ref component (`<prefix>/<workspace>/<branch>`), so `orbit new` validates it on both counts before creating anything. Two checks, two messages — the reserved-name check runs first:
 
-- Rejected: whitespace, `~ ^ : ? * [ \`, leading `.`, trailing `/`, `..` sequences, `//` sequences — message: `invalid workspace name (git branch ref rules): <name>`.
-- Length cap: 50 chars (`invalid workspace name too long`), leaving room for the `<prefix>/` prefix and branch name within git's 255-char ref limit.
+- Reserved names (`''`, `.`, `..`, `.repos`, `.git`, any leading `.`, any `/`) — message: `invalid workspace name: <name>`. These would collide with the pool, hide from enumeration, or nest below the root; a name carrying a `/` would also let a targeted command reach into another workspace's ref namespace.
+- Rejected by git ref rules: whitespace, `~ ^ : ? * [ \`, `..` sequences — message: `invalid workspace name (git branch ref rules): <name>`.
+- Length cap: 50 chars (`workspace name too long (<N> chars, max 50): <name>`), leaving room for the `<prefix>/` prefix and branch name within git's 255-char ref limit.
 - Validation applies only to `orbit new --name` and the auto-generated `task-NN` names (always valid by construction). It is a refusal, not a normalization — the name is used verbatim everywhere else (directories, refs, config keys).
 
 ## orbit clone Option Semantics

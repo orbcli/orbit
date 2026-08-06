@@ -224,7 +224,7 @@ Orbit provides directory-level fidelity and traceability of complete source code
 | Agent Readability | High (markdown) | Low | via gw-claude plugin | Low | Built-in | Low | Low |
 | Agent Integration | neutral (skill) | neutral | Claude Code (gw-claude) + MCP | Built-in --ai | Built-in | Built-in skill | Bound to Claude |
 | Lifecycle | new→done→prune | start→rm | create→delete | None | auto | add→merge | n→D |
-| Cleanup Protection | Three layers (PR+git+skip) | None | None documented | PR status | Auto | merge one-click | Auto |
+| Cleanup Protection | Three layers (PR + ancestor + content) | None | None documented | PR status | Auto | merge one-click | Auto |
 | Runtime Dependencies | bash 3.2+ | Python 3.12+ | Go binary | bash 3.2+ | Built-in | tmux (Rust binary) | Go binary |
 | Cross-machine Sync | None (exportable) | None | None (local) | None | None | None | None |
 

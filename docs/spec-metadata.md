@@ -9,7 +9,7 @@
 - Corrupted -> delete and rebuild (`orbit memo`)
 - Stale -> does not affect correctness, only affects recommendation quality
 - Concurrent conflicts -> last write wins, no locks needed; a missed update will be recovered next time
-- No orbit operation should fail due to missing or incorrect metadata
+- No orbit operation should fail due to missing or incorrect metadata that is derivable from the structural source of truth (the sole non-derivable class is recorded human intent — see "Why `status=done` is the sole prune trigger" below)
 
 ## Format Selection
 
@@ -176,6 +176,15 @@ After `orbit done` writes:
 ```
 
 `done-date` is a human-readable redundant field of `done-at` (ISO date), used only for manual inspection; program logic always uses the `done-at` epoch.
+
+### Why `status=done` is the sole prune trigger
+
+"Metadata is disposable" does not mean metadata does not matter — it means every lost byte is **cheap to rebuild**. The `done` marker looks like a violation (losing it removes the workspace from automatic reclamation, so something clearly depends on it), but it satisfies the same contract: the rebuild path is one command of human re-confirmation — `orbit done` inside the directory, which requires no pre-existing `.orbit`. The re-declaration is deliberately minimal: one command, no arguments, no prompts, nothing to reconstruct by hand.
+
+Two properties make this the right design rather than an exception:
+
+- **Loss fails in the safe direction.** A lost marker moves the workspace *out* of reclamation; the intent has to be re-expressed before anything is deleted. Metadata loss never moves anything *into* a destructive path.
+- **`done` is the one field that cannot be derived from the structural source of truth** — it records human intent. Everything else in `.orbit` is derivable or declarative working state (goal, timestamps, jots, PR URLs) — recomputable or rewritable by commands. "Did the human decide this work is finished?" can only be answered by the human, so prune treats it as the single non-waivable precondition (see [spec-lifecycle](./spec-lifecycle.md) "`done` Is an Absolute Precondition"), while the rebuild cost stays at one command.
 
 ## Fallback Rules
 

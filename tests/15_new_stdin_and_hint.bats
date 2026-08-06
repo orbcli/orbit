@@ -97,7 +97,7 @@ teardown() {
   TEST_PROJECT="$proj"
 
   local bad
-  for bad in "foo bar" "dev*" "a?b" "x[y" 'x\y' "a..b" ".dot" "trail/"; do
+  for bad in "foo bar" "dev*" "a?b" "x[y" 'x\y' "a..b" ".dot" "trail/" "a/b"; do
     run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' new 'goal' --name '$bad' 2>&1"
     [ "$status" -ne 0 ]
     assert_contains "$output" "invalid workspace name"

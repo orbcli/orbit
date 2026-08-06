@@ -202,7 +202,7 @@ orbit jot [<repo>] --pop [--json]
 orbit done [--pr <url>...] [--json]
 
 # Cross-workspace cleanup (from project root only)
-orbit prune [workspace] [--older <dur>] [--verify] [--dry-run] [--force]
+orbit prune [workspace] [--older <dur>] [--dry-run] [--force]
 
 # Status and context
 orbit status [workspace]

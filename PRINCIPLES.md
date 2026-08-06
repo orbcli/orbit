@@ -81,7 +81,7 @@ Not pursued in the current phase:
 - Users primarily interact with multiple workspaces
 - `.repos/` is the underlying source pool, not the user's primary mental model
 - Workspace directory boundary = agent's operational scope. Agents reach pool knowledge through orbit commands, never seeing project root paths or `.repos/` internals — a boundary that prevents accidental metadata corruption
-- Destructive operations stay inside the scope they were invoked from. The test is destruction, not visibility: reads and additive creation may cross the boundary; destroying what the workspace does not own may not. Memo write-back is the standing exception — knowledge is pool-level by design, and no mechanism yet distinguishes a write that accumulates from one that regresses (open: `orbit-blueprint/proposals/memo-overwrite-capability-asymmetry.md`)
+- Destructive operations stay inside the scope they were invoked from. The test is destruction, not visibility: reads and additive creation may cross the boundary; destroying what the workspace does not own may not. Memo write-back is the standing exception — knowledge is pool-level by design, and no mechanism yet distinguishes a write that accumulates from one that regresses
 
 ### 2. Directory and Git are the structural source of truth, no manifest needed
 
@@ -91,10 +91,11 @@ Not pursued in the current phase:
 
 ### 3. Metadata is cache, not the source of truth
 
-- All metadata is disposable and rebuildable
-- Missing → fallback (read README, `git remote -v`); corrupted → delete and rebuild
-- No orbit operation should fail due to missing or incorrect metadata
+- All metadata is disposable and easily rebuildable
 - **Agents do not perceive metadata files** (`.orbit`, `.repos/.orbit`, `.repos/.<repo>.md`) — everything goes through orbit commands, which rebuild missing metadata on the way. Reading the files directly bypasses that repair
+- Metadata derivable from the structural source of truth (index fields, backfilled timestamps) is rebuilt on the read path — absence or corruption never breaks a command
+- Metadata covered by a fallback (briefs, memos) degrades to it on loss (read README, `git remote -v`); corrupted → delete and rebuild
+- Recorded human/agent intent (the `done` marker) is derivable from nothing structural, so loss requires re-declaration — and its absence only ever **removes** a capability (the workspace leaves automatic reclamation), never grants one
 
 ### 4. Knowledge accumulates progressively, with bounded capacity
 
@@ -191,7 +192,7 @@ These form the foundation — settled first, so later agents or UIs never force 
 | Memo quality variance | Brief extraction rules validate format; content quality relies on skill constraints (budget, scaffold template). Not covered: a shallower session overwriting a richer card — the single-owner invariant guards concurrency, not capability asymmetry between sequential sessions |
 | Knowledge decay without maintenance | `orbit repos` displays memoBehind; agents detect staleness on cold start; refresh is not forced |
 | Pool repo count proliferation | No automatic cleanup yet; `orbit doctor` provides environment checks, extensible to detect unused repos |
-| Prune mid-failure | A single repo failure is skipped with a warning without interrupting subsequent repos; residuals can be recovered by hand |
+| Prune mid-failure | Reclamation validates all-or-nothing and runs as an idempotent fixed pipeline: a step failure keeps the workspace whole, and the next invocation resumes — an interrupted run never strands a half-deleted workspace |
 | Bypass habituation from a single override flag | One flag releases the data guards as one decision, so every applicable reason is reported together rather than one per run; it never releases the scope guards |
 
 ## Rationale for Solution Choices
