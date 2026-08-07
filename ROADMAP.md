@@ -2,7 +2,7 @@
 
 ## Completed
 
-- Workspace full lifecycle: new → add → done → (prune | reactivate via goal), with three-layer branch protection
+- Workspace full lifecycle: new → add → done → (prune | reactivate via goal), with three-layer branch verdicts
 - Command system aligned with design specs: 18 commands covering the complete workflow (clone / new / add / switch / jot / sync / done / prune / status / goal / repos / info / memo / config / context / doctor / completion / version)
 - Metadata infrastructure (`.repos/.orbit` global index + per-repo `.md` + workspace `.orbit` + brief extraction + staleness detection)
 - CLI experience: `--json` output + bash/zsh shell completion

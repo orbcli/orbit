@@ -340,13 +340,20 @@ orbit prune                       # Clean all status=done
 orbit prune --older 30d           # Only clean those done more than 30 days ago
 orbit prune task-01               # Clean a specific workspace
 orbit prune --dry-run             # Preview
-orbit prune --verify              # Check if PR has been merged
-orbit prune --force               # Skip branch + data protections
+orbit prune --force               # Skip validation (accept the loss)
 ```
 
-> **Note**: `prune` will delete candidate workspace directories. Branches are only cleaned when protection conditions are met (branches are preserved without `--force` if unmerged). It's recommended to use `--dry-run` first to preview what will be cleaned.
+> **Note**: non-force `prune` is **all-or-nothing per workspace**: it either reclaims the workspace completely — directory, worktrees, branches, config — or touches nothing at all. Any blocker (uncommitted changes, a foreign repo, unmerged jots, a damaged worktree, an unmerged branch) holds the **whole** workspace, with every reason reported at once. Resolve what the report names and re-run — or accept the loss with `--force`. A workspace staying around is the design working, not prune failing: the report is what drives the cleanup. Use `--dry-run` first to preview.
 >
-> `prune` must be run from the project root — it refuses the invocation when any process in the invoking shell's ancestry is rooted inside a workspace (detected via process ancestry, not CWD, so `cd`-ing out first does not bypass it). If only your own CWD is inside a workspace and the ancestry check can run and comes back clean, it replays the exact command to run from the root. Unless `--force` is given, it also skips workspaces with uncommitted changes, workspaces holding a git repo that isn't from the pool (a `git clone` made inside the workspace: its objects live nowhere else), and workspaces with jots that were never merged into a memo.
+> `prune` must be run from the project root — it refuses the invocation when any process in the invoking shell's ancestry is rooted inside a workspace (detected via process ancestry, not CWD, so `cd`-ing out first does not bypass it). If only your own CWD is inside a workspace and the ancestry check can run and comes back clean, it replays the exact command to run from the root.
+>
+> If the workspace recorded PR URLs (`orbit done --pr`), prune checks them with `gh` automatically — per branch, never wholesale — and falls back to git's own merged check with one warning when `gh` is unavailable. A merged PR only clears the branch it actually covers, and only when no unpushed local commits would be lost. Squash and rebase merges need neither `gh` nor a recorded PR: a branch whose content is already in the default branch is proven by tree comparison (`git merge-tree`) and deleted like any merged branch.
+>
+> Beyond workspace directories, `prune` also reclaims **residue** left by force-deleted workspace directories (an agent's `rm -rf`, a crash): scoped branches whose workspace is already gone are cleaned per branch (merged deleted, unmerged reported), and untraceable raw branches (no remote copy, no workspace) are reported with review/delete commands for you to dispose of by hand. A run with kept content ends in a closing block: one confirm-useless caveat, then the force-delete suggestions (`orbit prune <ws> --force` for scoped, native `branch -D` for raw). Interruption is safe at any point — directory removal goes through an atomic rename into `.prune-trash/`, so the next run simply resumes; the only case non-force will refuse to resume is a worktree half-removed by a failed deletion (it reads as uncommitted work — review, then `--force`).
+>
+> Two things worth knowing before you reach for `--force`. Deletion lines name the commit they removed (`deleted branch (force): <branch> (was abc1234)`) — that SHA is the handle for `git reflog`, which keeps the objects for 90 days by default, so a branch deleted by mistake is recoverable as long as you kept the report. Discarding **uncommitted** work is the one step with no recovery path at all, so `--force` says so before it acts. And prune does not protect everything: `.gitignore`d files, hand-written notes at the workspace top level, and commits left on a detached HEAD have no guard — see [`docs/spec-lifecycle.md`](docs/spec-lifecycle.md) → Out of Scope.
+>
+> `--force` does **not** override `done`. A workspace is reclaimable only once you have marked it done, and no flag substitutes for that — it is the one thing only you can decide. If a workspace's `.orbit` file was lost, prune stops mentioning it entirely; run `orbit done` inside it again to restore the marker.
 
 ## 11. Environment Variables
 
@@ -544,7 +551,7 @@ orbit jot [<repo>] --pop [--json]
 orbit done [--pr <url>...] [--json]
 
 # Cross-workspace cleanup (from project root only)
-orbit prune [workspace] [--older <dur>] [--verify] [--dry-run] [--force]
+orbit prune [workspace] [--older <dur>] [--dry-run] [--force]
 
 # Status and context
 orbit status [workspace]

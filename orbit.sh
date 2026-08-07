@@ -97,7 +97,7 @@ Usage:
   $ORBIT_CMD status [workspace] [--json]
   $ORBIT_CMD goal ["text"] [--clear]
   $ORBIT_CMD jot [<repo>] ["text"] [--pop] [--json]
-  $ORBIT_CMD prune [workspace] [--older <dur>] [--dry-run] [--force] [--verify]
+  $ORBIT_CMD prune [workspace] [--older <dur>] [--dry-run] [--force]
   $ORBIT_CMD config [<key> [<value> | --unset]]
   $ORBIT_CMD context [<key>] [--startup|--prime|--reignite] [--json]
   $ORBIT_CMD doctor
@@ -413,9 +413,53 @@ orbit_remove_fetch_refspec() {
 orbit_reconcile_fetch_refspecs() {
   local repo="$1" dry_run="${2:-0}"
   local remote_heads refspec branch lb merge
+
+  # Local precheck before any network: the remove direction only matters when
+  # a non-default exact refspec exists, the register direction only when a
+  # local branch tracks origin without one. Both sets are pure config reads;
+  # when both are empty the round-trip cannot change anything, so it is never
+  # made. (This is what keeps an enumeration prune with dozens of pool repos
+  # at local speed; the default branch's own refspec going stale means the
+  # remote lost its default branch — the pool is broken beyond refspecs, so
+  # that case is deliberately outside the gate.)
+  local default_br rs rb needs=0
+  default_br=$(orbit_default_branch "$repo" 2>/dev/null || true)
+  local exact_branches=""
+  while IFS= read -r rs; do
+    case "$rs" in
+      +refs/heads/*:refs/remotes/origin/*) ;;
+      *) continue ;;
+    esac
+    rb="${rs#+refs/heads/}"
+    rb="${rb%%:refs/remotes/origin/*}"
+    # Foreign refspecs are not orbit's to manage: git refnames forbid '*', so
+    # anything containing a glob (e.g. a user-configured full-fetch wildcard
+    # '+refs/heads/*:refs/remotes/origin/*') stays untouched.
+    case "$rb" in *'*'*) continue ;; esac
+    exact_branches="$exact_branches$rb"$'\n'
+    if [ "$rb" != "$default_br" ]; then needs=1; fi
+  done < <(git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null || true)
+  if [ "$needs" = "0" ]; then
+    while IFS= read -r lb; do
+      [ -n "$lb" ] || continue
+      [ "$(git -C "$repo" config --get "branch.$lb.remote" 2>/dev/null)" = "origin" ] || continue
+      merge=$(git -C "$repo" config --get "branch.$lb.merge" 2>/dev/null) || continue
+      case "$merge" in
+        refs/heads/*) branch="${merge#refs/heads/}" ;;
+        *) continue ;;
+      esac
+      printf '%s\n' "$exact_branches" | grep -Fqx "$branch" && continue
+      needs=1
+      break
+    done < <(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null || true)
+  fi
+  [ "$needs" = "1" ] || return 0
+
   # One network round-trip; on failure (offline etc.) skip reconciliation
-  # entirely so unverifiable refspecs are never removed by mistake.
-  remote_heads=$(git -C "$repo" ls-remote --heads origin 2>/dev/null) || return 0
+  # entirely so unverifiable refspecs are never removed by mistake. Prompts
+  # are disabled: a background reconcile must never block on a credential
+  # prompt — an auth-gated remote reads as "unreachable" and is skipped.
+  remote_heads=$(GIT_TERMINAL_PROMPT=0 git -C "$repo" ls-remote --heads origin 2>/dev/null) || return 0
   while IFS= read -r refspec; do
     case "$refspec" in
       +refs/heads/*:refs/remotes/origin/*) ;;
@@ -427,6 +471,12 @@ orbit_reconcile_fetch_refspecs() {
     # anything containing a glob (e.g. a user-configured full-fetch wildcard
     # '+refs/heads/*:refs/remotes/origin/*') stays untouched.
     case "$branch" in *'*'*) continue ;; esac
+    # The default branch's own refspec is never auto-removed — the same
+    # exemption the precheck gate applies above: the remote losing its
+    # default branch means the pool is broken beyond refspecs, and whether a
+    # stale default refspec survives must not depend on whether some OTHER
+    # refspec happened to trigger the network call.
+    [ "$branch" = "$default_br" ] && continue
     printf '%s\n' "$remote_heads" | awk '{print $2}' | grep -Fqx "refs/heads/$branch" && continue
     if [ "$dry_run" = "1" ]; then
       printf 'would remove stale fetch refspec: %s\n' "$branch"
@@ -436,6 +486,7 @@ orbit_reconcile_fetch_refspecs() {
       printf 'removed stale fetch refspec: %s\n' "$branch"
     fi
   done < <(git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null || true)
+  local seen_branch=" "
   while IFS= read -r lb; do
     [ -n "$lb" ] || continue
     [ "$(git -C "$repo" config --get "branch.$lb.remote" 2>/dev/null)" = "origin" ] || continue
@@ -444,6 +495,11 @@ orbit_reconcile_fetch_refspecs() {
       refs/heads/*) branch="${merge#refs/heads/}" ;;
       *) continue ;;
     esac
+    # A refspec is per REMOTE branch: two local branches sharing one upstream
+    # produce one line, not two (a real run self-dedupes via the config
+    # check; a dry-run mutates nothing, so dedupe explicitly).
+    case "$seen_branch" in *" $branch "*) continue ;; esac
+    seen_branch="$seen_branch$branch "
     printf '%s\n' "$remote_heads" | awk '{print $2}' | grep -Fqx "refs/heads/$branch" || continue
     git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null \
       | grep -Fqx "+refs/heads/$branch:refs/remotes/origin/$branch" && continue
@@ -1178,7 +1234,7 @@ orbit_new() {
     orbit_fail "workspace name too long (${#name} chars, max 50): $name"
   fi
   case "$name" in
-    *[[:space:]~^:?*[\\]]* | .* | */ | *..* | *//* )
+    *[[:space:]~^:?*[\\]* | .* | */* | *..* )
       orbit_fail "invalid workspace name (git branch ref rules): $name" ;;
   esac
 
@@ -2419,60 +2475,114 @@ orbit_parse_duration() {
   esac
 }
 
-orbit_pr_merged() {
-  local url="$1"
+# --- Layer-1 PR evidence -------------------------------------------------
+# Run-scoped cache, reset by orbit_prune. ORBIT_PR_URLS holds the recorded
+# pr.url list; each URL is queried once (network-bound) and cached as a
+# `url\x1fstate\x1fheadRefName\x1fheadRefOid` line. A gh failure caches an
+# empty state — a failed call never answers, and never fires twice.
+# ORBIT_PR_GH_BAD=1 disables the layer for the rest of the run after one
+# warning (gh absent, or one call failing).
+ORBIT_PR_URLS="" ORBIT_PR_CACHE="" ORBIT_PR_GH_BAD=""
+
+# Normalize a repo or PR URL to its host/org/name triple, lowercased —
+# scheme, user, `.git` suffix and a trailing /pull/<n> all wash out, so an
+# SSH origin and an HTTPS PR URL for the same repo compare equal.
+orbit_repo_url_triple() {
+  local u="$1"
+  u="${u%/}"; u="${u%.git}"
+  case "$u" in *"/pull/"*) u="${u%%/pull/*}" ;; esac
+  u="${u#*://}"                # strip scheme://
+  u="${u#*@}"                  # strip userinfo (scp git@ and https user@ alike)
+  u="${u/://}"                 # scp-like host:path -> host/path
+  printf '%s\n' "$(printf '%s' "$u" | tr '[:upper:]' '[:lower:]')"
+}
+
+# Query gh for one URL, cached per run. Set-global style (not stdout
+# capture): ORBIT_PR_STATE / ORBIT_PR_HEAD / ORBIT_PR_OID — $() subshells
+# would lose the cache write. Returns 1 when gh cannot answer; the FIRST
+# failure (gh absent, or any call erroring) warns once and disables layer 1
+# for the rest of the run.
+orbit_pr_fetch() {
+  local url="$1" line u
+  ORBIT_PR_STATE="" ORBIT_PR_HEAD="" ORBIT_PR_OID=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    u="${line%%$'\x1f'*}"
+    if [ "$u" = "$url" ]; then
+      line="${line#*$'\x1f'}"
+      ORBIT_PR_STATE="${line%%$'\x1f'*}"
+      line="${line#*$'\x1f'}"
+      ORBIT_PR_HEAD="${line%%$'\x1f'*}"
+      ORBIT_PR_OID="${line#*$'\x1f'}"
+      [ -n "$ORBIT_PR_STATE" ]
+      return
+    fi
+  done <<EOF
+$ORBIT_PR_CACHE
+EOF
+  [ "$ORBIT_PR_GH_BAD" = "1" ] && return 1
   if ! command -v gh >/dev/null 2>&1; then
-    printf 'orbit: gh CLI not installed, skipping PR status check\n' >&2
+    printf 'orbit: PR evidence recorded but gh unavailable — falling back to git merged checks\n' >&2
+    ORBIT_PR_GH_BAD=1
     return 1
   fi
-  local state
-  state=$(gh pr view "$url" --json state -q .state 2>/dev/null || true)
-  [ "$state" = "MERGED" ]
+  local json
+  if ! json=$(gh pr view "$url" --json state,headRefName,headRefOid 2>/dev/null); then
+    printf 'orbit: PR evidence recorded but gh unavailable — falling back to git merged checks\n' >&2
+    ORBIT_PR_GH_BAD=1
+    ORBIT_PR_CACHE="${ORBIT_PR_CACHE}${url}"$'\x1f\x1f\x1f'$'\n'
+    return 1
+  fi
+  ORBIT_PR_STATE=$(printf '%s' "$json" | grep -o '"state"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+  ORBIT_PR_HEAD=$(printf '%s' "$json" | grep -o '"headRefName"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+  ORBIT_PR_OID=$(printf '%s' "$json" | grep -o '"headRefOid"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+  ORBIT_PR_CACHE="${ORBIT_PR_CACHE}${url}"$'\x1f'"${ORBIT_PR_STATE}"$'\x1f'"${ORBIT_PR_HEAD}"$'\x1f'"${ORBIT_PR_OID}"$'\n'
+  [ -n "$ORBIT_PR_STATE" ]
 }
 
-orbit_collect_workspace_branches() {
-  local repo_dir="$1" ws_name="$2"
-  local prefix
-  prefix=$(orbit_require_prefix) || return 1
-  local branches=()
-  local worktree_branch
-  worktree_branch=$(git -C "$repo_dir" branch --show-current 2>/dev/null || true)
-  if [ -n "$worktree_branch" ]; then
-    branches+=("$worktree_branch")
-  fi
-  local main_repo
-  main_repo=$(git -C "$repo_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
-  if [ -z "$main_repo" ]; then
-    main_repo=$( (cd "$repo_dir" && git rev-parse --git-common-dir 2>/dev/null) || true)
-    if [ -n "$main_repo" ] && [ "${main_repo#/}" = "$main_repo" ]; then
-      main_repo="$(cd "$repo_dir" && cd "$main_repo" && pwd)"
-    fi
-  fi
-  if [ -n "$main_repo" ] && [ -d "$main_repo" ]; then
-    main_repo="${main_repo%/.git}"
-    while IFS= read -r b; do
-      [ -n "$b" ] || continue
-      branches+=("$b")
-    done < <(git -C "$main_repo" for-each-ref --format='%(refname:short)' "refs/heads/$prefix/$ws_name/")
-  fi
-  # deduplicate and output
-  printf '%s\n' "${branches[@]+${branches[@]}}" | sort -u
+# Layer 1 per branch: a recorded PR covers THIS branch — repo-matched (URL
+# triple vs the pool repo's origin), the branch's RECORDED upstream mapping
+# (branch.<name>.merge, what orbit_set_upstream writes) equals the PR's
+# headRefName (multi-segment names like feat/login survive — a last-segment
+# match would never fire for them), gh reports it merged, and the local tip
+# is contained in the PR head (local objects only — a head the pool never
+# fetched cannot answer, and the branch falls through).
+orbit_pr_covers_branch() {
+  local main_repo="$1" branch="$2" url triple head_name
+  head_name=$(git -C "$main_repo" config --get "branch.$branch.merge" 2>/dev/null || true)
+  head_name="${head_name#refs/heads/}"
+  [ -n "$head_name" ] || return 1
+  triple=$(orbit_repo_url_triple "$(git -C "$main_repo" config --get remote.origin.url 2>/dev/null || true)")
+  [ -n "$triple" ] || return 1
+  while IFS= read -r url; do
+    [ -n "$url" ] || continue
+    [ "$(orbit_repo_url_triple "$url")" = "$triple" ] || continue
+    orbit_pr_fetch "$url" || continue
+    [ "$ORBIT_PR_STATE" = "MERGED" ] || continue
+    [ "$ORBIT_PR_HEAD" = "$head_name" ] || continue
+    [ -n "$ORBIT_PR_OID" ] || continue
+    git -C "$main_repo" merge-base --is-ancestor "$branch" "$ORBIT_PR_OID" 2>/dev/null || continue
+    return 0
+  done <<EOF
+$ORBIT_PR_URLS
+EOF
+  return 1
 }
 
-# True when every change on <branch> is already contained in <upstream>'s
-# tree — the signature of a squash/rebase merge, which rewrites SHAs and
-# therefore defeats the ancestor check. Ordered by cost: `git merge-tree`
-# first (O(merged paths), independent of commit count, and definitive in BOTH
-# directions when it exits 0 — a differing tree proves the branch adds
-# content); `git cherry` only when merge-tree cannot answer (git < 2.38, or a
-# conflicting merge), since it costs O(commits × diff) over the whole range
-# and only catches 1:1 patch equivalence. merge-tree writes a few tree
-# objects to the ODB (invisible git-internal cache, also under --dry-run).
+# True when <branch>'s content is provably contained in <upstream>'s tree —
+# the signature of a squash/rebase merge, which rewrites SHAs and therefore
+# defeats the ancestor check. Prints "tree" when `git merge-tree
+# --write-tree` answered (clean merge, either direction — definitive), and
+# "cherry" when merge-tree could not answer (git < 2.38, or a conflicting
+# merge) but every commit is patch-equivalent upstream. merge-tree writes a
+# few tree objects to the ODB (invisible git-internal cache, also under
+# --dry-run).
 orbit_branch_content_upstream() {
   local main_repo="$1" branch="$2" upstream="$3" merged_tree
   if merged_tree=$(git -C "$main_repo" merge-tree --write-tree "$upstream" "$branch" 2>/dev/null); then
-    [ "$merged_tree" = "$(git -C "$main_repo" rev-parse "$upstream^{tree}" 2>/dev/null)" ]
-    return
+    [ "$merged_tree" = "$(git -C "$main_repo" rev-parse "$upstream^{tree}" 2>/dev/null)" ] || return 1
+    printf 'tree\n'
+    return 0
   fi
   # An unresolvable upstream — or any cherry failure — is "cannot tell", not
   # "content upstream": an empty '+' set would otherwise invert into a false
@@ -2480,76 +2590,373 @@ orbit_branch_content_upstream() {
   # match without a pipe (a pipe can SIGPIPE the producer under pipefail).
   local cherry_out
   cherry_out=$(git -C "$main_repo" cherry "$upstream" "$branch" 2>/dev/null) || return 1
+  printf 'cherry\n'
   ! grep -q '^+' <<< "$cherry_out"
 }
 
-orbit_branch_protection_delete() {
-  local main_repo="$1" branch="$2" pr_urls_str="$3" force_flag="$4" verify_flag="$5" dry_run_flag="$6"
-  # Returns 0 if the branch was (or would be) deleted, 1 if skipped.
+# Delete a branch, passing git's native error through on failure. git refuses
+# when the branch is checked out — including STALE registrations left by
+# worktrees removed without `git worktree remove` (dir gone, admin entry
+# stays, refusal persists). Those are cleaned (`worktree remove --force` on
+# the dead path) and the delete retried once; a live checkout keeps refusing.
+# LC_ALL=C: the stale-registration retry parses git's error text, and a
+# localized message would silently disable the retry.
+orbit_branch_delete() {
+  local repo="$1" branch="$2" flag="$3" allow_merged_retry="${4:-0}" del_err wt_path
+  if del_err=$(LC_ALL=C git -C "$repo" branch "$flag" "$branch" 2>&1 >/dev/null); then
+    return 0
+  fi
+  # A stale worktree registration (dir gone, admin entry left) keeps refusing
+  # deletion forever — clean it and retry. A live checkout keeps refusing.
+  wt_path=$(printf '%s\n' "$del_err" | sed -n "s/.*used by worktree at '\(.*\)'.*/\1/p" | head -1)
+  if [ -n "$wt_path" ] && [ ! -e "$wt_path" ]; then
+    git -C "$repo" worktree remove --force "$wt_path" >/dev/null 2>&1 || true
+    if del_err=$(LC_ALL=C git -C "$repo" branch "$flag" "$branch" 2>&1 >/dev/null); then
+      return 0
+    fi
+  fi
+  # `-d` measures mergedness against the LOCAL default checkout, which lags
+  # origin/<default> after a fetch. Callers who already proved the content is
+  # upstream (layer-2 / PR-merged) treat that refusal as retryable with -D.
+  if [ "$allow_merged_retry" = "1" ]; then
+    case "$del_err" in
+      *"not fully merged"*)
+        if del_err=$(LC_ALL=C git -C "$repo" branch -D "$branch" 2>&1 >/dev/null); then
+          return 0
+        fi
+        ;;
+    esac
+  fi
+  printf 'orbit: %s\n' "$(printf '%s\n' "$del_err" | head -1)" >&2
+  return 1
+}
+
+# Pure verdict for one branch: which layer fires, with which delete flag. No
+# mutation, no report rendering — the result lands in ORBIT_VERDICT /
+# ORBIT_V_FLAG / ORBIT_V_RETRY / ORBIT_V_LABEL / ORBIT_V_NOTE. Set-global
+# style (not stdout capture) so the layer-1 PR cache survives the call —
+# $() and <(...) subshells would lose it. Layer 1 (recorded PR covers this
+# branch) reads the run-scoped ORBIT_PR_URLS — a ghost has no recorded
+# URLs, so it never fires for ghosts. Execution and rendering live in
+# orbit_branch_protection_delete.
+orbit_branch_verdict() {
+  local main_repo="$1" branch="$2" force_flag="$3"
+  ORBIT_VERDICT="" ORBIT_V_FLAG="" ORBIT_V_RETRY=0 ORBIT_V_LABEL="" ORBIT_V_NOTE=""
 
   if [ "$force_flag" = "1" ]; then
-    if [ "$dry_run_flag" = "1" ]; then
-      printf '    would force-delete branch: %s\n' "$branch"
-    else
-      git -C "$main_repo" branch -D "$branch" 2>/dev/null || true
-      printf '    deleted branch (force): %s\n' "$branch"
-    fi
+    ORBIT_VERDICT=delete ORBIT_V_FLAG=-D ORBIT_V_LABEL=force
     return 0
   fi
 
-  # Layer 1: --verify + PR URLs → check merged
-  if [ "$verify_flag" = "1" ] && [ -n "$pr_urls_str" ]; then
-    local all_merged=1
-    for url in $pr_urls_str; do
-      if ! orbit_pr_merged "$url"; then
-        all_merged=0
-        break
-      fi
-    done
-    if [ "$all_merged" = "1" ]; then
-      if [ "$dry_run_flag" = "1" ]; then
-        printf '    would delete branch (PR merged): %s\n' "$branch"
-      else
-        git -C "$main_repo" branch -D "$branch" 2>/dev/null || true
-        printf '    deleted branch (PR merged): %s\n' "$branch"
-      fi
-      return 0
-    fi
+  # Layer 1: a recorded, repo-matched, merged PR whose head covers the tip.
+  if [ -n "$ORBIT_PR_URLS" ] && orbit_pr_covers_branch "$main_repo" "$branch"; then
+    ORBIT_VERDICT=delete ORBIT_V_FLAG=-D ORBIT_V_LABEL="PR merged"
+    return 0
   fi
 
   # Layer 2: merged into origin/<default-branch>
   local default_branch
   default_branch=$(orbit_default_branch "$main_repo" 2>/dev/null || true)
   if [ -n "$default_branch" ] && git -C "$main_repo" merge-base --is-ancestor "$branch" "origin/$default_branch" 2>/dev/null; then
-    if [ "$dry_run_flag" = "1" ]; then
-      printf '    would delete branch (merged): %s\n' "$branch"
+    ORBIT_VERDICT=delete ORBIT_V_FLAG=-d ORBIT_V_RETRY=1 ORBIT_V_LABEL=merged
+    return 0
+  fi
+
+  # Layer 3: content proven upstream — the squash/rebase case, where layer 2
+  # can never fire. A definitive tree-level answer (merge-tree clean) is a
+  # delete verdict; only when merge-tree cannot answer does the branch stay,
+  # and a cherry-positive demotes to a report hint on the keep line.
+  local evidence=""
+  if [ -n "$default_branch" ]; then
+    if evidence=$(orbit_branch_content_upstream "$main_repo" "$branch" "origin/$default_branch"); then
+      if [ "$evidence" = "tree" ]; then
+        ORBIT_VERDICT=delete ORBIT_V_FLAG=-D ORBIT_V_LABEL="content upstream"
+        return 0
+      fi
+      ORBIT_V_NOTE=" (content reads as already upstream — squash/rebase merge? clean up: git -C \".repos/$(basename "$main_repo")\" branch -D $(printf '%q' "$branch"))"
     else
-      git -C "$main_repo" branch -d "$branch" 2>/dev/null || true
-      printf '    deleted branch (merged): %s\n' "$branch"
+      ORBIT_V_NOTE=" — review: git -C \".repos/$(basename "$main_repo")\" log $(printf '%q' "origin/$default_branch..$branch")"
+    fi
+  fi
+  ORBIT_VERDICT=keep
+}
+
+orbit_branch_protection_delete() {
+  local main_repo="$1" branch="$2" force_flag="$3" dry_run_flag="$4" quiet_keep="${5:-0}"
+  # Returns 0 if the branch was (or would be) deleted, 1 if skipped.
+  # quiet_keep=1 (ghost groups): a real-run keep is reported by the caller in
+  # the group's stdout block — the stderr diagnostic would just duplicate it.
+  orbit_branch_verdict "$main_repo" "$branch" "$force_flag"
+
+  if [ "$ORBIT_VERDICT" = "keep" ]; then
+    if [ "$dry_run_flag" = "1" ]; then
+      printf '    would keep unmerged branch: %s%s\n' "$branch" "$ORBIT_V_NOTE"
+    elif [ "$quiet_keep" = "0" ]; then
+      printf 'orbit: keeping unmerged branch: %s%s\n' "$branch" "$ORBIT_V_NOTE" >&2
+    fi
+    return 1
+  fi
+
+  if [ "$dry_run_flag" = "1" ]; then
+    if [ "$ORBIT_V_LABEL" = "force" ]; then
+      printf '    would force-delete branch: %s\n' "$branch"
+    else
+      printf '    would delete branch (%s): %s\n' "$ORBIT_V_LABEL" "$branch"
     fi
     return 0
   fi
 
-  # Layer 3: skip — but a squash/rebase merge rewrites SHAs and defeats the
-  # ancestor check above, so a branch can be unmerged in form yet fully merged
-  # in content. Name that case and hand the operator the exact cleanup
-  # command: prune runs at the project root, where the operator is human.
-  # In dry-run the skip is part of the report (stdout); in a real run it is a
-  # diagnostic accompanying the mutation (stderr).
-  local note=""
-  if [ -n "$default_branch" ] && orbit_branch_content_upstream "$main_repo" "$branch" "origin/$default_branch"; then
-    note=" (content already upstream — squash/rebase merge? clean up: git -C \"$main_repo\" branch -D \"$branch\")"
+  # The report owns the deletion line (git's own chatter is suppressed), so it
+  # carries the one informative piece of git's line: the commit, the reflog
+  # handle. Resolve before the delete; omit the suffix if unresolvable.
+  local sha=""
+  sha=$(git -C "$main_repo" rev-parse --short "$branch" 2>/dev/null || true)
+  [ -n "$sha" ] && sha=" (was $sha)"
+  if orbit_branch_delete "$main_repo" "$branch" "$ORBIT_V_FLAG" "$ORBIT_V_RETRY"; then
+    printf '    deleted branch (%s): %s%s\n' "$ORBIT_V_LABEL" "$branch" "$sha"
+    return 0
   fi
-  if [ "$dry_run_flag" = "1" ]; then
-    printf '    would skip unmerged branch: %s%s\n' "$branch" "$note"
-  else
-    printf 'orbit: skipping unmerged branch: %s%s\n' "$branch" "$note" >&2
+  return 1
+}
+
+# --- Residue: ghost workspaces and untraceable branches ---
+# Candidates derive only from the structural truth sources (git refs +
+# filesystem), never from disposable metadata: a ghost workspace is named by
+# its scoped branches (<prefix>/<ws>/…), a raw branch's traceability by
+# refs/remotes and the worktree list.
+
+# for-each-ref wrapper for residue scans: a git error (corrupt repo) warns
+# instead of reading as "no branches" — a blind scan must never pass as empty.
+orbit_for_each_ref() {
+  local out
+  if ! out=$(git -C "$1" for-each-ref --format='%(refname:short)' "$2" 2>/dev/null); then
+    printf 'orbit: %s: cannot scan branches — residue check skipped for this repo\n' "$(basename "$1")" >&2
+    return 0
+  fi
+  printf '%s\n' "$out"
+}
+
+# Print names of workspaces whose directory is gone but which still have
+# scoped branches in some pool repo ("ghosts"). Caller dedups (sort -u).
+orbit_prune_ghost_workspaces() {
+  local root="$1" prefix repo_dir br ws
+  prefix=$(orbit_require_prefix) || return 1
+  for repo_dir in "$root/.repos"/*/; do
+    [ -d "$repo_dir/.git" ] || continue
+    while IFS= read -r br; do
+      [ -n "$br" ] || continue
+      case "$br" in "$prefix"/*/*) ;; *) continue ;; esac   # full shape only; a single-segment name is raw residue
+      ws="${br#"$prefix"/}"
+      ws="${ws%%/*}"
+      [ -n "$ws" ] || continue
+      orbit_reserved_workspace "$ws" && continue
+      [ -d "$root/$ws" ] || printf '%s\n' "$ws"
+    done < <(orbit_for_each_ref "$repo_dir" "refs/heads/$prefix/")
+  done
+}
+
+# Process one ghost workspace: every scoped branch through the git verdict
+# layers (2 and 3 — a ghost carries no recorded PRs, so layer 1 never fires),
+# per-item: merged → deleted, unmerged → kept and reported, --force → force
+# deleted. The group is a reconciliation report, not a refusal: kept lines
+# are stdout report content in both modes, adjacent to the deletion lines.
+# Kept branches feed the closing block via ORBIT_KEPT_WS. Returns 0 when any
+# branch was found.
+orbit_prune_ghost_group() {
+  local root="$1" ws="$2" force="$3" dry_run="$4" targeted="$5"
+  local prefix repo_dir repo_name branch found=0 g_del=0 g_keep=0 conv_out=""
+  prefix=$(orbit_require_prefix) || return 1
+  # A ghost carries no recorded PRs (its .orbit died with the directory) —
+  # layer 1 never fires here, whatever a live candidate left in the variable.
+  ORBIT_PR_URLS=""
+  for repo_dir in "$root/.repos"/*/; do
+    [ -d "$repo_dir/.git" ] || continue
+    repo_name=$(basename "$repo_dir")
+    local branches=()
+    while IFS= read -r branch; do
+      [ -n "$branch" ] && branches+=("$branch")
+    done < <(orbit_for_each_ref "$repo_dir" "refs/heads/$prefix/$ws/")
+    [ "${#branches[@]}" -gt 0 ] || continue
+    if [ "$found" = "0" ]; then
+      if [ "$dry_run" = "1" ]; then printf 'would prune: %s (residue)\n' "$ws"
+      else printf 'pruning: %s (residue)\n' "$ws"; fi
+      found=1
+    fi
+    local repo_out="" bline
+    for branch in "${branches[@]}"; do
+      if bline=$(orbit_branch_protection_delete "$repo_dir" "$branch" "$force" "$dry_run" 1); then
+        g_del=$((g_del + 1))
+        repo_out="$repo_out$bline
+"
+      else
+        # Distinguish a verdict-keep from a deletion FAILURE (git refused —
+        # its own first line already went to stderr): re-run the pure verdict
+        # in this shell and classify. A failure is a step failure — it
+        # latches the run's exit code, prints no "kept" line, and never feeds
+        # the closing block (its --force suggestion would just fail again).
+        if [ "$dry_run" = "0" ]; then
+          orbit_branch_verdict "$repo_dir" "$branch" "$force"
+        fi
+        if [ "$dry_run" = "1" ] || [ "$ORBIT_VERDICT" = "keep" ]; then
+          g_keep=$((g_keep + 1))
+          # A ghost's kept line is report content in BOTH modes.
+          if [ "$dry_run" = "1" ]; then
+            repo_out="$repo_out$bline
+"
+          else
+            repo_out="$repo_out    kept branch (unmerged): $branch$ORBIT_V_NOTE
+"
+          fi
+          # Newline-separated list + literal match: workspace names can contain
+          # glob characters — a space-joined list would word-split AND pathname-
+          # expand at the project root, retargeting the closing block's
+          # suggestion at a DIFFERENT workspace.
+          if ! printf '%s\n' "$ORBIT_KEPT_WS" | grep -Fxq -- "$ws"; then
+            ORBIT_KEPT_WS="${ORBIT_KEPT_WS:+$ORBIT_KEPT_WS
+}$ws"
+          fi
+        else
+          ORBIT_PRUNE_FAILED=1
+        fi
+      fi
+    done
+    [ -n "$repo_out" ] && printf '  %s:\n%s' "$repo_name" "$repo_out"
+    # Convergence (refspec reconcile + maintenance) runs here only for a
+    # TARGETED run — on enumeration the closing sweep covers every pool.
+    # Either way it reports under the pool-maintenance section, never inside
+    # the workspace block: pool accounts are not the workspace's cleanup.
+    if [ "$targeted" = "1" ]; then
+      local g_rlines="" g_r g_bk
+      while IFS= read -r g_r; do
+        if [ -n "$g_r" ]; then g_rlines="$g_rlines    $g_r
+"; fi
+      done < <(orbit_reconcile_fetch_refspecs "$repo_dir" "$dry_run")
+      if [ "$dry_run" = "0" ]; then
+        if g_bk=$(orbit_prune_repo_maintenance "$repo_dir" "$dry_run"); then
+          g_rlines="$g_rlines    $g_bk
+"
+        fi
+      fi
+      [ -n "$g_rlines" ] && conv_out="$conv_out  $repo_name:
+$g_rlines"
+    fi
+  done
+  if [ "$found" = "1" ] && [ "$dry_run" = "0" ]; then
+    printf 'pruned: %s (residue) (%d %s deleted, %d kept)\n' \
+      "$ws" "$g_del" "$(orbit_plural "$g_del" branch branches)" "$g_keep"
+  fi
+  # Pool accounts get their own section, after the workspace report closes.
+  [ -n "$conv_out" ] && printf 'pool maintenance:\n%s' "$conv_out"
+  [ "$found" = "1" ]
+}
+
+# Report branches that cannot be traced to anything: not scoped-shaped, no
+# remote copy (no origin/<name>), not checked out in any worktree. These are
+# never deleted by orbit — collected here (grouped by repo, in pool order) and
+# rendered by the closing block, for the human operator to dispose of.
+# Sets ORBIT_RAW_COUNT and fills ORBIT_RAW_ENTRIES / ORBIT_RAW_DELETES.
+orbit_prune_raw_residue() {
+  local root="$1" dry_run="$2"
+  local prefix repo_dir repo_name branch default_branch
+  prefix=$(orbit_require_prefix) || return 1
+  for repo_dir in "$root/.repos"/*/; do
+    [ -d "$repo_dir/.git" ] || continue
+    repo_name=$(basename "$repo_dir")
+    local checked_out=" " wt_line
+    while IFS= read -r wt_line; do
+      case "$wt_line" in
+        branch\ refs/heads/*) checked_out="$checked_out${wt_line#branch refs/heads/} " ;;
+      esac
+    done < <(git -C "$repo_dir" worktree list --porcelain 2>/dev/null || true)
+    default_branch=$(orbit_default_branch "$repo_dir" 2>/dev/null || true)
+    local repo_group=""
+    while IFS= read -r branch; do
+      [ -n "$branch" ] || continue
+      case "$branch" in "$prefix/"*/*) continue ;; esac        # scoped → residue path
+      case "$checked_out" in *" $branch "*) continue ;; esac   # live in a worktree
+      # Remote copy = traceable: same-name ref, or a configured upstream under
+      # another name. Read branch.<name>.merge directly and map by convention
+      # (refs/heads/X → refs/remotes/<remote>/X) — @{upstream} resolution goes
+      # through fetch refspecs, which a single-branch pool clone doesn't cover.
+      git -C "$repo_dir" rev-parse --verify --quiet "origin/$branch" >/dev/null 2>&1 && continue
+      local merge_ref remote_short
+      merge_ref=$(git -C "$repo_dir" config --get "branch.$branch.merge" 2>/dev/null || true)
+      if [ -n "$merge_ref" ]; then
+        remote_short="${merge_ref#refs/heads/}"
+        git -C "$repo_dir" rev-parse --verify --quiet "origin/$remote_short" >/dev/null 2>&1 && continue
+      fi
+      local status_word="unknown" review=""
+      if [ -n "$default_branch" ]; then
+        status_word="unmerged"
+        if git -C "$repo_dir" merge-base --is-ancestor "$branch" "origin/$default_branch" 2>/dev/null; then
+          status_word="merged"
+        else
+          review=" — review: git -C \".repos/$repo_name\" log $(printf '%q' "origin/$default_branch..$branch")"
+        fi
+      fi
+      repo_group="$repo_group    $branch ($status_word)$review
+"
+      # Ref names may carry shell metacharacters (`;` `&&` `$()` …) — the
+      # operator copy-pastes this, so quote it the way the replay does.
+      ORBIT_RAW_DELETES="$ORBIT_RAW_DELETES  git -C \".repos/$repo_name\" branch -D $(printf '%q' "$branch")
+"
+      ORBIT_RAW_COUNT=$((ORBIT_RAW_COUNT + 1))
+    done < <(orbit_for_each_ref "$repo_dir" refs/heads/)
+    if [ -n "$repo_group" ]; then
+      ORBIT_RAW_ENTRIES="$ORBIT_RAW_ENTRIES  $repo_name:
+$repo_group"
+    fi
+  done
+  [ "$ORBIT_RAW_COUNT" -gt 0 ]
+}
+
+# Maintenance self-heal for one pool repo, both kinds of registration whose
+# subject no longer exists:
+#   - stale worktree registrations — the path is GONE (a registration whose
+#     path still exists is a damaged worktree: validation's job, never
+#     auto-repaired — the registration is the only evidence of that state)
+#   - orphan branch.<name>.* config sections whose branch no longer exists
+# Neither touches an object or a file with content, so no --force. Prints one
+# summary line when it repaired anything. --dry-run evaluates and stays
+# silent (the line's exact counts add no plan value over the dry-run's other
+# output).
+orbit_prune_repo_maintenance() {
+  local repo="$1" dry_run="$2" n_reg=0 n_cfg=0 line wt_path br
+  if [ "$dry_run" = "0" ]; then
+    while IFS= read -r line; do
+      case "$line" in
+        worktree\ *)
+          wt_path="${line#worktree }"
+          # The pool's own checkout is never stale, whatever the registry says.
+          [ "$wt_path" = "$repo" ] && continue
+          [ -e "$wt_path" ] && continue
+          if git -C "$repo" worktree remove --force "$wt_path" >/dev/null 2>&1; then
+            n_reg=$((n_reg + 1))
+          fi
+          ;;
+      esac
+    done < <(git -C "$repo" worktree list --porcelain 2>/dev/null || true)
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      # branch.<name>.<key>: the KEY is the last segment — strip it only.
+      # Truncating at the first dot would orphan "feat.v2" forever.
+      br="${line#branch.}"; br="${br%.*}"
+      git -C "$repo" rev-parse --verify --quiet "refs/heads/$br" >/dev/null 2>&1 && continue
+      if git -C "$repo" config --remove-section "branch.$br" 2>/dev/null; then
+        n_cfg=$((n_cfg + 1))
+      fi
+    done < <(git -C "$repo" config --get-regexp '^branch\..*\.' 2>/dev/null | cut -d' ' -f1 | sort -u || true)
+  fi
+  if [ "$n_reg" -gt 0 ] || [ "$n_cfg" -gt 0 ]; then
+    printf '%s: pruned %d stale worktree registration(s), %d orphan branch config section(s)\n' \
+      "$(basename "$repo")" "$n_reg" "$n_cfg"
+    return 0
   fi
   return 1
 }
 
 orbit_prune() {
-  local older="" dry_run=0 force=0 verify=0 target_ws=""
+  local older="" dry_run=0 force=0 target_ws=""
   local orig_args=("$@")
 
   while [ "$#" -gt 0 ]; do
@@ -2557,7 +2964,6 @@ orbit_prune() {
       --older) [ "$#" -ge 2 ] || orbit_fail "--older requires a duration"; older="$2"; shift 2 ;;
       --dry-run) dry_run=1; shift ;;
       --force) force=1; shift ;;
-      --verify) verify=1; shift ;;
       -*) orbit_fail "unknown option: $1" ;;
       *) [ -z "$target_ws" ] || orbit_fail "unexpected argument: $1"; target_ws="$1"; shift ;;
     esac
@@ -2577,6 +2983,40 @@ orbit_prune() {
 
   local now
   now=$(date +%s)
+
+  # Run-scoped state: closing-block collectors, the layer-1 PR evidence cache
+  # (each URL is one network call, queried once), and the failure latch (a
+  # step that FAILED exits non-zero; a validation refusal does not).
+  ORBIT_KEPT_WS="" ORBIT_RAW_COUNT=0 ORBIT_RAW_ENTRIES="" ORBIT_RAW_DELETES=""
+  ORBIT_PR_URLS="" ORBIT_PR_CACHE="" ORBIT_PR_GH_BAD="" ORBIT_PRUNE_FAILED=""
+  local had_failure=0 trash_entries=0
+
+  # Opening sweep: whatever the trash holds is past the commit point —
+  # definitionally garbage, resumed with no validation and no --force. This
+  # also guarantees a later rename never collides with a same-named leftover.
+  # --dry-run touches nothing and reports the sweep as a would-line.
+  local trash="$root/.prune-trash"
+  if [ -d "$trash" ]; then
+    local t tname t_err t_cleared=0
+    for t in "$trash"/*/; do
+      [ -d "$t" ] || continue
+      trash_entries=$((trash_entries + 1))
+      if [ "$dry_run" = "0" ]; then
+        if t_err=$(rm -rf "$t" 2>&1); then
+          t_cleared=$((t_cleared + 1))
+        else
+          tname=$(basename "$t")
+          printf 'orbit: %s: trash removal incomplete (%s) — left in .prune-trash, resumed on the next run\n' "$tname" "$t_err" >&2
+          had_failure=1
+        fi
+      fi
+    done
+    if [ "$dry_run" = "1" ]; then
+      [ "$trash_entries" -gt 0 ] && printf 'would clear %d interrupted deletion(s)\n' "$trash_entries"
+    elif [ "$t_cleared" -gt 0 ]; then
+      printf 'orbit: .prune-trash: cleared %d interrupted deletion(s)\n' "$t_cleared" >&2
+    fi
+  fi
 
   # Collect candidate workspaces
   local candidates=()
@@ -2613,49 +3053,90 @@ orbit_prune() {
     candidates+=("$ws_name")
   done
 
-  if [ -n "$target_ws" ] && [ "${#candidates[@]}" -eq 0 ]; then
-    orbit_fail "workspace not found or not marked done: $target_ws"
-  fi
-
-  if [ "${#candidates[@]}" -eq 0 ]; then
-    printf 'nothing to prune\n'
-    return 0
-  fi
-
-  for ws in "${candidates[@]}"; do
-    local ws_dir="$root/$ws"
-    local orbit_file="$ws_dir/.orbit"
-
-    # Collect all PR URLs from workspace metadata
-    local pr_urls_str=""
-    while IFS= read -r url; do
-      [ -n "$url" ] || continue
-      pr_urls_str="$pr_urls_str $url"
-    done < <(git config --file "$orbit_file" --get-all pr.url 2>/dev/null || true)
-    pr_urls_str="${pr_urls_str# }"
-
-    # --verify mode: all PRs must be merged
-    if [ "$verify" = "1" ] && [ -n "$pr_urls_str" ]; then
-      local all_merged=1
-      for url in $pr_urls_str; do
-        if ! orbit_pr_merged "$url"; then
-          all_merged=0
+  # Ghost workspaces: scoped branches whose workspace directory is already
+  # reclaimed. A targeted run looks only at its own workspace's branches —
+  # no global ghost scan, no raw report; enumeration scans everything.
+  local ghost_ws=()
+  if [ -n "$target_ws" ]; then
+    # Same structural filter the enumeration path applies via
+    # orbit_prune_ghost_workspaces: a reserved or slash-bearing name is not a
+    # workspace, and "<ws>/<sub>" must not become a ref-pattern into a live one.
+    orbit_reserved_workspace "$target_ws" \
+      && orbit_fail "no such workspace: $target_ws"
+    if [ ! -d "$root/$target_ws" ]; then
+      local tg_prefix tg_repo tg_refs
+      tg_prefix=$(orbit_require_prefix) || return 1
+      for tg_repo in "$root/.repos"/*/; do
+        [ -d "$tg_repo/.git" ] || continue
+        # Capture, then test: piping for-each-ref into `grep -q` SIGPIPEs the
+        # producer under pipefail once the ref list outgrows the pipe buffer,
+        # and the ghost is missed exactly when the residue pile is biggest.
+        if ! tg_refs=$(git -C "$tg_repo" for-each-ref --count=1 --format='%(refname:short)' \
+          "refs/heads/$tg_prefix/$target_ws/" 2>/dev/null); then
+          printf 'orbit: %s: cannot scan branches — residue check skipped for this repo\n' "$(basename "$tg_repo")" >&2
+          continue
+        fi
+        if [ -n "$tg_refs" ]; then
+          ghost_ws+=("$target_ws")
           break
         fi
       done
-      if [ "$all_merged" = "0" ]; then
-        printf 'orbit: skipping %s: not all PRs merged\n' "$ws" >&2
-        continue
-      fi
     fi
+  else
+    while IFS= read -r g; do [ -n "$g" ] && ghost_ws+=("$g"); done \
+      < <(orbit_prune_ghost_workspaces "$root" | sort -u)
+  fi
 
-    # Collect repo worktrees first so the header can lead the report.
-    # foreign_repos: git repos in the workspace that are NOT worktrees of a pool
-    # repo. A pool worktree always has a .git *file* (gitdir pointer); a .git
-    # *directory* is an independent clone even when it sits under a pool repo's
-    # name — its objects live in its own .git, so the rm -rf below destroys
-    # history that exists nowhere else. The scan is deliberately top-level:
-    # guard scope is the workspace's direct children (see spec-lifecycle).
+  # Targeted refusal: three distinct facts, none naming a way forward — the
+  # second is a recorded intent (never overridden), the third a lost cache
+  # (rebuilt by `orbit done` inside the directory).
+  if [ -n "$target_ws" ] && [ "${#candidates[@]}" -eq 0 ]; then
+    local targeted_ghost=0 g
+    for g in ${ghost_ws[@]+"${ghost_ws[@]}"}; do
+      [ "$g" = "$target_ws" ] && targeted_ghost=1
+    done
+    if [ "$targeted_ghost" = "0" ]; then
+      if [ -d "$root/$target_ws" ]; then
+        local t_status="" t_rc=0
+        if [ -f "$root/$target_ws/.orbit" ]; then
+          # rc 1 = no status key (a recorded non-done intent); rc >1 = the
+          # file itself is unreadable to git-config (a lost cache).
+          t_status=$(git config --file "$root/$target_ws/.orbit" --get workspace.status 2>/dev/null) || t_rc=$?
+        fi
+        if [ ! -f "$root/$target_ws/.orbit" ] || [ "$t_rc" -gt 1 ]; then
+          orbit_fail "$target_ws exists but workspace metadata is missing or unreadable"
+        fi
+        if [ "$t_status" = "done" ] && [ "$older_seconds" -gt 0 ]; then
+          # done but filtered out by --older alone — state the age fact
+          orbit_fail "$target_ws is marked done but not older than $older"
+        fi
+        orbit_fail "$target_ws exists but is not marked done"
+      fi
+      orbit_fail "no such workspace: $target_ws"
+    fi
+  fi
+
+  for ws in ${candidates[@]+"${candidates[@]}"}; do
+    local ws_dir="$root/$ws"
+    local orbit_file="$ws_dir/.orbit"
+
+    # Layer-1 evidence for this candidate: the recorded PR URLs. Newline-
+    # joined and read with while-read — .orbit is agent-writable input, and
+    # an unquoted `for url in $list` would pathname-expand glob characters
+    # in a URL against the current directory.
+    ORBIT_PR_URLS=""
+    local url
+    while IFS= read -r url; do
+      [ -n "$url" ] || continue
+      ORBIT_PR_URLS="$ORBIT_PR_URLS$url"$'\n'
+    done < <(git config --file "$orbit_file" --get-all pr.url 2>/dev/null || true)
+
+    # Workspace top-level enumeration: pool-backed worktrees (a .git *file*
+    # with a pool counterpart) vs foreign repos (a .git *directory* — an
+    # independent clone even when it sits under a pool repo's name; its
+    # objects live in its own .git, so the removal below destroys history
+    # that exists nowhere else). The scan is deliberately top-level: guard
+    # scope is the workspace's direct children (see spec-lifecycle).
     local ws_repo_dirs=() foreign_repos=()
     for repo_dir in "$ws_dir"/*/; do
       [ -d "$repo_dir" ] || continue
@@ -2669,156 +3150,440 @@ orbit_prune() {
       fi
     done
 
-    # Data protection: never destroy uncommitted changes without --force.
-    # Branch deletion has merged-checks below, but worktree removal nukes
-    # working-tree state outright — gate it here. The guard must cover
-    # everything rm -rf destroys, not just the pool-backed worktrees: a repo
-    # with no pool counterpart loses its object database too.
-    #
-    # All reasons are collected before reporting: --force releases them as one
-    # decision, so the operator has to see the whole set to make that decision
-    # once, instead of fixing one reason per run and being surprised by the next.
-    if [ "$force" = "0" ]; then
-      local skip_reasons=""
-      local dirty_repos=()
-      for repo_dir in ${ws_repo_dirs[@]+"${ws_repo_dirs[@]}"}; do
-        # An unreadable status is "cannot tell", not "clean" — treat it as dirty.
-        local st_out st_rc=0
-        st_out=$(git -C "$repo_dir" status --porcelain 2>/dev/null) || st_rc=$?
-        if [ "$st_rc" -ne 0 ] || [ -n "$st_out" ]; then
-          dirty_repos+=("$(basename "$repo_dir")")
-        fi
-      done
-      [ "${#dirty_repos[@]}" -gt 0 ] && skip_reasons="uncommitted changes in: ${dirty_repos[*]}"
-
-      if [ "${#foreign_repos[@]}" -gt 0 ]; then
-        [ -n "$skip_reasons" ] && skip_reasons="$skip_reasons; "
-        skip_reasons="${skip_reasons}git repos not from the pool: ${foreign_repos[*]}"
-      fi
-
-      # Knowledge protection: jots live in the workspace .orbit, which rm -rf
-      # takes with it. done only warns once; this is the last checkpoint before
-      # the queue is gone for good.
-      local jotted_repos=() jot_repo jot_count
-      while IFS= read -r jot_repo; do
-        [ -n "$jot_repo" ] || continue
-        jot_count=$(git config --file "$ws_dir/.orbit" --get-all "jot.$jot_repo.entry" 2>/dev/null | grep -c . || true)
-        [ "${jot_count:-0}" -gt 0 ] || continue
-        jotted_repos+=("$jot_repo ($jot_count)")
-      done < <(git config --file "$ws_dir/.orbit" --name-only --get-regexp '^jot\..*\.entry$' 2>/dev/null | sed 's/^jot\.//; s/\.entry$//' | sort -u || true)
-      if [ "${#jotted_repos[@]}" -gt 0 ]; then
-        [ -n "$skip_reasons" ] && skip_reasons="$skip_reasons; "
-        skip_reasons="${skip_reasons}unmerged jots in: ${jotted_repos[*]}"
-      fi
-
-      if [ -n "$skip_reasons" ]; then
-        if [ "$dry_run" = "1" ]; then
-          printf 'would skip: %s (%s)\n' "$ws" "$skip_reasons"
-        else
-          printf 'orbit: skipping %s: %s\n' "$ws" "$skip_reasons" >&2
-        fi
+    # Branch collection is pool-driven: the union of refs/heads/<prefix>/<ws>/*
+    # across pool repos, independent of which worktree directories still
+    # exist (deriving the pool from the worktree path would drop branches
+    # from collection after an interruption between D1 and D2 — manufacturing
+    # a ghost). Entries are "<pool>\x1f<branch>" lines. A scan FAILURE is
+    # fail-closed here: the live path must never read "cannot read" as "no
+    # branches" — that is how all-or-nothing's premise (a complete branch
+    # set) stays enforced.
+    local ws_prefix
+    ws_prefix=$(orbit_require_prefix) || return 1
+    local br_entries="" pool_dir b scan_out scan_failed_repos=()
+    for pool_dir in "$root/.repos"/*/; do
+      [ -d "$pool_dir/.git" ] || continue
+      if ! scan_out=$(git -C "$pool_dir" for-each-ref --format='%(refname:short)' "refs/heads/$ws_prefix/$ws/" 2>/dev/null); then
+        scan_failed_repos+=("$(basename "$pool_dir")")
         continue
       fi
+      while IFS= read -r b; do
+        [ -n "$b" ] || continue
+        br_entries="$br_entries${pool_dir%/}"$'\x1f'"$b"$'\n'
+      done <<< "$scan_out"
+    done
+
+    # --- Validation: a pure function of structural evidence --------------
+    # Every guard that reads workspace-side evidence fails closed on absence.
+    # The data guards run in BOTH modes — --force releases them, but only
+    # after announcing what it discards.
+    local skip_reasons="" kept_lines="" blocked=0
+    local dirty_repos=() damaged_repos=() jotted_repos=()
+
+    # Uncommitted changes: worktree removal nukes working-tree state
+    # outright, so an unreadable `git status` counts as dirty — "cannot
+    # tell" is never "clean".
+    for repo_dir in ${ws_repo_dirs[@]+"${ws_repo_dirs[@]}"}; do
+      local st_out st_rc=0
+      st_out=$(git -C "$repo_dir" status --porcelain 2>/dev/null) || st_rc=$?
+      if [ "$st_rc" -ne 0 ] || [ -n "$st_out" ]; then
+        dirty_repos+=("$(basename "$repo_dir")")
+      fi
+    done
+
+    # Damaged worktrees: the pool still registers a direct child as a
+    # worktree, but its gitdir pointer is unusable — every "is this a git
+    # repo" test fails on it, so the dirty guard would never see it. The
+    # registration names the path; prune does not repair it (a worktree
+    # orbit cannot read is one it must not delete). git reports physical
+    # paths, so the comparison is done on the physical workspace path.
+    local wt_line wt_path wt_name ws_dir_phys
+    ws_dir_phys=$(cd "$ws_dir" 2>/dev/null && pwd -P || printf '%s' "$ws_dir")
+    local damaged_pairs=""
+    for pool_dir in "$root/.repos"/*/; do
+      [ -d "$pool_dir/.git" ] || continue
+      while IFS= read -r wt_line; do
+        case "$wt_line" in
+          worktree\ *)
+            wt_path="${wt_line#worktree }"
+            case "$wt_path" in
+              "$ws_dir_phys"/*)
+                wt_name="${wt_path#"$ws_dir_phys"/}"
+                case "$wt_name" in */*) continue ;; esac   # direct children only
+                # path gone = stale registration (maintenance's job, below);
+                # damaged = the path EXISTS but its gitdir pointer is dead
+                [ -e "$wt_path" ] || continue
+                if ! git -C "$wt_path" rev-parse --git-dir >/dev/null 2>&1; then
+                  damaged_repos+=("$(basename "$pool_dir")")
+                  damaged_pairs="$damaged_pairs$(basename "$pool_dir")"$'\x1f'"$wt_path"$'\n'
+                fi
+                ;;
+            esac
+            ;;
+        esac
+      done < <(git -C "$pool_dir" worktree list --porcelain 2>/dev/null || true)
+    done
+
+    # Unmerged jots: they live in the workspace .orbit, which the removal
+    # takes with it. done only warns once; this is the last checkpoint.
+    local jot_repo jot_count
+    while IFS= read -r jot_repo; do
+      [ -n "$jot_repo" ] || continue
+      jot_count=$(git config --file "$orbit_file" --get-all "jot.$jot_repo.entry" 2>/dev/null | grep -c . || true)
+      [ "${jot_count:-0}" -gt 0 ] || continue
+      jotted_repos+=("$jot_repo ($jot_count)")
+    done < <(git config --file "$orbit_file" --name-only --get-regexp '^jot\..*\.entry$' 2>/dev/null | sed 's/^jot\.//; s/\.entry$//' | sort -u || true)
+
+    [ "${#dirty_repos[@]}" -gt 0 ] && skip_reasons="uncommitted changes in: ${dirty_repos[*]}"
+    if [ "${#foreign_repos[@]}" -gt 0 ]; then
+      [ -n "$skip_reasons" ] && skip_reasons="$skip_reasons; "
+      skip_reasons="${skip_reasons}git repos not from the pool: ${foreign_repos[*]}"
+    fi
+    if [ "${#jotted_repos[@]}" -gt 0 ]; then
+      [ -n "$skip_reasons" ] && skip_reasons="$skip_reasons; "
+      skip_reasons="${skip_reasons}unmerged jots in: ${jotted_repos[*]}"
+    fi
+    local dmg
+    for dmg in ${damaged_repos[@]+"${damaged_repos[@]}"}; do
+      [ -n "$skip_reasons" ] && skip_reasons="$skip_reasons; "
+      skip_reasons="${skip_reasons}damaged worktree in $dmg (gitdir pointer unusable, pool registration intact) — content may be un-persisted"
+    done
+
+    # A scan failure blocks in BOTH modes, ahead of everything else:
+    # --force accepts consequences, it cannot supply the branch set git
+    # failed to enumerate — and the verdicts below would run on a partial
+    # set. Same exit class as a validation refusal (nothing was attempted).
+    # Never feeds the closing block: its --force suggestion cannot help here.
+    if [ "${#scan_failed_repos[@]}" -gt 0 ]; then
+      if [ "$dry_run" = "1" ]; then
+        printf 'would skip: %s (cannot scan branches in: %s)\n' "$ws" "${scan_failed_repos[*]}"
+      else
+        printf 'orbit: skipping %s: cannot scan branches in: %s\n' "$ws" "${scan_failed_repos[*]}" >&2
+      fi
+      continue
     fi
 
-    local n_deleted=0 n_skipped=0 n_worktrees=0
+    if [ "$force" = "1" ] && [ "$dry_run" = "0" ]; then
+      # The two steps with no recovery path are announced before the act —
+      # statements of consequence, not ways around a refusal.
+      [ "${#dirty_repos[@]}" -gt 0 ] && \
+        printf 'orbit: %s: --force discards un-persisted work in %s — this cannot be undone\n' "$ws" "${dirty_repos[*]}" >&2
+      for dmg in ${damaged_repos[@]+"${damaged_repos[@]}"}; do
+        printf 'orbit: %s: --force removes %s whose state cannot be read — content may be un-persisted, this cannot be undone\n' "$ws" "$dmg" >&2
+      done
+    elif [ "$force" = "0" ]; then
+      # Branch verdicts: the whole set is verdicted before any mutation, and
+      # a kept branch blocks the workspace exactly like a data-guard reason.
+      # Skipped entirely when a data guard already blocks — a refused
+      # workspace must not pay for layer-1 network calls. Direct calls (no
+      # subshell) so the PR-evidence cache persists.
+      local be_line be_pool be_branch
+      if [ -z "$skip_reasons" ]; then
+        while IFS= read -r be_line; do
+          [ -n "$be_line" ] || continue
+          be_pool="${be_line%%$'\x1f'*}"; be_branch="${be_line#*$'\x1f'}"
+          orbit_branch_verdict "$be_pool" "$be_branch" 0
+          if [ "$ORBIT_VERDICT" = "keep" ]; then
+            kept_lines="${kept_lines}keeping unmerged branch: $be_branch$ORBIT_V_NOTE
+"
+          fi
+        done <<EOF
+$br_entries
+EOF
+      fi
+    fi
+    if [ "$force" = "0" ] && { [ -n "$skip_reasons" ] || [ -n "$kept_lines" ]; }; then blocked=1; fi
+
+    # All-or-nothing: any blocker means zero mutation, all reasons reported
+    # together — one skip line joins the data-guard reasons, each kept branch
+    # adds its own review/hint line. Workspaces block independently.
+    if [ "$blocked" = "1" ]; then
+      if ! printf '%s\n' "$ORBIT_KEPT_WS" | grep -Fxq -- "$ws"; then
+        ORBIT_KEPT_WS="${ORBIT_KEPT_WS:+$ORBIT_KEPT_WS
+}$ws"
+      fi
+      if [ "$dry_run" = "1" ]; then
+        [ -n "$skip_reasons" ] && printf 'would skip: %s (%s)\n' "$ws" "$skip_reasons"
+        printf '%s' "$kept_lines"
+      else
+        [ -n "$skip_reasons" ] && printf 'orbit: skipping %s: %s\n' "$ws" "$skip_reasons" >&2
+        printf '%s' "$kept_lines" | sed 's/^/orbit: /' >&2
+      fi
+      continue
+    fi
+
+    local n_deleted=0 n_worktrees=0 d_failed=0
 
     if [ "$dry_run" = "1" ]; then
-      printf 'would prune: %s (%d %s)\n' "$ws" "${#ws_repo_dirs[@]}" "$(orbit_plural "${#ws_repo_dirs[@]}" repo repos)"
+      printf 'would prune: %s (%d %s)\n' "$ws" "${#ws_repo_dirs[@]}" "$(orbit_plural "${#ws_repo_dirs[@]}" worktree worktrees)"
     else
-      printf 'pruning: %s (%d %s)\n' "$ws" "${#ws_repo_dirs[@]}" "$(orbit_plural "${#ws_repo_dirs[@]}" repo repos)"
+      printf 'pruning: %s (%d %s)\n' "$ws" "${#ws_repo_dirs[@]}" "$(orbit_plural "${#ws_repo_dirs[@]}" worktree worktrees)"
     fi
 
     if [ "${#ws_repo_dirs[@]}" -eq 0 ]; then
-      printf '  (no repos)\n'
+      printf '  (no worktrees)\n'
     fi
 
-    # Process each repo worktree in workspace
-    if [ "${#ws_repo_dirs[@]}" -gt 0 ]; then
-    for repo_dir in "${ws_repo_dirs[@]}"; do
+    # D1, damaged worktrees under --force, FIRST: git cannot remove a
+    # worktree whose gitdir is unreadable ("validation failed" even with
+    # -f -f), so a garbage/truncated pointer sitting in ws_repo_dirs would
+    # die in the ordinary loop below. `worktree repair` re-links the .git
+    # pointer (best-effort), then the ordinary remove works. Still failing →
+    # the whole workspace is kept.
+    local wt_err="" dmg_done_paths=""
+    if [ "$force" = "1" ] && [ "$dry_run" = "0" ] && [ -n "$damaged_pairs" ]; then
+      local dp_line dp_pool dp_path
+      while IFS= read -r dp_line; do
+        [ -n "$dp_line" ] || continue
+        dp_pool="${dp_line%%$'\x1f'*}"; dp_path="${dp_line#*$'\x1f'}"
+        git -C "$root/.repos/$dp_pool" worktree repair "$dp_path" >/dev/null 2>&1 || true
+        if ! wt_err=$(git -C "$root/.repos/$dp_pool" worktree remove --force "$dp_path" 2>&1 >/dev/null); then
+          printf 'orbit: skipping %s: worktree removal failed in %s (%s) — workspace kept\n' "$ws" "$dp_pool" "$(printf '%s\n' "$wt_err" | head -1)" >&2
+          d_failed=1 had_failure=1
+          break
+        fi
+        dmg_done_paths="$dmg_done_paths$dp_path"$'\n'
+        n_worktrees=$((n_worktrees + 1))
+      done <<EOF
+$damaged_pairs
+EOF
+      [ "$d_failed" = "1" ] && continue
+    fi
+
+    # D1: worktree remove (E3+E4 go together). "Not a working tree" (never
+    # registered) leaves nothing git-side, and the removal below is the
+    # complete cleanup. Any OTHER failure (locked, IO) means git still
+    # tracks this directory — deleting it would leave a registration pointing
+    # at a vanished path, and every later deletion of that branch would
+    # refuse ("used by worktree at <gone path>") — so the whole workspace is
+    # kept. Directory removal runs only when git has no stake in the outcome.
+    for repo_dir in ${ws_repo_dirs[@]+"${ws_repo_dirs[@]}"}; do
       local repo_name
       repo_name=$(basename "$repo_dir")
       local main_repo="$root/.repos/$repo_name"
-
-      printf '  %s:\n' "$repo_name"
-
-      # Collect branches
-      local ws_branches
-      ws_branches=$(orbit_collect_workspace_branches "$repo_dir" "$ws")
-
-      # Remove worktree
-      if [ "$dry_run" = "1" ]; then
-        printf '    would remove worktree\n'
-      else
-        if git -C "$main_repo" worktree remove "$repo_dir" --force 2>/dev/null; then
-          printf '    removed worktree\n'
-        else
-          printf '    worktree not registered to the pool repo; left to directory removal\n'
+      if [ "$dry_run" = "0" ]; then
+        # damaged worktrees were removed above (their directory went with
+        # the registration) — never re-attempt them here. The damaged list
+        # holds physical paths (git porcelain), so compare on the physical
+        # workspace path.
+        if printf '%s\n' "$dmg_done_paths" | grep -Fxq -- "$ws_dir_phys/$repo_name"; then
+          continue
+        fi
+        if ! wt_err=$(git -C "$main_repo" worktree remove "$repo_dir" --force 2>&1 >/dev/null); then
+          case "$wt_err" in
+            *"is not a working tree"*)
+              printf 'orbit: %s: worktree not registered to the pool repo; left to directory removal\n' "$repo_name" >&2
+              continue
+              ;;
+            *)
+              printf 'orbit: skipping %s: worktree removal failed in %s (%s) — workspace kept\n' "$ws" "$repo_name" "$(printf '%s\n' "$wt_err" | head -1)" >&2
+              d_failed=1 had_failure=1
+              break
+              ;;
+          esac
         fi
       fi
       n_worktrees=$((n_worktrees + 1))
+    done
+    [ "$d_failed" = "1" ] && continue
 
-      # Delete branches (config sections are removed by git along with the branch)
-      while IFS= read -r branch; do
-        [ -n "$branch" ] || continue
-        if orbit_branch_protection_delete "$main_repo" "$branch" "$pr_urls_str" "$force" "$verify" "$dry_run"; then
-          n_deleted=$((n_deleted + 1))
-        else
-          n_skipped=$((n_skipped + 1))
-        fi
-      done <<< "$ws_branches"
+    # D2: branch delete (E5; git drops E6 along with the branch). The set is
+    # the pool-driven collection from validation — grouped by repo for the
+    # report. A git refusal keeps the whole workspace (no rename); branches
+    # already deleted stay deleted and the next run resumes.
+    local repo_out="" cur_repo="" bline
+    while IFS= read -r be_line; do
+      [ -n "$be_line" ] || continue
+      be_pool="${be_line%%$'\x1f'*}"; be_branch="${be_line#*$'\x1f'}"
+      if [ "$(basename "$be_pool")" != "$cur_repo" ]; then
+        [ -n "$repo_out" ] && printf '  %s:\n%s' "$cur_repo" "$repo_out"
+        repo_out=""
+        cur_repo="$(basename "$be_pool")"
+      fi
+      if bline=$(orbit_branch_protection_delete "$be_pool" "$be_branch" "$force" "$dry_run"); then
+        n_deleted=$((n_deleted + 1))
+        repo_out="$repo_out$bline
+"
+      else
+        # git's refusal (its own first line) already went to stderr. A dry-run
+        # never gets here: validation already blocked the workspace.
+        d_failed=1
+        [ "$dry_run" = "0" ] && had_failure=1
+        break
+      fi
+    done <<EOF
+$br_entries
+EOF
+    [ -n "$repo_out" ] && printf '  %s:\n%s' "$cur_repo" "$repo_out"
+    [ "$d_failed" = "1" ] && continue
 
-      # Branches shaped like this workspace's but outside the configured prefix
-      # are not orbit's to delete — raw-mode branches, or branches created while
-      # branch.prefix held a different value (config is cache: losing it reverts
-      # the prefix to the default and would orphan them silently). Git is the
-      # structural source of truth here, so the branch names are the record —
-      # name them rather than let them leak unseen.
-      local ws_prefix left_behind=() lb
-      ws_prefix=$(orbit_require_prefix) || return 1
+    # D3: convergence — maintenance self-heal, fetch-refspec reconcile, and
+    # naming branches shaped like this workspace's but outside the configured
+    # prefix (raw-mode, or born under another prefix — not orbit's to delete;
+    # the branch names in git are the recoverable record). Involved repos =
+    # pool worktrees in the directory + branch-holding pools.
+    local involved=" " inv_pool inv_list="" rlines rline lb
+    for repo_dir in ${ws_repo_dirs[@]+"${ws_repo_dirs[@]}"}; do
+      inv_list="$inv_list$root/.repos/$(basename "$repo_dir")"$'\n'
+    done
+    while IFS= read -r be_line; do
+      if [ -n "$be_line" ]; then inv_list="$inv_list${be_line%%$'\x1f'*}"$'\n'; fi
+    done <<EOF
+$br_entries
+EOF
+    while IFS= read -r inv_pool; do
+      [ -n "$inv_pool" ] || continue
+      [ -d "$inv_pool/.git" ] || continue
+      case "$involved" in *" $inv_pool "*) continue ;; esac
+      involved="$involved$inv_pool "
+      rlines=""
+      while IFS= read -r rline; do
+        if [ -n "$rline" ]; then rlines="$rlines    $rline
+"; fi
+      done < <(orbit_reconcile_fetch_refspecs "$inv_pool" "$dry_run")
+      if rline=$(orbit_prune_repo_maintenance "$inv_pool" "$dry_run"); then
+        rlines="$rlines    $rline
+"
+      fi
+      local left_behind=()
       while IFS= read -r lb; do
         [ -n "$lb" ] || continue
         case "$lb" in
           "$ws_prefix/$ws/"*) continue ;;
           */"$ws"/*) left_behind+=("$lb") ;;
         esac
-      done < <(git -C "$main_repo" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null || true)
+      done < <(git -C "$inv_pool" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null || true)
       if [ "${#left_behind[@]}" -gt 0 ]; then
         if [ "$dry_run" = "1" ]; then
-          printf '    would leave branch outside branch.prefix: %s\n' "${left_behind[*]}"
+          rlines="$rlines    would leave branch outside branch.prefix: ${left_behind[*]}
+"
         else
-          printf 'orbit: %s: left branch outside branch.prefix: %s\n' "$repo_name" "${left_behind[*]}" >&2
+          printf 'orbit: %s: left branch outside branch.prefix: %s\n' "$(basename "$inv_pool")" "${left_behind[*]}" >&2
         fi
       fi
+      [ -n "$rlines" ] && printf '  %s:\n%s' "$(basename "$inv_pool")" "$rlines"
+      true
+    done <<EOF
+$inv_list
+EOF
 
-      # Clean leftover upstream config sections (branches that were skipped)
-      if [ "$dry_run" = "0" ]; then
-        local prefix
-        prefix=$(orbit_require_prefix) || return 1
-        while IFS= read -r branch; do
-          [ -n "$branch" ] || continue
-          git -C "$main_repo" config --remove-section "branch.$branch" 2>/dev/null || true
-        done < <(git -C "$main_repo" for-each-ref --format='%(refname:short)' "refs/heads/$prefix/$ws/" 2>/dev/null || true)
-      fi
-
-      # Reconcile fetch refspecs (remote branch deleted, e.g. after PR merge;
-      # or pushed since and not yet registered)
-      while IFS= read -r line; do
-        printf '    %s\n' "$line"
-      done < <(orbit_reconcile_fetch_refspecs "$main_repo" "$dry_run")
-    done
-    fi
-
-    # Remove workspace directory
+    # D4a: the atomic rename into the trash — the only directory-level commit
+    # point (a mount-point workspace fails here with EXDEV and stays in
+    # place). The entry name carries the pid so it can never collide with a
+    # leftover the opening sweep failed to clear (a plain <ws> name would
+    # otherwise NEST inside it). D4b: unordered deletion; a failure is
+    # reported, exits non-zero, and is resumed by the next run's sweep.
     if [ "$dry_run" = "1" ]; then
-      printf 'would remove workspace directory\n'
+      printf 'would remove workspace directory (via .prune-trash)\n'
     else
-      rm -rf "${root:?}/${ws:?}"
-      printf 'pruned: %s (%d %s removed, %d %s deleted, %d skipped)\n' \
+      [ -d "$trash" ] || mkdir -p "$trash"
+      local mv_err rm_err trash_name="$ws.$$"
+      if ! mv_err=$(mv "$ws_dir" "$trash/$trash_name" 2>&1); then
+        printf 'orbit: skipping %s: rename to .prune-trash failed (%s) — workspace kept\n' "$ws" "$mv_err" >&2
+        had_failure=1
+        continue
+      fi
+      if ! rm_err=$(rm -rf "${trash:?}/${trash_name:?}" 2>&1); then
+        printf 'orbit: %s: trash removal incomplete (%s) — left in .prune-trash, resumed on the next run\n' "$ws" "$rm_err" >&2
+        had_failure=1
+        continue
+      fi
+      printf 'pruned: %s (%d %s removed, %d %s deleted)\n' \
         "$ws" "$n_worktrees" "$(orbit_plural "$n_worktrees" worktree worktrees)" \
-        "$n_deleted" "$(orbit_plural "$n_deleted" branch branches)" "$n_skipped"
+        "$n_deleted" "$(orbit_plural "$n_deleted" branch branches)"
     fi
   done
+
+  # Ghost residue: scoped branches whose workspace directory is gone. Same
+  # pipeline in dir-absent form; a targeted run only touches its ghost.
+  for g in ${ghost_ws[@]+"${ghost_ws[@]}"}; do
+    if [ -n "$target_ws" ] && [ "$g" != "$target_ws" ]; then continue; fi
+    # `|| true`: enumeration and this scan share the shape predicate, so an
+    # empty group can only mean the branch vanished mid-run — never abort.
+    if [ -n "$target_ws" ]; then
+      orbit_prune_ghost_group "$root" "$g" "$force" "$dry_run" 1 || true
+    else
+      orbit_prune_ghost_group "$root" "$g" "$force" "$dry_run" 0 || true
+    fi
+  done
+
+  # Untraceable raw branches + pool maintenance + fetch-refspec reconcile:
+  # enumeration only (a targeted run is focused). Reconcile runs on every
+  # prune path — a run with no live candidate still repairs a stale refspec.
+  # The sweep prints under its OWN section header: same-indentation repo
+  # groups would otherwise read as belonging to the last workspace block.
+  if [ -z "$target_ws" ]; then
+    orbit_prune_raw_residue "$root" "$dry_run" || true
+    local bk_pool bk_line bk_out bk_r bk_header=0
+    for bk_pool in "$root/.repos"/*/; do
+      [ -d "$bk_pool/.git" ] || continue
+      bk_out=""
+      while IFS= read -r bk_r; do
+        if [ -n "$bk_r" ]; then bk_out="$bk_out    $bk_r
+"; fi
+      done < <(orbit_reconcile_fetch_refspecs "${bk_pool%/}" "$dry_run")
+      if bk_line=$(orbit_prune_repo_maintenance "${bk_pool%/}" "$dry_run"); then
+        bk_out="$bk_out    $bk_line
+"
+      fi
+      if [ -n "$bk_out" ]; then
+        if [ "$bk_header" = "0" ]; then printf 'pool maintenance:\n'; bk_header=1; fi
+        printf '  %s:\n%s' "$(basename "$bk_pool")" "$bk_out"
+      fi
+    done
+  fi
+
+  # Closing block, ordered: kept-workspace summary → raw report (grouped by
+  # repo) → ONE confirm-useless caveat → force-delete suggestions, scoped
+  # (orbit prune <ws> --force) before raw (native branch -D). The `orbit:`
+  # prefix marks the diagnostics channel — real run only; in dry-run the
+  # whole block is report content on stdout, unprefixed.
+  if [ -n "$ORBIT_KEPT_WS" ] || [ "$ORBIT_RAW_COUNT" -gt 0 ]; then
+    local pfx="orbit: "
+    [ "$dry_run" = "1" ] && pfx=""
+    {
+      if [ -n "$ORBIT_KEPT_WS" ]; then
+        local ws_display="" w
+        while IFS= read -r w; do
+          [ -n "$w" ] || continue
+          ws_display="${ws_display:+$ws_display, }$w"
+        done <<EOF
+$ORBIT_KEPT_WS
+EOF
+        if [ "$dry_run" = "1" ]; then
+          printf 'would keep workspaces: %s\n' "$ws_display"
+        else
+          printf 'orbit: workspaces kept: %s\n' "$ws_display"
+        fi
+      fi
+      if [ "$ORBIT_RAW_COUNT" -gt 0 ]; then
+        printf '%suntraceable branches (raw, no remote, no workspace) — human disposal:\n' "$pfx"
+        printf '%s' "$ORBIT_RAW_ENTRIES"
+      fi
+      printf '%safter confirming the content is no longer needed (nothing un-persisted would be lost), force-delete:\n' "$pfx"
+      while IFS= read -r g; do
+        [ -n "$g" ] || continue
+        printf '  orbit prune %q --force\n' "$g"
+      done <<EOF
+$ORBIT_KEPT_WS
+EOF
+      printf '%s' "$ORBIT_RAW_DELETES"
+    } | { if [ "$dry_run" = "1" ]; then cat; else cat >&2; fi }
+  fi
+
+  if [ "${#candidates[@]}" -eq 0 ] && [ "${#ghost_ws[@]}" -eq 0 ] && [ "$ORBIT_RAW_COUNT" -eq 0 ] && [ "$trash_entries" -eq 0 ]; then
+    printf 'nothing to prune\n'
+  fi
+
+  # Closing self-clean: succeeds only when empty, so it is self-guarding; a
+  # failure is silent (a failed deletion was already reported at its step).
+  rmdir "$trash" 2>/dev/null || true
+
+  # Exit status: a validation refusal is expected operation (exit 0); a step
+  # that FAILED — worktree removal, branch deletion (live or ghost), rename,
+  # trash removal — exits non-zero.
+  if [ "$had_failure" = "1" ] || [ "$ORBIT_PRUNE_FAILED" = "1" ]; then return 1; fi
+  return 0
 }
 
 # --- Doctor ---
@@ -3590,7 +4355,6 @@ _orbit() {
             '--older[Filter by age]:days:' \
             '--dry-run[Show what would be pruned]' \
             '--force[Destroy uncommitted changes and unmerged branches]' \
-            '--verify[Verify before pruning]' \
             '*:workspace:_orbit_workspaces'
           ;;
       esac
@@ -3767,7 +4531,7 @@ _orbit_completions() {
       ;;
     prune)
       if [[ "$cur" == -* ]]; then
-        COMPREPLY=($(compgen -W "--older --dry-run --force --verify" -- "$cur"))
+        COMPREPLY=($(compgen -W "--older --dry-run --force" -- "$cur"))
       else
         COMPREPLY=($(compgen -W "$(_orbit_workspace_names)" -- "$cur"))
       fi

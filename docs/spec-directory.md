@@ -31,6 +31,7 @@ project-root/
 - **Project root does not depend on extra config files**: no manifest or registry needed to define workspace combinations
 - **`.repos/` determines root ownership**: serves as a convention-based structural anchor, similar to `.git/`
 - **Metadata (`.orbit`, `.md`) is cache**: disposable and rebuildable, see [spec-metadata](./spec-metadata.md)
+- **`.prune-trash/` is prune's transient interruption buffer, not layout**: a dotdir at the root, so workspace detection structurally excludes it. Lazily created when a prune run renames its first workspace into it, self-cleaned (`rmdir`) when empty — the steady-state layout above deliberately does not list it. Contract in [spec-lifecycle](./spec-lifecycle.md) "The `.prune-trash` Transient".
 
 ## Naming Constraints
 

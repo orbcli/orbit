@@ -11,6 +11,13 @@ export GIT_AUTHOR_EMAIL="orbit-test@example.com"
 export GIT_COMMITTER_NAME="orbit-test"
 export GIT_COMMITTER_EMAIL="orbit-test@example.com"
 
+# Tests must not run the developer's global git hooks — they are irrelevant to
+# orbit's logic, and inflates the whole suite. Env-injected config keeps this off
+# the user's real config files.
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0="core.hooksPath"
+export GIT_CONFIG_VALUE_0="/dev/null"
+
 # --- Setup / Teardown ---
 
 common_setup() {
@@ -41,11 +48,21 @@ orbit() {
 
 assert_contains() {
   local haystack="$1" needle="$2"
-  if printf '%s' "$haystack" | grep -qF "$needle"; then
+  if printf '%s' "$haystack" | grep -qF -e "$needle"; then
     return 0
   else
     echo "assert_contains failed"
     echo "  expected to contain: $needle"
+    echo "  actual: $haystack"
+    return 1
+  fi
+}
+
+refute_contains() {
+  local haystack="$1" needle="$2"
+  if printf '%s' "$haystack" | grep -qF -e "$needle"; then
+    echo "refute_contains failed"
+    echo "  expected NOT to contain: $needle"
     echo "  actual: $haystack"
     return 1
   fi

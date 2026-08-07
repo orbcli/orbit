@@ -213,11 +213,11 @@ Characteristics:
 
 ## Cleanup Logic
 
-Complete steps when `orbit prune` deletes a workspace (see [spec-lifecycle](./spec-lifecycle.md) "Three-layer protection for branch cleanup"):
-1. Record each worktree's current branch name + scan all local branches with `ws/<workspace>/*` prefix
-2. `git worktree remove <path>` — remove the worktree
-3. Execute `git branch -d/-D` for all branches collected in step 1 (determined by three-layer protection)
-4. `git config --remove-section branch.<name>` — clean up upstream config entries (only scoped mode branches have these entries)
+How `orbit prune` reclaims a workspace's branches (full contract in [spec-lifecycle](./spec-lifecycle.md) "Branch Verdicts — the Three Layers" and the fixed pipeline):
+1. Collect the workspace's scoped branches **pool-side**: the union of `refs/heads/ws/<workspace>/*` across pool repos — independent of whether any worktree directory still exists (a worktree-derived collection leaks branches when an interrupted run removed the worktree first)
+2. `git worktree remove <path>` — deregister each worktree (git refuses to delete a checked-out branch, so this comes first)
+3. Delete each collected branch per its verdict (`-d`/`-D`); git drops the `branch.<name>.*` config along with the branch
+4. Converge leftover config sections and fetch refspecs
 
 Why step 1 scans prefixed branches: The base branch created by `orbit add` (e.g., `ws/task-01/main`) is no longer the current branch after the agent switches away; relying only on the current branch would leak it. The scan pattern is `refs/heads/<branch.prefix>/<workspace>/`, i.e. the same configured prefix that named those branches — which is why the prefix must not be re-pointable per invocation.
 
