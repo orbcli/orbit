@@ -88,9 +88,9 @@ Specific agent behavior rules (cold-start sync before add, no mid-work sync prom
 Memo is a **pull-decision card**, not a code survey. It answers exactly two questions so the next agent can decide whether to pull the repo into a workspace and where to start:
 
 1. **When/why add this repo?** — its roles. Plural and unbounded: a repo may fill many roles; list every one.
-2. **How do I use it in the simplest way?** — the MVP/VIP file-or-dir paths to start from, each with why it matters and when to reach for it. Also plural — a CLI entry and a core package can both belong here; no cap.
+2. **How do I use it?** — the MVP/VIP file-or-dir paths to start from, each with why it matters and when to reach for it. Also plural — a CLI entry and a core package can both belong here; no cap.
 
-Deep code-structure documentation (module boundaries, data layer, conventions, pitfalls, API enumeration, dependency graphs) is **out of orbit's scope** — that is a code-doc's job. If such a doc exists, add its path to `explore.paths` or bring it into the pool as a workspace member; orbit stays agnostic about its format.
+Deep code-structure documentation (module boundaries, data layer, conventions, pitfalls, API enumeration, dependency graphs) is **out of orbit's scope** — not the card's business. If such a doc exists, add its path to `explore.paths` or bring it into the pool as a workspace member; orbit stays agnostic about its format.
 
 ### Capacity Budget
 
