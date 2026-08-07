@@ -230,7 +230,7 @@ Every skill must guide the agent to discover before acting:
    - **Discovery gate:** for every added repo, no target action (edit / branch / push / release / tag) may begin until steps 3–7 are complete for that repo. Jumping from `add` straight to a target action is the failure this gate prevents
 8. Branch — scoped mode `orbit switch -c` (default, most scenarios) or raw mode `git checkout -b` (advanced, no orbit branch management)
 9. Work: use native git commands inside worktrees for development. **jot feeds the card, so jot only what the card needs and lacks** — a role, or an MVP/VIP entry point the card misses or gets wrong → `orbit jot "one-liner"` from within the repo directory. Lightweight queue — no need to read or merge memo during work. If jot warns the buffer is filling (`building` at half of the buffer orbit reports; `overflow` past it), consider aggregating now (see step 10)
-   - **What to jot**: only information the card needs and doesn't yet have — a role (why a workspace would pull this repo in) or an MVP/VIP entry point (where to start, and why), about the repo's main branch. **Not**: deep code structure (module internals, conventions, pitfalls, call graphs — out of card scope, belongs in a code-doc); feature-branch changes; temporary debug info; anything the card already says
+   - **What to jot**: only information the card needs and doesn't yet have — a role (why a workspace would pull this repo in) or an MVP/VIP entry point (where to start, and why), about the repo's main branch. **Not**: deep code structure (module internals, conventions, pitfalls, call graphs — not the card's business); feature-branch changes; temporary debug info; anything the card already says
    - **Need a new repo during work** (e.g., tracing a cross-repo dependency) → return to the discovery flow of steps 2–7: `orbit repos` to screen → `orbit info` to assess → decide whether to add → sync if needed → add → memo check
 10. **Wrap-up** — before finishing, aggregate jot entries and assess PR impact. This step is **incremental aggregation only** — it folds discoveries onto the understanding built in step 7, never a place for first-time exploration skipped earlier:
    - **Jot aggregation**: for each repo with jot entries, `orbit jot <repo> --pop` (consume entries) → `orbit info <repo>` (read card) → merge entries into card (stay within the card budget orbit reports: curate, don't append; merge-first rules) → `cat <<'EOF' | orbit memo <repo>` (write back). Before `orbit done`, no repo the agent developed may be left with a thin memo and no capture — bare `orbit context` shows the per-repo status (`memo thin`), and `orbit done` warns per repo as the final backstop
@@ -266,8 +266,11 @@ Agent: cat <<'EOF' | orbit memo backend
 
 Go REST API, sqlc-generated DB layer.
 
-## Key Entry Points
-- `cmd/server/main.go` — server startup
+## When to add (roles)
+- Owns the user/auth HTTP API — pull it in for any task touching login or accounts
+
+## How to use
+- `cmd/server/main.go` — server startup; start here to trace wiring
 - `internal/service/` — business logic
 EOF
                 ↓
@@ -321,7 +324,7 @@ What the skill *may* state, because these are facts about branch lifecycle rathe
 
 ## Metadata Update Constraints
 
-**Memo is a pull-decision card, not documentation.** Content written via `orbit memo` is part of the workspace system, reused by subsequent agent sessions, and is not subject to general "don't create documentation" rules. A card answers exactly two questions: **when/why to add this repo** (its roles — plural, unbounded) and **how to use it** (the MVP/VIP entry points to start from — also plural). Deep code structure is out of scope; it belongs in a dedicated code-doc, not the card.
+**Memo is a pull-decision card, not documentation.** Content written via `orbit memo` is part of the workspace system, reused by subsequent agent sessions, and is not subject to general "don't create documentation" rules. A card answers exactly two questions: **when/why to add this repo** (its roles — plural, unbounded) and **how to use it** (the MVP/VIP entry points to start from — also plural). Deep code structure is not the card's business — it stays out of the card whether or not the repo documents it elsewhere: a lean card outranks a captured fact. **Repo facts only:** the card needs facts about the repo's stable main branch; the boundary keys on what a fact *describes*, not who learned it or when — a role or entry point established during session work is card material. Facts *about* the user, collaboration, current effort, or external systems never go in — the card is pool-shared with every agent and tool.
 
 ### Memo Writeback Rules
 
@@ -359,7 +362,7 @@ Don't touch repos you haven't worked in; don't proactively scan or patch the sta
 **Prohibited behaviors**:
 - Scanning the entire codebase to produce a summary without having worked in the repo
 - Dumping README / PRD full text or large excerpts as memo content
-- Padding the card with deep code-structure detail (that's a code-doc's job, not the card's)
+- Padding the card with deep code-structure detail (not the card's business)
 - Full rewrite of a still-accurate card (should be incremental edits)
 
 ### Sync Decision Rules
@@ -380,7 +383,7 @@ Sync (`orbit sync`) advances pool HEAD, causing memoBehind to increase — there
 
 `--scaffold` outputs a pure template to stdout (no file write, no code analysis): the card structure — title + brief, `## When to add (roles)`, `## How to use` — with TODO placeholders. After the agent explores the repo (within `explore.paths`):
 - Fill both sections; list every role and every MVP/VIP entry point that matters (don't leave TODO placeholders)
-- Keep it a decision card — don't add deep code-structure sections; that's a code-doc's job
+- Keep it a decision card — don't add deep code-structure sections (not the card's business)
 - Write via `cat ... | orbit memo <repo>`
 
 ### Done Trigger Rules
