@@ -378,7 +378,7 @@ setup_project_with_done_workspace() {
   assert_contains "$output" "would force-delete branch"
 }
 
-# --- Readable report format (human-facing output proposal) ---
+# --- Readable report format ---
 
 @test "prune: --dry-run report is header-first, repo-grouped, single-stream" {
   local proj="$SANDBOX/prune-dryfmt"
@@ -474,75 +474,77 @@ setup_project_with_done_workspace() {
   [ ! -e "$proj/.prune-trash" ]
 }
 
-# --- Stale fetch refspec cleanup ---
+# --- Remote-deleted branches & fetch-config maintenance ---
 
-@test "prune: removes stale fetch refspec left by a remote-deleted branch" {
-  local proj="$SANDBOX/prune-refspec"
-  local remote="$REMOTES/prune-refspec-repo.git"
+@test "prune: cleans the tracking ref of a remote-deleted tracked branch, zero fatal leak" {
+  local proj="$SANDBOX/prune-gone"
+  local remote="$REMOTES/prune-gone-repo.git"
   clone_remote "$remote"
   clone_project "$proj"
   git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
-  cd "$proj" && orbit new "refspec test" --name dev >/dev/null 2>&1
+  cd "$proj" && orbit new "gone test" --name dev >/dev/null 2>&1
   cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
-  cd "$proj/dev" && orbit done >/dev/null 2>&1
+  cd "$proj/dev/myrepo" && orbit switch -c feat-gone >/dev/null 2>&1
+  echo g > g.txt && git add g.txt && git commit -m "g" >/dev/null 2>&1
+  git push >/dev/null 2>&1
+  git rev-parse --verify --quiet origin/feat-gone >/dev/null
 
-  # Simulate residue: refspec + stale tracking ref for a branch the remote no
-  # longer has (typical: branch auto-deleted on PR merge)
-  git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
-    "+refs/heads/gone:refs/remotes/origin/gone"
-  git -C "$proj/.repos/myrepo" update-ref refs/remotes/origin/gone \
-    "$(git -C "$proj/.repos/myrepo" rev-parse HEAD)"
-
-  # the residue breaks every bare fetch (the bug being fixed)
-  run git -C "$proj/.repos/myrepo" fetch origin
-  [ "$status" -ne 0 ]
+  # the remote deletes the branch (PR merged + auto-deleted)
+  local tmp
+  tmp=$(mktemp -d "$SANDBOX/_tmp_pg_XXXXXX")
+  git clone "$remote" "$tmp" >/dev/null 2>&1
+  git -C "$tmp" push origin --delete feat-gone >/dev/null 2>&1
+  rm -rf "$tmp"
 
   # session running prune must not be parked inside a workspace
   cd "$SANDBOX"
-  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
   [ "$status" -eq 0 ]
-  assert_contains "$output" "    removed stale fetch refspec: gone"
-
-  # refspec and stale ref are gone; the live main refspec is untouched
-  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
-  [ "$output" = "+refs/heads/main:refs/remotes/origin/main" ]
-  run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/remotes/origin/gone
+  # the fatal this model exists to kill never leaks out of the touchpoint
+  refute_contains "$output" "couldn't find remote ref"
+  # the tracked-but-gone ref is converged natively (conditional remote prune)
+  run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/remotes/origin/feat-gone
   [ "$status" -ne 0 ]
-
-  # bare fetch works again
-  run git -C "$proj/.repos/myrepo" fetch origin
-  [ "$status" -eq 0 ]
+  # the workspace and its local branch are untouched
+  assert_dir_exists "$proj/dev"
+  git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/heads/ws/dev/feat-gone >/dev/null
+  # config untouched: exactly the wildcard
+  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
+  [ "$output" = "+refs/heads/*:refs/remotes/origin/*" ]
 }
 
-@test "prune --dry-run: reports stale fetch refspec without removing it" {
-  local proj="$SANDBOX/prune-refspec-dry"
-  local remote="$REMOTES/prune-refspec-dry-repo.git"
+@test "prune --dry-run: previews fetch-config convergence without touching it" {
+  local proj="$SANDBOX/prune-converge-dry"
+  local remote="$REMOTES/prune-converge-dry-repo.git"
   clone_remote "$remote"
   clone_project "$proj"
   git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
-  cd "$proj" && orbit new "refspec dry test" --name dev >/dev/null 2>&1
-  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
-  cd "$proj/dev" && orbit done >/dev/null 2>&1
 
+  # legacy shape: exact default entry plus a stale one, no prune key
+  git -C "$proj/.repos/myrepo" config --replace-all remote.origin.fetch \
+    "+refs/heads/main:refs/remotes/origin/main"
   git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
     "+refs/heads/gone:refs/remotes/origin/gone"
-  git -C "$proj/.repos/myrepo" update-ref refs/remotes/origin/gone \
-    "$(git -C "$proj/.repos/myrepo" rev-parse HEAD)"
+  git -C "$proj/.repos/myrepo" config --unset-all fetch.prune 2>/dev/null || true
+  git -C "$proj/.repos/myrepo" config push.default simple
 
   cd "$SANDBOX"
-  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run 2>&1"
   [ "$status" -eq 0 ]
-  assert_contains "$output" "    would remove stale fetch refspec: gone"
+  assert_contains "$output" "pool maintenance:"
+  assert_contains "$output" 'would converge fetch config: git remote set-branches origin "*"'
+  assert_contains "$output" 'would converge fetch config: git config fetch.prune true'
+  assert_contains "$output" 'would converge push routing: git config push.default upstream'
 
-  # nothing was removed
-  git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch \
-    | grep -Fqx "+refs/heads/gone:refs/remotes/origin/gone"
-  git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/remotes/origin/gone >/dev/null
+  # preview only: config and refs untouched
+  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
+  assert_contains "$output" "refs/heads/gone"
+  [ "$(git -C "$proj/.repos/myrepo" config --get push.default)" = "simple" ]
 }
 
-@test "prune: removes legacy pre-registered refspec for a never-pushed branch" {
-  local proj="$SANDBOX/prune-legacy-refspec"
-  local remote="$REMOTES/prune-legacy-refspec-repo.git"
+@test "prune: converges a legacy pre-registration config; local branches untouched" {
+  local proj="$SANDBOX/prune-legacy-converge"
+  local remote="$REMOTES/prune-legacy-converge-repo.git"
   clone_remote "$remote"
   clone_project "$proj"
   git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
@@ -552,14 +554,11 @@ setup_project_with_done_workspace() {
   cd "$proj/live" && orbit add myrepo >/dev/null 2>&1
   cd "$proj/live/myrepo" && orbit switch -c feat-live >/dev/null 2>&1
 
-  # a second, done workspace over the same pool repo
-  cd "$proj" && orbit new "old work" --name dev >/dev/null 2>&1
-  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
-  cd "$proj/dev" && orbit done >/dev/null 2>&1
-
-  # Legacy residue (older orbit pre-registered refspecs at switch -c): a local
-  # branch tracks feat-live but the remote has never had it — every bare fetch
-  # fails while this entry exists.
+  # Legacy residue (older orbit pre-registered exact refspecs at switch -c):
+  # the entry points at a branch the remote never had — every bare fetch
+  # fails while it exists.
+  git -C "$proj/.repos/myrepo" config --replace-all remote.origin.fetch \
+    "+refs/heads/main:refs/remotes/origin/main"
   git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
     "+refs/heads/feat-live:refs/remotes/origin/feat-live"
   run git -C "$proj/.repos/myrepo" fetch origin
@@ -567,15 +566,15 @@ setup_project_with_done_workspace() {
 
   # session running prune must not be parked inside a workspace
   cd "$SANDBOX"
-  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
   [ "$status" -eq 0 ]
   assert_dir_exists "$proj/live"
-  assert_contains "$output" "    removed stale fetch refspec: feat-live"
+  assert_contains "$output" 'orbit: myrepo: fetch config converged: git remote set-branches origin "*" (stop converging and re-apply yours: orbit config git.fetchAllBranches once)'
 
-  # the local branch itself is untouched; only the fetch-breaking entry is gone
+  # the local branch itself is untouched; the config is exactly the wildcard
   git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/heads/ws/live/feat-live >/dev/null
   run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
-  [ "$output" = "+refs/heads/main:refs/remotes/origin/main" ]
+  [ "$output" = "+refs/heads/*:refs/remotes/origin/*" ]
   run git -C "$proj/.repos/myrepo" fetch origin
   [ "$status" -eq 0 ]
 }
@@ -1202,13 +1201,25 @@ setup_project_with_done_workspace() {
   git -C "$proj/dev/myrepo" commit -m "x" >/dev/null 2>&1
   git -C "$proj/dev/myrepo" checkout ws/dev/main >/dev/null 2>&1
 
-  # excluded: has a remote copy
+  # excluded: has a remote copy. Real remote branches now — a faked local
+  # ref would be converged by the touchpoint's conditional prune, not
+  # misread as traceable.
+  local tmp
+  tmp=$(mktemp -d "$SANDBOX/_tmp_prr_XXXXXX")
+  git clone "$remote" "$tmp" >/dev/null 2>&1
+  (
+    cd "$tmp"
+    git checkout -q -b raw-pushed && git push -q origin raw-pushed
+    git checkout -q -b release-x && git push -q origin release-x
+  )
+  rm -rf "$tmp"
   git -C "$proj/.repos/myrepo" branch raw-pushed origin/main >/dev/null 2>&1
-  git -C "$proj/.repos/myrepo" update-ref refs/remotes/origin/raw-pushed origin/main
+  # materialize the way a user's lightweight fetch would (bare-name fetch
+  # under the wildcard map)
+  git -C "$proj/.repos/myrepo" fetch origin raw-pushed >/dev/null 2>&1
 
   # excluded: upstream under a DIFFERENT name (release-style tracked branch)
   git -C "$proj/.repos/myrepo" branch release-1.2 origin/main >/dev/null 2>&1
-  git -C "$proj/.repos/myrepo" update-ref refs/remotes/origin/release-x origin/main
   git -C "$proj/.repos/myrepo" config branch.release-1.2.remote origin
   git -C "$proj/.repos/myrepo" config branch.release-1.2.merge refs/heads/release-x
 
@@ -1677,7 +1688,7 @@ setup_project_with_done_workspace() {
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
   [ "$status" -eq 0 ]
   assert_contains "$output" "pruned: dev (0 worktrees removed, 1 branch deleted)"
-  # deletion lines carry the reflog handle
+  # deletion lines carry the recovery handle
   [[ "$output" =~ deleted\ branch\ \(merged\):\ ws/dev/main\ \(was\ [0-9a-f]+\) ]]
   [ ! -d "$proj/dev" ]
   run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/heads/ws/dev/main
@@ -2233,90 +2244,110 @@ EOF
   assert_dir_exists "$proj/dev"
 }
 
-@test "prune: a stale fetch refspec is repaired even with no workspaces at all" {
-  local proj="$SANDBOX/prune-refspec-empty"
-  local remote="$REMOTES/prune-refspec-empty-repo.git"
+@test "prune: a non-standard fetch config is converged even with no workspaces at all" {
+  local proj="$SANDBOX/prune-config-empty"
+  local remote="$REMOTES/prune-config-empty-repo.git"
   clone_remote "$remote"
   clone_project "$proj"
   git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
 
-  # residue: refspec + tracking ref for a branch the remote no longer has
+  # legacy shape: exact default entry plus a stale one, no prune key
+  git -C "$proj/.repos/myrepo" config --replace-all remote.origin.fetch \
+    "+refs/heads/main:refs/remotes/origin/main"
   git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
     "+refs/heads/gone:refs/remotes/origin/gone"
-  git -C "$proj/.repos/myrepo" update-ref refs/remotes/origin/gone \
-    "$(git -C "$proj/.repos/myrepo" rev-parse main)"
+  git -C "$proj/.repos/myrepo" config --unset-all fetch.prune 2>/dev/null || true
 
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
   [ "$status" -eq 0 ]
-  # sweep output gets its own section header — never nested under a workspace block
-  assert_contains "$output" "pool maintenance:"
-  assert_contains "$output" "removed stale fetch refspec: gone"
+  assert_contains "$output" 'orbit: myrepo: fetch config converged: git remote set-branches origin "*" (stop converging and re-apply yours: orbit config git.fetchAllBranches once)'
+  assert_contains "$output" 'orbit: myrepo: fetch config converged: git config fetch.prune true (stop converging and re-apply yours: orbit config git.fetchPrune once)'
   run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
-  refute_contains "$output" "refs/heads/gone"
+  [ "$output" = "+refs/heads/*:refs/remotes/origin/*" ]
+  [ "$(git -C "$proj/.repos/myrepo" config --type=bool --get fetch.prune)" = "true" ]
 }
 
-@test "prune --dry-run: targeted ghost previews refspec reconciliation" {
-  local proj="$SANDBOX/prune-ghost-dry-refspec"
-  local remote="$REMOTES/prune-ghost-dry-refspec-repo.git"
+@test "prune --dry-run: targeted ghost previews fetch-config convergence" {
+  local proj="$SANDBOX/prune-ghost-dry-converge"
+  local remote="$REMOTES/prune-ghost-dry-converge-repo.git"
   clone_remote "$remote"
   clone_project "$proj"
   git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
-  cd "$proj" && orbit new "ghost dry refspec" --name dev >/dev/null 2>&1
+  cd "$proj" && orbit new "ghost dry converge" --name dev >/dev/null 2>&1
   cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
   cd "$proj/dev" && orbit done >/dev/null 2>&1
   cd "$SANDBOX"
   rm -rf "$proj/dev"
 
-  # stale refspec the remote no longer has
+  # legacy config the default mode owns
+  git -C "$proj/.repos/myrepo" config --replace-all remote.origin.fetch \
+    "+refs/heads/main:refs/remotes/origin/main"
   git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
     "+refs/heads/gone:refs/remotes/origin/gone"
-  git -C "$proj/.repos/myrepo" update-ref refs/remotes/origin/gone \
-    "$(git -C "$proj/.repos/myrepo" rev-parse main)"
 
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune dev --dry-run 2>&1"
   [ "$status" -eq 0 ]
   assert_contains "$output" "would prune: dev (residue)"
   # pool-level accounts report under their own section, not inside the ghost block
   assert_contains "$output" "pool maintenance:"
-  assert_contains "$output" "would remove stale fetch refspec: gone"
-  # preview only: the refspec is still there
+  assert_contains "$output" 'would converge fetch config: git remote set-branches origin "*"'
+  # preview only: the config is still there
   run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
   assert_contains "$output" "refs/heads/gone"
 }
 
-@test "prune: reconcile makes no network call when the pool has no refspec candidates" {
-  local proj="$SANDBOX/prune-gate-nocall"
-  local remote="$REMOTES/prune-gate-nocall-repo.git"
+@test "prune: default-branch fetch failure alarms only when the remote answers" {
+  local proj="$SANDBOX/prune-default-gone"
+  local remote="$REMOTES/prune-default-gone-repo.git"
   clone_remote "$remote"
   clone_project "$proj"
   git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
-  cd "$proj" && orbit new "gate" --name dev >/dev/null 2>&1
-  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
-  cd "$proj/dev" && orbit done >/dev/null 2>&1
-  cd "$SANDBOX"
 
-  local bin="$SANDBOX/gitbin-gate" real_git
+  local bin="$SANDBOX/gitbin-probe" real_git
   real_git=$(command -v git)
   mkdir -p "$bin"
   cat > "$bin/git" <<EOF
 #!/bin/sh
 case "\$*" in
-  *ls-remote*) echo called >> '$SANDBOX/lsremote-calls' ;;
+  *ls-remote*) printf '%s\n' "\$*" >> '$SANDBOX/lsremote-calls' ;;
 esac
 exec "$real_git" "\$@"
 EOF
   chmod +x "$bin/git"
 
-  # stock pool (default refspec only): the gate must skip the round-trip
+  # control: remote intact — a quiet prune makes no probe and no alarm
   run bash -c "export PATH='$bin':\$PATH; cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
   [ "$status" -eq 0 ]
   [ ! -e "$SANDBOX/lsremote-calls" ]
+  refute_contains "$output" "may have lost its default branch"
 
-  # control: a non-default exact refspec IS a candidate — the call happens
-  git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
-    "+refs/heads/gone:refs/remotes/origin/gone"
+  # the remote loses its default branch
+  git -C "$remote" config receive.denyDeleteCurrent ignore
+  local tmp
+  tmp=$(mktemp -d "$SANDBOX/_tmp_pdg_XXXXXX")
+  git clone "$remote" "$tmp" >/dev/null 2>&1
+  git -C "$tmp" push origin --delete main >/dev/null 2>&1
+  rm -rf "$tmp"
+
   run bash -c "export PATH='$bin':\$PATH; cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
-  [ -e "$SANDBOX/lsremote-calls" ]
+  [ "$status" -eq 0 ]
+  # the alarm fires, and the discriminator was one probe — not a scan
+  assert_contains "$output" "WARNING: cannot fetch default branch origin/main though the remote answers"
+  assert_contains "$output" "may have lost its default branch"
+  grep -q -- "--exit-code" "$SANDBOX/lsremote-calls"
+}
+
+@test "prune: default-branch fetch failure stays silent when the remote does not answer" {
+  local proj="$SANDBOX/prune-offline"
+  clone_project "$proj"
+  # offline shape: origin points at a path that does not exist — the default
+  # fetch fails and the probe fails with it (rc 128), which must read as
+  # routine, not as a repo-level event
+  git -C "$proj/.repos/myrepo" remote set-url origin "$SANDBOX/no-such-remote.git" >/dev/null 2>&1
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "may have lost its default branch"
 }
 
 @test "prune: rename into an unwritable trash fails closed — workspace kept, exit non-zero" {
@@ -2383,27 +2414,65 @@ EOF
   [ "$status" -ne 0 ]
 }
 
-@test "prune: two local branches sharing one upstream produce ONE register line" {
-  local proj="$SANDBOX/prune-refspec-dup"
-  local remote="$REMOTES/prune-refspec-dup-repo.git"
+@test "prune: residue verdicts read this touchpoint's converged refs" {
+  local proj="$SANDBOX/prune-residue-order"
+  local remote="$REMOTES/prune-residue-order-repo.git"
   clone_remote "$remote"
   clone_project "$proj"
   git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
-  # two local branches track the same upstream (main), with no refspec for it
-  git -C "$proj/.repos/myrepo" fetch origin >/dev/null 2>&1
-  git -C "$proj/.repos/myrepo" branch -f dup1 main
-  git -C "$proj/.repos/myrepo" branch -f dup2 main
-  git -C "$proj/.repos/myrepo" config branch.dup1.remote origin
-  git -C "$proj/.repos/myrepo" config branch.dup1.merge refs/heads/main
-  git -C "$proj/.repos/myrepo" config branch.dup2.remote origin
-  git -C "$proj/.repos/myrepo" config branch.dup2.merge refs/heads/main
-  # remove the default refspec so "main" becomes a register candidate
-  git -C "$proj/.repos/myrepo" config --unset-all remote.origin.fetch
-  git -C "$proj/.repos/myrepo" config --add remote.origin.fetch "+refs/heads/gone-elsewhere:refs/remotes/origin/gone-elsewhere"
 
-  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run 2>&1"
+  # a raw branch with a configured upstream whose remote branch is gone; the
+  # stale ref would mask it as "traceable" if the residue scan ran before
+  # the touchpoint's conditional prune
+  git -C "$proj/.repos/myrepo" branch ghost-x main
+  git -C "$proj/.repos/myrepo" config branch.ghost-x.remote origin
+  git -C "$proj/.repos/myrepo" config branch.ghost-x.merge refs/heads/gone-x
+  git -C "$proj/.repos/myrepo" update-ref refs/remotes/origin/gone-x \
+    "$(git -C "$proj/.repos/myrepo" rev-parse main)"
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
   [ "$status" -eq 0 ]
-  local n
-  n=$(printf '%s' "$output" | grep -c "would add fetch refspec: main$")
-  [ "$n" -eq 1 ]
+  # fetch fails for gone-x (swallowed) → conditional prune deletes the stale
+  # ref → the residue scan then sees ghost-x as the untraceable branch it is
+  refute_contains "$output" "couldn't find remote ref"
+  assert_contains "$output" "    ghost-x (merged)"
+  run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/remotes/origin/gone-x
+  [ "$status" -ne 0 ]
+}
+
+@test "prune: two local branches sharing one dead upstream are cleaned in one pass" {
+  local proj="$SANDBOX/prune-shared-upstream"
+  local remote="$REMOTES/prune-shared-upstream-repo.git"
+  clone_remote "$remote"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  cd "$proj" && orbit new "shared one" --name ws1 >/dev/null 2>&1
+  cd "$proj/ws1" && orbit add myrepo >/dev/null 2>&1
+  cd "$proj/ws1/myrepo" && orbit switch -c feat-shared >/dev/null 2>&1
+  echo s > s.txt && git add s.txt && git commit -m "s" >/dev/null 2>&1
+  git push >/dev/null 2>&1
+
+  # a second workspace branch tracks the same upstream
+  cd "$proj" && orbit new "shared two" --name ws2 >/dev/null 2>&1
+  cd "$proj/ws2" && orbit add myrepo >/dev/null 2>&1
+  cd "$proj/ws2/myrepo" && orbit switch feat-shared >/dev/null 2>&1
+  git rev-parse --verify --quiet origin/feat-shared >/dev/null
+
+  # the remote deletes the shared upstream
+  local tmp
+  tmp=$(mktemp -d "$SANDBOX/_tmp_psu_XXXXXX")
+  git clone "$remote" "$tmp" >/dev/null 2>&1
+  git -C "$tmp" push origin --delete feat-shared >/dev/null 2>&1
+  rm -rf "$tmp"
+
+  cd "$SANDBOX"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "couldn't find remote ref"
+  run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/remotes/origin/feat-shared
+  [ "$status" -ne 0 ]
+  # both local branches stay
+  git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/heads/ws/ws1/feat-shared >/dev/null
+  git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/heads/ws/ws2/feat-shared >/dev/null
 }

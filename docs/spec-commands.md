@@ -231,14 +231,14 @@ Jot entries are real discoveries only — orbit writes no system placeholders in
 
 ## orbit info Auto-fetch
 
-`orbit info <repo>` automatically reconciles the repo's fetch refspecs and fetches on execution (`orbit_reconcile_fetch_refspecs` + bare `git fetch origin`), enabling two-layer staleness detection:
+`orbit info <repo>` maintains the repo's fetch config and fetches on execution (the touchpoint discipline of [`spec-worktree.md`](./spec-worktree.md#touchpoint-fetch-discipline): the default branch plus every tracked remote branch, one explicit refspec per fetch, never a bare fetch), enabling two-layer staleness detection:
 
 - **Layer 1 (pool ← upstream)**: After fetch, compares pool repo's local branch with `origin/<branch>`; if behind, outputs to stderr: `orbit: <repo>: N new commits on origin/<branch>`
 - **Layer 2 (memo ← pool HEAD)**: Existing `orbit_staleness_check`, compares HEAD at memo write time with pool repo's current HEAD
 
-Both layer warnings output to stderr, not affecting stdout. Refspec reconciliation changes (see [`spec-lifecycle.md`](./spec-lifecycle.md#fetch-refspec-reconciliation)) also print to stderr as `orbit: <repo>: removed stale fetch refspec: <branch>` / `orbit: <repo>: added fetch refspec: <branch>`; the bare fetch materializes newly registered tracking refs immediately. Fetch failures are silently skipped (network unavailability does not block viewing).
+Both layer warnings output to stderr, not affecting stdout. A config convergence (see [`spec-worktree.md`](./spec-worktree.md#config-ownership)) prints its `orbit: <repo>: … converged: …` line to stderr at the moment it happens. Fetch failures are silently tolerated (network unavailability does not block viewing); a remote-deleted tracked branch's ref is converged by the closing `git remote prune origin`, and only the default branch's failure can surface — as an explicit WARNING when the remote answers.
 
-The same reconcile-then-bare-fetch pair runs per repo in the `orbit context --startup` reignite block (the session-start hook path), so a scoped/raw branch shows remote tracking from the first session start after its push. `orbit repos` and bare `orbit context` (cruise block) do not fetch (stay purely local and fast), only show Layer 2.
+The same maintain-then-named-fetch pair runs per repo in the `orbit context --startup` reignite block (the session-start hook path). Tracking refs also materialize without any touchpoint: under the wildcard map a push updates `origin/<branch>` on the spot. `orbit repos` and bare `orbit context` (cruise block) do not fetch (stay purely local and fast), only show Layer 2.
 
 ## orbit sync
 
@@ -260,22 +260,20 @@ orbit sync [repo...] [--force] [--branch <branch>]
 |------|----------|----------|
 | Default | `fetch` + `merge --ff-only` | Regular sync |
 | `--force` | `fetch` + `reset --hard` | Locally diverged or ff failed |
-| `--branch <new>` | Switch fetch refspec + fetch + checkout | Change tracking branch |
+| `--branch <new>` | fetch + checkout + move `origin/HEAD` | Change tracking branch |
 
 **Scope**: bare `sync` is callable from anywhere — `merge --ff-only` cannot lose data (it refuses on divergence). `--force` and `--branch` are **project root only**: both destroy or re-point state in the shared pool, which no single workspace owns, so the call has to come from the scope that does. They share `prune`'s initiation guard (`orbit_require_root_scope`; refusal messages in spec-warnings.md).
 
 **`--branch` detailed flow** (root-level only — it rewrites pool-wide state every workspace's worktrees depend on, so it is refused from inside any workspace, same rule as `prune`):
-1. Remove the fetch refspec of the branch being replaced (`orbit_remove_fetch_refspec`) — never `--unset-all`: refspecs other workspaces registered for their own branches, and user-configured wildcards, must survive
-2. `git config --add remote.origin.fetch "+refs/heads/<new>:refs/remotes/origin/<new>"`
-3. `git fetch origin <new>` — on failure the refspec change is rolled back, so a failed switch leaves the pool able to fetch its previous branch
-4. `git checkout <new>` (if doesn't exist locally: `git checkout -b <new> origin/<new>`)
-5. `git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/<new>`
-6. If memo already exists: stderr outputs "memo may not apply to new branch"
+1. `git fetch origin "+refs/heads/<new>:refs/remotes/origin/<new>"` — explicit and layout-independent; the wildcard map already covers any new default branch, so no config is written, and a failed fetch leaves nothing to roll back
+2. `git checkout <new>` (if doesn't exist locally: `git checkout -b <new> origin/<new>`)
+3. `git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/<new>`
+4. If memo already exists: stderr outputs "memo may not apply to new branch"
 
 `--branch` + `--force` can be combined.
 
 **Post-sync behavior:**
-- Before fetching, sync reconciles fetch refspecs with the remote: entries for branches the remote no longer has are removed (a stale entry makes every bare `git fetch` fail with `couldn't find remote ref`), and entries are registered for locally-tracked branches that now exist remotely; each change prints `<repo>: removed stale fetch refspec: <branch>` / `<repo>: added fetch refspec: <branch>`. The fetch itself is bare (`git fetch origin`) so newly registered tracking refs materialize immediately. See [`spec-lifecycle.md`](./spec-lifecycle.md#fetch-refspec-reconciliation) for the exact rule
+- Before the fast-forward, sync runs the touchpoint discipline: config maintenance, then one named fetch per branch (default + tracked, deduped) — never a bare fetch, which under the wildcard map would pull every branch's objects. A tracked branch the remote lost fails its own fetch silently and its ref is converged by the closing `git remote prune origin`. See [`spec-worktree.md`](./spec-worktree.md#touchpoint-fetch-discipline) for the exact rule
 - Does not update the `.orbit` index `head` field (`head` reflects HEAD at memo write time, not at sync time)
 - `orbit_staleness_check` compares memo HEAD vs pool current HEAD; distance naturally changes after sync
 - sync does not cascade to memo refresh — memo validity is determined by actual work needs, not by commit distance (see [`docs/spec-knowledge.md`](./spec-knowledge.md) Sync and Memo Cascade Relationship; agent behavior rules in `skills/CONSTRAINTS.md` Sync Decision Rules)
@@ -285,6 +283,26 @@ orbit sync [repo...] [--force] [--branch <branch>]
 - ff-only fails → stderr warning + suggests `--force`, continues processing next repo
 - fetch fails → stderr warning, continues processing next repo
 - `--branch` target branch doesn't exist → error
+
+## orbit config
+
+Reads and writes project configuration (persisted in `.repos/.orbit`).
+
+```bash
+orbit config [<key> [<value> | --unset]]
+```
+
+**Managed-config mode keys** — one three-mode switch per git config key orbit maintains in pool repos:
+
+| Key | Governs | Values |
+|---|---|---|
+| `git.fetchAllBranches` | the `remote.origin.fetch` wildcard map | `always` (default) / `once` / `never` |
+| `git.fetchPrune` | `fetch.prune=true` | `always` (default) / `once` / `never` |
+| `git.pushUpstreamByDefault` | `push.default=upstream` | `always` (default) / `once` / `never` |
+
+Mode semantics and the convergence contract live in [spec-worktree.md](./spec-worktree.md) → Config Ownership. A value outside the three-mode vocabulary is refused: `invalid <key>: <value> (expected always, once, or never)`.
+
+Other registered keys: `branch.prefix` (write-time validation and the move-refusal — [spec-worktree.md](./spec-worktree.md) → The Prefix), `memo.minLines` / `memo.maxLines` / `jot.bufferSize` ([spec-knowledge.md](./spec-knowledge.md)). Writes to `repos.*` are refused — pool index, not config.
 
 ## orbit doctor
 

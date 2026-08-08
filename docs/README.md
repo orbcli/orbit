@@ -15,7 +15,7 @@ This directory contains design specifications and reference materials for Orbit.
 
 | Document | Description |
 |:---------|:------------|
-| [spec-branching.md](spec-branching.md) | Branch naming strategy and push conventions |
+| [spec-worktree.md](spec-worktree.md) | The worktree model: root decision, config ownership, fetch discipline, branching strategy, push routing, git dependency closure |
 | [spec-commands.md](spec-commands.md) | Command interface design and argument conventions |
 | [spec-directory.md](spec-directory.md) | Directory structure layout and anchor rules |
 | [spec-knowledge.md](spec-knowledge.md) | Knowledge system: progressive loading, staleness detection, and memo lifecycle |

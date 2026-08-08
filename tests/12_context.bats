@@ -235,7 +235,7 @@ teardown() {
   assert_contains "$output" "cannot be combined"
 }
 
-@test "context --startup: registers refspec and materializes tracking ref after push" {
+@test "context --startup: tracking ref already materialized at push; startup stays clean" {
   local proj="$SANDBOX/context-refspec"
   local remote="$REMOTES/context-refspec.git"
   clone_remote "$remote"
@@ -250,16 +250,17 @@ teardown() {
   git commit -m "x" >/dev/null 2>&1
   git push >/dev/null 2>&1
 
-  # no refspec was registered at switch -c, so the push alone didn't materialize
-  run git rev-parse --verify --quiet origin/feat-x
-  [ "$status" -ne 0 ]
-
-  # the startup block reconciles refspecs and fetches: the scoped branch's
-  # tracking ref materializes at the first session start after the push
-  run bash -c "cd '$proj/ws1/myrepo' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' context --startup"
-  [ "$status" -eq 0 ]
-  assert_contains "$output" "orbit: myrepo: added fetch refspec: feat-x"
-  git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch \
-    | grep -Fqx "+refs/heads/feat-x:refs/remotes/origin/feat-x"
+  # The wildcard map routes the push: the tracking ref materializes on the
+  # spot, before any touchpoint runs.
   git rev-parse --verify --quiet origin/feat-x >/dev/null
+
+  # The startup block fetches the named branches only: no registration
+  # output, no config change, @{u} resolves.
+  run bash -c "cd '$proj/ws1/myrepo' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' context --startup 2>&1"
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "fetch refspec"
+  refute_contains "$output" "couldn't find remote ref"
+  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
+  [ "$output" = "+refs/heads/*:refs/remotes/origin/*" ]
+  git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null
 }

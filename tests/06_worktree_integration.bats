@@ -144,23 +144,19 @@ teardown() {
   [ "$push_default" = "upstream" ]
 }
 
-@test "switch: ensures push.autoSetupRemote=true on repo" {
-  local proj="$SANDBOX/switch-autosetup"
+@test "switch: writes no push config (touchpoint convergence owns push.default)" {
+  local proj="$SANDBOX/switch-no-pushcfg"
   clone_project "$proj" "$SHARED_PROJECT_WITH_BRANCH"
   cd "$proj" && orbit new "switch test" --name dev >/dev/null 2>&1
   cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
-  git -C "$proj/.repos/myrepo" config --unset push.autoSetupRemote 2>/dev/null || true
+  git -C "$proj/.repos/myrepo" config --unset push.default 2>/dev/null || true
 
   cd "$proj/dev/myrepo" && orbit switch -c feat-new >/dev/null 2>&1
-  local v
-  v=$(git -C "$proj/.repos/myrepo" config --get push.autoSetupRemote)
-  [ "$v" = "true" ]
+  run git -C "$proj/.repos/myrepo" config --get push.default
+  [ "$status" -ne 0 ]
 }
 
-@test "raw mode: bare git push on checkout -b branch creates remote + tracking" {
-  local gv
-  gv=$(git --version | awk '{print $3}')
-  [ "$(printf '%s\n' "2.37" "$gv" | sort -V | head -n1)" = "2.37" ] || skip "git < 2.37"
+@test "raw mode: explicit push creates the remote branch; bare push is native git's error" {
   local proj="$SANDBOX/raw-push"
   local remote="$REMOTES/raw-push.git"
   clone_remote "$remote"
@@ -176,34 +172,39 @@ teardown() {
   git add raw.txt >/dev/null 2>&1
   git commit -m "raw commit" >/dev/null 2>&1
 
+  # no push.autoSetupRemote: a bare push on a branch with no upstream fails
+  # with plain git's "no upstream branch" error — raw mode's contract
   run git push
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
 
-  # remote branch created by the bare push (no -u needed)
+  # the documented raw-mode path: explicit push needs no upstream config
+  run git push origin feature/raw
+  [ "$status" -eq 0 ]
   git ls-remote --heads "$remote" feature/raw | grep -q feature/raw
-  # tracking config set by autoSetupRemote (remote-tracking ref itself is not
-  # materialized under the pool's --single-branch fetch refspec)
+
+  # `-u` wires tracking for later bare pushes, exactly as in a native repo
+  git push -u origin feature/raw >/dev/null 2>&1
   [ "$(git config --get branch.feature/raw.remote)" = "origin" ]
   [ "$(git config --get branch.feature/raw.merge)" = "refs/heads/feature/raw" ]
 }
 
-@test "switch: -c does NOT pre-register a fetch refspec for the unpushed branch" {
+@test "switch: -c writes no per-branch fetch entry (the wildcard map covers it)" {
   local proj="$SANDBOX/switch-refspec"
   clone_project "$proj" "$SHARED_PROJECT_WITH_BRANCH"
   cd "$proj" && orbit new "switch test" --name dev >/dev/null 2>&1
   cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
 
   cd "$proj/dev/myrepo" && orbit switch -c feat-new >/dev/null 2>&1
-  # An exact refspec for a branch the remote doesn't have yet would make every
-  # bare `git fetch` fail until the first push — registration is deferred to
-  # sync/prune reconciliation once the branch exists remotely.
+  # The pool's fetch config is exactly the full wildcard — no per-branch
+  # entries to go stale, and @{u} resolution covers feat-new the moment it
+  # is pushed.
   run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
-  [[ "$output" != *"refs/heads/feat-new:"* ]]
+  [ "$output" = "+refs/heads/*:refs/remotes/origin/*" ]
   # upstream config is still wired up front
   [ "$(git config --get branch.ws/dev/feat-new.merge)" = "refs/heads/feat-new" ]
 }
 
-@test "scoped mode: push then sync registers refspec and materializes tracking ref" {
+@test "scoped mode: push materializes the tracking ref under the wildcard map" {
   local proj="$SANDBOX/scoped-push"
   local remote="$REMOTES/scoped-push.git"
   clone_remote "$remote"
@@ -220,19 +221,18 @@ teardown() {
   run git push
   [ "$status" -eq 0 ]
 
-  # no refspec was pre-registered, so the push alone doesn't materialize the ref
-  run git rev-parse --verify --quiet origin/feat-scoped
-  [ "$status" -ne 0 ]
-
-  # sync reconciliation sees the branch on the remote, registers the refspec,
-  # and the fetch materializes the remote-tracking ref
-  (cd "$proj" && orbit sync myrepo >/dev/null 2>&1)
-  git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch \
-    | grep -Fqx "+refs/heads/feat-scoped:refs/remotes/origin/feat-scoped"
+  # The push alone materializes the remote-tracking ref (the wildcard map
+  # routes it) and @{u} resolves immediately — no touchpoint wait.
   git rev-parse --verify --quiet origin/feat-scoped >/dev/null
   local up
   up=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}')
   [ "$up" = "origin/feat-scoped" ]
+
+  # A later sync keeps the config at exactly the wildcard — no per-branch
+  # entry is ever registered.
+  (cd "$proj" && orbit sync myrepo >/dev/null 2>&1)
+  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
+  [ "$output" = "+refs/heads/*:refs/remotes/origin/*" ]
 }
 
 @test "switch: switches to existing remote branch with tracking" {
@@ -302,7 +302,7 @@ teardown() {
   [ "$(git -C "$proj/.repos/myrepo" rev-parse refs/remotes/origin/feature-x)" = "$new_head" ]
 }
 
-@test "switch: non-existent remote branch fails and leaves no fetch refspec residue" {
+@test "switch: non-existent remote branch fails and leaves the fetch config untouched" {
   local proj="$SANDBOX/switch-test7"
   clone_project "$proj" "$SHARED_PROJECT_WITH_BRANCH"
   cd "$proj" && orbit new "switch test" --name dev >/dev/null 2>&1
@@ -311,10 +311,10 @@ teardown() {
   run bash -c "cd '$proj/dev/myrepo' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' switch nonexist-branch"
   [ "$status" -ne 0 ]
 
-  # the refspec registered before the failed fetch must be rolled back —
-  # a leftover entry would break every bare fetch in the pool
+  # No per-branch entry is ever registered: the config stays exactly the
+  # wildcard, and bare fetch keeps working.
   run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
-  [[ "$output" != *"nonexist-branch"* ]]
+  [ "$output" = "+refs/heads/*:refs/remotes/origin/*" ]
   run git -C "$proj/.repos/myrepo" fetch origin
   [ "$status" -eq 0 ]
 }

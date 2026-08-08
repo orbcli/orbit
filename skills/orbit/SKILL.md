@@ -172,43 +172,13 @@ orbit doctor
 
 ## Branch modes
 
-> **Don't `git checkout master`/`main` inside a worktree.** The pool already has the base branch checked out, so git aborts with `fatal: '<branch>' is already used by worktree at '.repos/<repo>'`. To branch off the latest baseline, sync through orbit first: `orbit switch master` (creates a workspace-level tracking branch, fetching remote) → `git pull --ff-only` → `git checkout -b feature/x`. This starts the new branch from the synced remote HEAD, not stale local code.
+- **Scoped (default).** `orbit switch -c <name>` creates `ws/<workspace>/<name>` tracking `origin/<name>` — upstream wired up front, no cross-workspace collision, cleaned up by `orbit prune`. Bare `git push` works (`push.default=upstream` routes the prefixed local name to the clean remote name). `orbit switch <name>` without `-c` switches to an existing remote branch.
+- **Raw (advanced).** Choose only when you explicitly want pure git — for everything else scoped wins: upstream wired up front, no checkout trap, names isolated, prune-cleaned. Raw is `git checkout -b <name>`: no prefix, no upstream wiring, no prune cleanup. A bare `git push` needs an upstream — wire once with `git push -u origin <branch>`, or stay explicit with `git push origin <branch>` (no config needed).
+- **The "already used by worktree" trap.** The pool holds each repo's base branch, so git refuses to check out a branch another worktree holds — don't fight it, run `orbit switch <name>`. To branch off the latest baseline: `orbit switch master` → `git pull --ff-only` → `git checkout -b feature/x`.
 
-**Which mode?**
-- **Default = scoped** (`orbit switch -c <name>`) — upstream tracking wired up front, branch namespaced per workspace (no cross-workspace conflicts), cleaned up by `orbit prune`.
-- **Raw** (`git checkout -b <name>`) is **advanced** — plain git with no orbit branch management; use only when you explicitly want that.
-- **Fallback — the "already used by worktree" trap.** Git refuses to check out a branch that is already checked out in another worktree: the pool holds each repo's base branch, and other workspaces may hold shared branches. So `git checkout <name>` / `git switch <name>` can abort with `fatal: '<name>' is already used by worktree at ...`. Don't fight it — run **`orbit switch <name>`**. It creates a per-workspace branch `ws/<workspace>/<name>` tracking `origin/<name>` — a distinct local name that never collides — and `git push` still targets `origin/<name>`.
+**Tracking display.** The pool's fetch config carries the full wildcard map: once a branch has upstream config, `git status` / `@{upstream}` resolve and a push materializes the tracking ref on the spot — no registration, no touchpoint wait.
 
-### Raw mode (advanced)
-
-After `orbit add`, use git directly. Orbit does not manage branches:
-
-```bash
-orbit add backend          # → ws/<workspace>/main (local base)
-git checkout -b feature/x  # plain branch, no prefix
-git push origin feature/x  # explicit push target
-```
-
-**Tracking-display limitation (raw mode only).** The pool is a single-branch clone, so a branch you create with `git checkout -b` and push won't show remote tracking in `git status` / `@{upstream}` — the remote-tracking ref isn't materialized. The branch and its push are fine; only the ahead/behind display is blank. Run `git fetch origin <branch>` once to materialize the ref, or just wait: the next `orbit sync` / `orbit info` / session start registers the refspec and materializes it automatically. Scoped mode (`orbit switch -c`) wires the upstream config up front and materializes the ref the same way once the branch is pushed. `orbit add` prints this note too.
-
-### Scoped mode (default)
-
-Use `orbit switch` to create prefixed branches with upstream config:
-
-```bash
-orbit switch -c feat-x     # → ws/<workspace>/feat-x, upstream → origin/feat-x
-git push                   # auto-pushes to origin/feat-x (no prefix on remote)
-```
-
-Switch to existing remote branch:
-```bash
-orbit switch hotfix-123    # → fetches + creates ws/<workspace>/hotfix-123
-```
-
-## Push behavior
-
-- **Raw mode**: `git push origin <branch-name>` (explicit branch required)
-- **Scoped mode** (after `orbit switch -c`): `git push` works directly
+**Fetch habits are cost, not correctness.** Prefer `git fetch origin <branch>` over a bare `git fetch` — same job without pulling every branch's objects (the first full pull on a huge repo is GB-scale). A bare `git fetch` / `git pull` is not wrong, just heavier; `fetch.prune` keeps refs self-cleaning either way.
 
 ## Writing repo memos
 
@@ -255,6 +225,7 @@ Rules:
 ## Safety rules
 
 - **Never access `.repos/` directly.** All repos operations go through orbit commands.
+- **Never hand-edit orbit-managed git config.** `git config` inside a worktree writes the pool repo's *shared* config — a worktree is not a config boundary. The keys orbit manages — `remote.origin.fetch`, `fetch.prune`, `push.default`, and scoped branches' `branch.*` sections — are off-limits: edits to converged keys are reverted at the next touchpoint, and edits to `branch.*` silently corrupt tracking and prune's bookkeeping.
 - **Don't run `orbit new` if already in a workspace.** It creates at project root level.
 - **Reclaiming workspaces is not yours.** `orbit prune` deletes worktrees, branches and workspace directories across the whole project — it belongs to whoever operates the project root, not to a session working inside a workspace. If cleanup comes up, report the need and stop there; don't run it, and don't relocate to make it runnable. The same rule covers `sync --force` / `sync --branch`: they destroy or re-point the shared pool, which your workspace does not own.
 - **Default scope is the current workspace** inferred from CWD. Don't target other workspaces unless explicitly asked.
