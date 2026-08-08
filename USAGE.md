@@ -238,7 +238,9 @@ git checkout -b feature/api-refactor
 git push origin feature/api-refactor
 ```
 
-**Tracking-display limitation:** the pool is a single-branch clone, so a raw-mode branch you push this way won't show remote tracking in `git status` / `@{upstream}` — the branch and push are fine, only the ahead/behind display is blank. Run `git fetch origin <branch>` once to materialize the ref, or just wait: the next `orbit sync` / `orbit info` / session start registers the refspec and materializes it automatically. Scoped mode above wires the upstream config up front and materializes the ref the same way once the branch is pushed.
+**Tracking display:** the pool's fetch config carries the full wildcard map (`+refs/heads/*:refs/remotes/origin/*`), so once a branch has upstream config, `git status` / `@{upstream}` resolve and a push materializes the tracking ref on the spot — no registration, no waiting for an orbit touchpoint. The upstream config itself is wired by `orbit switch -c`, by `git push -u`, or by hand.
+
+Fetch habits are a cost question, never a correctness one: orbit's own commands always fetch named branches only, and your `git fetch origin <branch>` does the same — the pool's object pull stays at what you actually track. A bare `git fetch` or `git pull` is just as correct; it simply pulls every branch's objects too (on a huge repo that's a one-time GB-scale step; `fetch.prune` keeps the refs self-cleaning afterward).
 
 ## 7. Viewing Status
 
@@ -304,6 +306,22 @@ orbit config explore.paths ".:1"    # cold-start exploration scope for the first
 
 `memo.minLines`/`memo.maxLines` are surfaced as `card budget: <min>–<max> lines` at the curation checkpoints (jot overflow and `orbit done`). `explore.paths` is a one-time cold-start knob only — once the first exploration writes the card, the jot → incremental-memo pipeline maintains it. Orbit attaches no meaning to what lives at those paths (a pre-generated code-doc works just as well).
 
+### Managed config keys (project-level, on `.repos/.orbit`)
+
+A config key orbit depends on is managed state: converged at every touchpoint under the default mode, with three-mode escape hatches. Three optional keys select the mode, each taking `always` (default) / `once` / `never`:
+
+```bash
+orbit config git.fetchAllBranches always      # always: keep remote.origin.fetch at exactly the wildcard map
+                                           #        (+refs/heads/*:refs/remotes/origin/*), converging
+                                           #        anything else at the next touchpoint (default)
+                                           # once:  write the map once at clone, then the layout is yours
+                                           # never: never write it (pools stay single-branch)
+orbit config git.fetchPrune always            # same three modes, for fetch.prune=true (default always)
+orbit config git.pushUpstreamByDefault always # same three modes, for push.default=upstream (default always)
+```
+
+Under the default `always`, a pool whose config deviates — an older orbit's per-branch entries, a hand-edit, an emptied config — is converged at the next `orbit sync` / `orbit info` / session start / `orbit prune`, with a stderr note at the moment it happens. Set the keys to `once` when your team keeps its own refspec layout (e.g. a `feat/*` scoped map) or its own `push.default`: new pools still get the working baseline at birth, and orbit never corrects it afterward.
+
 ## 9. Recording Discoveries (Jot)
 
 During work, record repo knowledge for later memo aggregation:
@@ -351,7 +369,7 @@ orbit prune --force               # Skip validation (accept the loss)
 >
 > Beyond workspace directories, `prune` also reclaims **residue** left by force-deleted workspace directories (an agent's `rm -rf`, a crash): scoped branches whose workspace is already gone are cleaned per branch (merged deleted, unmerged reported), and untraceable raw branches (no remote copy, no workspace) are reported with review/delete commands for you to dispose of by hand. A run with kept content ends in a closing block: one confirm-useless caveat, then the force-delete suggestions (`orbit prune <ws> --force` for scoped, native `branch -D` for raw). Interruption is safe at any point — directory removal goes through an atomic rename into `.prune-trash/`, so the next run simply resumes; the only case non-force will refuse to resume is a worktree half-removed by a failed deletion (it reads as uncommitted work — review, then `--force`).
 >
-> Two things worth knowing before you reach for `--force`. Deletion lines name the commit they removed (`deleted branch (force): <branch> (was abc1234)`) — that SHA is the handle for `git reflog`, which keeps the objects for 90 days by default, so a branch deleted by mistake is recoverable as long as you kept the report. Discarding **uncommitted** work is the one step with no recovery path at all, so `--force` says so before it acts. And prune does not protect everything: `.gitignore`d files, hand-written notes at the workspace top level, and commits left on a detached HEAD have no guard — see [`docs/spec-lifecycle.md`](docs/spec-lifecycle.md) → Out of Scope.
+> Two things worth knowing before you reach for `--force`. Deletion lines name the commit they removed (`deleted branch (force): <branch> (was abc1234)`) — that SHA is the recovery handle: `git branch <name> abc1234` recreates the ref while the objects survive. Prune deletes refs, never objects; unreachable objects live until `git gc` collects them (`gc.pruneExpire`, two weeks by default — the deleted branch's own reflog goes with it, so don't count on the longer reflog window). Discarding **uncommitted** work is the one step with no recovery path at all, so `--force` says so before it acts. And prune does not protect everything: `.gitignore`d files, hand-written notes at the workspace top level, and commits left on a detached HEAD have no guard — see [`docs/spec-lifecycle.md`](docs/spec-lifecycle.md) → Out of Scope.
 >
 > `--force` does **not** override `done`. A workspace is reclaimable only once you have marked it done, and no flag substitutes for that — it is the one thing only you can decide. If a workspace's `.orbit` file was lost, prune stops mentioning it entirely; run `orbit done` inside it again to restore the marker.
 
@@ -361,7 +379,7 @@ orbit prune --force               # Skip validation (accept the loss)
 ORBIT_ROOT=<project-root>         # Explicitly specify project root
 ```
 
-The scoped-mode branch prefix is **project config** — `orbit config branch.prefix <prefix>` (default `ws`). It is baked into every branch orbit creates and is what `prune` matches on to find them again, so it has to stay stable across sessions. Changing it is refused while any branch still carries the current prefix (moving it would orphan those branches). See [`docs/spec-lifecycle.md`](docs/spec-lifecycle.md) → Branch Prefix.
+The scoped-mode branch prefix is **project config** — `orbit config branch.prefix <prefix>` (default `ws`). It is baked into every branch orbit creates and is what `prune` matches on to find them again, so it has to stay stable across sessions. Changing it is refused while any branch still carries the current prefix (moving it would orphan those branches). See [`docs/spec-worktree.md`](docs/spec-worktree.md) → The Prefix.
 
 ## 12. Codex Sandbox Escalation
 

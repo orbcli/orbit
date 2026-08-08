@@ -159,6 +159,74 @@ teardown() {
   assert_contains "$output" "release/dev/keepme"
 }
 
+@test "config: fetch maintenance switches accept always|once|never, reject junk, list camelCase" {
+  local proj="$SANDBOX/cfg-fetch-modes"
+  mkdir -p "$proj/.repos"
+  touch "$proj/.repos/.orbit"
+  TEST_PROJECT="$proj"
+
+  run orbit config git.fetchAllBranches banana
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "expected always, once, or never"
+  run orbit config git.fetchPrune maybe
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "expected always, once, or never"
+  run orbit config git.pushUpstreamByDefault maybe
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "expected always, once, or never"
+
+  run orbit config git.fetchAllBranches once
+  [ "$status" -eq 0 ]
+  run orbit config git.fetchAllBranches
+  [ "$output" = "once" ]
+  run orbit config git.fetchPrune never
+  [ "$status" -eq 0 ]
+  run orbit config git.pushUpstreamByDefault once
+  [ "$status" -eq 0 ]
+
+  # bare list restores the documented camelCase key form
+  run orbit config
+  assert_contains "$output" "git.fetchAllBranches=once"
+  assert_contains "$output" "git.fetchPrune=never"
+  assert_contains "$output" "git.pushUpstreamByDefault=once"
+
+  run orbit config git.fetchAllBranches --unset
+  [ "$status" -eq 0 ]
+  run orbit config git.fetchAllBranches
+  [ "$status" -eq 1 ]
+  assert_contains "$output" "(unset)"
+}
+
+@test "config: key casing cannot bypass validation — git config keys are case-insensitive" {
+  local proj="$SANDBOX/cfg-key-case"
+  mkdir -p "$proj/.repos"
+  touch "$proj/.repos/.orbit"
+  TEST_PROJECT="$proj"
+
+  # a differently-cased spelling writes the SAME key — it must face the same
+  # validation, or a junk value lands and silently reads back as the default
+  run orbit config git.fetchallbranches Never
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "expected always, once, or never"
+  run orbit config GIT.FETCHPRUNE junk
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "expected always, once, or never"
+
+  # a valid value through a cased spelling lands on the canonical key
+  run orbit config git.fetchallbranches never
+  [ "$status" -eq 0 ]
+  run orbit config git.fetchAllBranches
+  [ "$output" = "never" ]
+
+  # the other guarded keys read the same way to git: casing must not bypass them
+  run orbit config REPOS.myrepo.url http://evil
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "pool index data"
+  run orbit config BRANCH.PREFIX 'bad/prefix'
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "invalid branch.prefix"
+}
+
 @test "config: refuses to write pool index keys (repos.*)" {
   local proj="$SANDBOX/cfg-repos-guard"
   clone_project "$proj"

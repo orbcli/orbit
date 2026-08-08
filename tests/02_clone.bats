@@ -3,6 +3,7 @@
 setup_file() {
   load test_helper/common
   ensure_shared_remote
+  ensure_shared_remote_with_branch
 }
 
 setup() {
@@ -26,16 +27,67 @@ teardown() {
   [ "$push_default" = "upstream" ]
 }
 
-@test "clone: sets push.autoSetupRemote=true on cloned repo" {
-  local proj="$SANDBOX/clone-autosetup"
+@test "clone: does not set push.autoSetupRemote (raw mode is plain git)" {
+  local proj="$SANDBOX/clone-no-autosetup"
   mkdir -p "$proj/.repos"
   touch "$proj/.repos/.orbit"
   TEST_PROJECT="$proj"
 
   cd "$proj" && orbit clone "$SHARED_REMOTE" --name backend >/dev/null 2>&1
-  local v
-  v=$(git -C "$proj/.repos/backend" config --get push.autoSetupRemote)
-  [ "$v" = "true" ]
+  run git -C "$proj/.repos/backend" config --get push.autoSetupRemote
+  [ "$status" -ne 0 ]
+}
+
+@test "clone: fetch config converges to the wildcard map plus fetch.prune" {
+  local proj="$SANDBOX/clone-fetchcfg"
+  mkdir -p "$proj/.repos"
+  touch "$proj/.repos/.orbit"
+  TEST_PROJECT="$proj"
+
+  cd "$proj" && orbit clone "$SHARED_REMOTE_WITH_BRANCH" --name backend >/dev/null 2>&1
+  # the map covers every branch (@{u} resolution) while the initial object
+  # pull stays single-branch
+  run git -C "$proj/.repos/backend" config --get-all remote.origin.fetch
+  [ "$output" = "+refs/heads/*:refs/remotes/origin/*" ]
+  [ "$(git -C "$proj/.repos/backend" config --type=bool --get fetch.prune)" = "true" ]
+  run git -C "$proj/.repos/backend" branch -r
+  assert_contains "$output" "origin/main"
+  refute_contains "$output" "origin/feature-x"
+  refute_contains "$output" "origin/feature-y"
+}
+
+@test "clone: once mode still writes the baseline at birth" {
+  local proj="$SANDBOX/clone-fetch-clone"
+  mkdir -p "$proj/.repos"
+  touch "$proj/.repos/.orbit"
+  TEST_PROJECT="$proj"
+  orbit config git.fetchAllBranches once >/dev/null 2>&1
+  orbit config git.fetchPrune once >/dev/null 2>&1
+  orbit config git.pushUpstreamByDefault once >/dev/null 2>&1
+
+  cd "$proj" && orbit clone "$SHARED_REMOTE" --name backend >/dev/null 2>&1
+  run git -C "$proj/.repos/backend" config --get-all remote.origin.fetch
+  [ "$output" = "+refs/heads/*:refs/remotes/origin/*" ]
+  [ "$(git -C "$proj/.repos/backend" config --type=bool --get fetch.prune)" = "true" ]
+  [ "$(git -C "$proj/.repos/backend" config --get push.default)" = "upstream" ]
+}
+
+@test "clone: never mode writes nothing — the single-branch entry stays, no prune key" {
+  local proj="$SANDBOX/clone-fetch-off"
+  mkdir -p "$proj/.repos"
+  touch "$proj/.repos/.orbit"
+  TEST_PROJECT="$proj"
+  orbit config git.fetchAllBranches never >/dev/null 2>&1
+  orbit config git.fetchPrune never >/dev/null 2>&1
+  orbit config git.pushUpstreamByDefault never >/dev/null 2>&1
+
+  cd "$proj" && orbit clone "$SHARED_REMOTE" --name backend >/dev/null 2>&1
+  run git -C "$proj/.repos/backend" config --get-all remote.origin.fetch
+  [ "$output" = "+refs/heads/main:refs/remotes/origin/main" ]
+  run git -C "$proj/.repos/backend" config --get fetch.prune
+  [ "$status" -ne 0 ]
+  run git -C "$proj/.repos/backend" config --get push.default
+  [ "$status" -ne 0 ]
 }
 
 @test "clone: writes url to .repos/.orbit index" {

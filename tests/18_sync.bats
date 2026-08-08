@@ -314,7 +314,7 @@ _push_update_to() {
   assert_contains "$output" '"memoBehind":'
 }
 
-# --- Readable sync output (human-facing output proposal) ---
+# --- Readable sync output ---
 
 @test "sync: reports already up to date when nothing changed" {
   local proj="$SANDBOX/sync-noop"
@@ -361,63 +361,189 @@ _push_update_to() {
   assert_contains "$output" "sync complete: 2 ok, 0 failed"
 }
 
-# --- Stale fetch refspec cleanup ---
+# --- Remote-deleted branches & fetch-config maintenance ---
 
-@test "sync: removes stale fetch refspec left by a remote-deleted branch" {
-  local proj="$SANDBOX/sync-refspec"
-  local remote="$REMOTES/sync-refspec.git"
+@test "sync: cleans the tracking ref of a remote-deleted tracked branch, zero fatal leak" {
+  local proj="$SANDBOX/sync-gone"
+  local remote="$REMOTES/sync-gone.git"
   clone_remote "$remote"
   clone_project "$proj"
   git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
 
-  # Simulate residue: refspec + stale tracking ref for a branch the remote no
-  # longer has (typical: branch auto-deleted on PR merge)
-  git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
-    "+refs/heads/gone:refs/remotes/origin/gone"
-  git -C "$proj/.repos/myrepo" update-ref refs/remotes/origin/gone \
-    "$(git -C "$proj/.repos/myrepo" rev-parse HEAD)"
+  cd "$proj" && orbit new "gone test" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+  cd "$proj/dev/myrepo" && orbit switch -c feat-gone >/dev/null 2>&1
+  echo g > g.txt && git add g.txt && git commit -m "g" >/dev/null 2>&1
+  git push >/dev/null 2>&1
+  git rev-parse --verify --quiet origin/feat-gone >/dev/null
 
-  # the residue breaks every bare fetch (the bug being fixed)
-  run git -C "$proj/.repos/myrepo" fetch origin
-  [ "$status" -ne 0 ]
+  # the remote deletes the branch (PR merged + auto-deleted)
+  local tmp
+  tmp=$(mktemp -d "$SANDBOX/_tmp_sg_XXXXXX")
+  git clone "$remote" "$tmp" >/dev/null 2>&1
+  git -C "$tmp" push origin --delete feat-gone >/dev/null 2>&1
+  rm -rf "$tmp"
 
-  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo 2>&1"
   [ "$status" -eq 0 ]
-  assert_contains "$output" "myrepo: removed stale fetch refspec: gone"
-
-  # only the live main refspec remains; the stale tracking ref is gone
-  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
-  [ "$output" = "+refs/heads/main:refs/remotes/origin/main" ]
-  run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/remotes/origin/gone
+  # the fatal this model exists to kill never leaks out of the touchpoint
+  refute_contains "$output" "couldn't find remote ref"
+  # the tracked-but-gone ref is converged natively (conditional remote prune)
+  run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/remotes/origin/feat-gone
   [ "$status" -ne 0 ]
+  # config untouched: exactly the wildcard
+  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
+  [ "$output" = "+refs/heads/*:refs/remotes/origin/*" ]
+}
 
-  # bare fetch works again
-  run git -C "$proj/.repos/myrepo" fetch origin
+@test "sync: converges a legacy exact-entry config, reports once on stderr" {
+  local proj="$SANDBOX/sync-converge"
+  clone_project "$proj"
+
+  # legacy shape: exact default entry only, no prune key
+  git -C "$proj/.repos/myrepo" config --replace-all remote.origin.fetch \
+    "+refs/heads/main:refs/remotes/origin/main"
+  git -C "$proj/.repos/myrepo" config --unset-all fetch.prune 2>/dev/null || true
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" 'orbit: myrepo: fetch config converged: git remote set-branches origin "*" (stop converging and re-apply yours: orbit config git.fetchAllBranches once)'
+  assert_contains "$output" 'orbit: myrepo: fetch config converged: git config fetch.prune true (stop converging and re-apply yours: orbit config git.fetchPrune once)'
+  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
+  [ "$output" = "+refs/heads/*:refs/remotes/origin/*" ]
+  [ "$(git -C "$proj/.repos/myrepo" config --type=bool --get fetch.prune)" = "true" ]
+
+  # one-shot: the next touchpoint has nothing to converge and stays quiet
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo 2>&1"
+  refute_contains "$output" "fetch config converged"
+}
+
+@test "sync: converges push.default, reports once on stderr" {
+  local proj="$SANDBOX/sync-converge-push"
+  clone_project "$proj"
+
+  git -C "$proj/.repos/myrepo" config push.default simple
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" 'orbit: myrepo: push routing converged: git config push.default upstream (stop converging and re-apply yours: orbit config git.pushUpstreamByDefault once)'
+  [ "$(git -C "$proj/.repos/myrepo" config --get push.default)" = "upstream" ]
+
+  # one-shot: the next touchpoint has nothing to converge and stays quiet
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo 2>&1"
+  refute_contains "$output" "push routing converged"
+}
+
+@test "sync: git.pushUpstreamByDefault=once leaves a custom push.default untouched and unreported" {
+  local proj="$SANDBOX/sync-push-clone"
+  clone_project "$proj"
+  orbit config git.pushUpstreamByDefault once >/dev/null 2>&1
+  git -C "$proj/.repos/myrepo" config push.default simple
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo 2>&1"
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "push routing converged"
+  [ "$(git -C "$proj/.repos/myrepo" config --get push.default)" = "simple" ]
+}
+
+@test "sync: git.fetchAllBranches=once leaves a custom layout untouched and unreported" {
+  local proj="$SANDBOX/sync-custom-layout"
+  clone_project "$proj"
+  # a custom layout is opted out per key: the map AND the prune key
+  orbit config git.fetchAllBranches once >/dev/null 2>&1
+  orbit config git.fetchPrune once >/dev/null 2>&1
+
+  # a team-narrowed layout: scoped wildcard only, no prune key
+  git -C "$proj/.repos/myrepo" config --replace-all remote.origin.fetch \
+    "+refs/heads/feat/*:refs/remotes/origin/feat/*"
+  git -C "$proj/.repos/myrepo" config --unset-all fetch.prune 2>/dev/null || true
+
+  # a tracked branch the remote never had: its stale ref is the user's
+  # territory under a narrowed layout — the conditional prune is gated on
+  # the full wildcard being in place
+  git -C "$proj/.repos/myrepo" branch demo main
+  git -C "$proj/.repos/myrepo" config branch.demo.remote origin
+  git -C "$proj/.repos/myrepo" config branch.demo.merge refs/heads/demo-gone
+  git -C "$proj/.repos/myrepo" update-ref refs/remotes/origin/demo-gone \
+    "$(git -C "$proj/.repos/myrepo" rev-parse main)"
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo 2>&1"
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "fetch config converged"
+  refute_contains "$output" "couldn't find remote ref"
+  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
+  [ "$output" = "+refs/heads/feat/*:refs/remotes/origin/feat/*" ]
+  run git -C "$proj/.repos/myrepo" config --get fetch.prune
+  [ "$status" -ne 0 ]
+  run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/remotes/origin/demo-gone
   [ "$status" -eq 0 ]
 }
 
-@test "sync: leaves a user-configured wildcard fetch refspec untouched" {
-  local proj="$SANDBOX/sync-wildcard"
-  local remote="$REMOTES/sync-wildcard.git"
-  clone_remote "$remote"
+@test "sync: git.fetchPrune=never leaves the prune key unset while the map is maintained" {
+  local proj="$SANDBOX/sync-prune-off"
   clone_project "$proj"
-  git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
+  orbit config git.fetchPrune never >/dev/null 2>&1
+  git -C "$proj/.repos/myrepo" config --unset-all fetch.prune 2>/dev/null || true
 
-  # User converted the pool to full fetch (a wildcard entry orbit never
-  # writes), plus a stale exact entry. Reconcile must remove the stale one
-  # but leave the wildcard alone.
-  git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
-    "+refs/heads/*:refs/remotes/origin/*"
-  git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
-    "+refs/heads/gone:refs/remotes/origin/gone"
-
-  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo"
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo 2>&1"
   [ "$status" -eq 0 ]
-  assert_contains "$output" "myrepo: removed stale fetch refspec: gone"
-
+  run git -C "$proj/.repos/myrepo" config --get fetch.prune
+  [ "$status" -ne 0 ]
+  # the map is a different key: still maintained
   run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
-  assert_contains "$output" "+refs/heads/*:refs/remotes/origin/*"
-  [[ "$output" != *"refs/heads/gone"* ]]
+  [ "$output" = "+refs/heads/*:refs/remotes/origin/*" ]
+}
+
+@test "sync: a never pool is user territory — zero writes, zero reports" {
+  local proj="$SANDBOX/sync-never-pool"
+  clone_project "$proj"
+  # the never-from-birth shape: single-branch entry, no prune key, no push key
+  orbit config git.fetchAllBranches never >/dev/null 2>&1
+  orbit config git.fetchPrune never >/dev/null 2>&1
+  orbit config git.pushUpstreamByDefault never >/dev/null 2>&1
+  git -C "$proj/.repos/myrepo" config --replace-all remote.origin.fetch \
+    "+refs/heads/main:refs/remotes/origin/main"
+  git -C "$proj/.repos/myrepo" config --unset-all fetch.prune 2>/dev/null || true
+  git -C "$proj/.repos/myrepo" config --unset-all push.default 2>/dev/null || true
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo 2>&1"
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "converged"
+  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
+  [ "$output" = "+refs/heads/main:refs/remotes/origin/main" ]
+  run git -C "$proj/.repos/myrepo" config --get fetch.prune
+  [ "$status" -ne 0 ]
+  run git -C "$proj/.repos/myrepo" config --get push.default
+  [ "$status" -ne 0 ]
+}
+
+@test "sync: converges an emptied fetch config (the count=0 shape)" {
+  local proj="$SANDBOX/sync-empty-config"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" config --unset-all remote.origin.fetch
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" 'orbit: myrepo: fetch config converged: git remote set-branches origin "*" (stop converging and re-apply yours: orbit config git.fetchAllBranches once)'
+  run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
+  [ "$output" = "+refs/heads/*:refs/remotes/origin/*" ]
+}
+
+@test "info: a tracked branch the remote lost does not leak git's fatal" {
+  local proj="$SANDBOX/info-gone"
+  clone_project "$proj"
+  git -C "$proj/.repos/myrepo" branch demo main
+  git -C "$proj/.repos/myrepo" config branch.demo.remote origin
+  git -C "$proj/.repos/myrepo" config branch.demo.merge refs/heads/demo-gone
+  git -C "$proj/.repos/myrepo" update-ref refs/remotes/origin/demo-gone \
+    "$(git -C "$proj/.repos/myrepo" rev-parse main)"
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' info myrepo 2>&1"
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "couldn't find remote ref"
+  # the touchpoint really ran: the wildcard-shaped prune converged the stale ref
+  run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/remotes/origin/demo-gone
+  [ "$status" -ne 0 ]
 }
 
 # --- Pool-wide scope: --branch is root-only ---
@@ -446,49 +572,42 @@ _push_update_to() {
   [ "$status" -eq 0 ]
 }
 
-@test "sync --branch: keeps fetch refspecs other branches registered" {
+@test "sync --branch: no config writes; origin/HEAD migrates" {
   local proj="$SANDBOX/sync-branch-refspecs"
   local remote="$REMOTES/sync-branch-refspecs.git"
   clone_remote "$remote"
   clone_project "$proj"
   git -C "$proj/.repos/myrepo" remote set-url origin "$remote" >/dev/null 2>&1
 
-  # A branch another workspace pushed and registered, plus a user wildcard.
+  # another branch on the remote to switch the pool to
   local tmp
   tmp=$(mktemp -d "$SANDBOX/_tmp_srs_XXXXXX")
   git clone "$remote" "$tmp" >/dev/null 2>&1
   (
     cd "$tmp"
-    git checkout -q -b feat-b
-    echo b > b.txt && git add b.txt
-    git -c user.email=t@t -c user.name=t commit -q -m "feat b"
-    git push -q origin feat-b
-    git checkout -q -b dev main 2>/dev/null || git checkout -q -b dev
+    git checkout -q -b dev
     echo d > d.txt && git add d.txt
-    git -c user.email=t@t -c user.name=t commit -q -m "dev"
+    git commit -q -m "dev"
     git push -q origin dev
   )
-  git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
-    "+refs/heads/feat-b:refs/remotes/origin/feat-b"
-  git -C "$proj/.repos/myrepo" config --add remote.origin.fetch \
-    "+refs/heads/*:refs/remotes/origin/*"
+  rm -rf "$tmp"
 
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --branch dev"
   [ "$status" -eq 0 ]
   assert_contains "$output" "pool: switched myrepo to branch dev"
 
-  # --unset-all used to wipe every entry here, breaking bare fetch in the
-  # worktrees of whoever registered feat-b.
+  # the wildcard map covered the new default branch — nothing registered,
+  # nothing retargeted
   run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
-  assert_contains "$output" "+refs/heads/feat-b:refs/remotes/origin/feat-b"
-  assert_contains "$output" "+refs/heads/*:refs/remotes/origin/*"
-  assert_contains "$output" "+refs/heads/dev:refs/remotes/origin/dev"
+  [ "$output" = "+refs/heads/*:refs/remotes/origin/*" ]
+  [ "$(git -C "$proj/.repos/myrepo" symbolic-ref refs/remotes/origin/HEAD)" = "refs/remotes/origin/dev" ]
+  [ "$(git -C "$proj/.repos/myrepo" branch --show-current)" = "dev" ]
 
   run git -C "$proj/.repos/myrepo" fetch origin
   [ "$status" -eq 0 ]
 }
 
-@test "sync --branch: rolls back the refspec change when the fetch fails" {
+@test "sync --branch: failed fetch leaves config and origin/HEAD untouched" {
   local proj="$SANDBOX/sync-branch-rollback"
   local remote="$REMOTES/sync-branch-rollback.git"
   clone_remote "$remote"
@@ -502,10 +621,12 @@ _push_update_to() {
   [ "$status" -ne 0 ]
   assert_contains "$output" "cannot fetch branch: does-not-exist"
 
-  # The refspec set is exactly what it was before the failed switch — no
-  # residue pointing at the missing branch, and the old branch still fetchable.
+  # no residue pointing at the missing branch, and the pool's checkout and
+  # origin/HEAD stay on the live branch
   run git -C "$proj/.repos/myrepo" config --get-all remote.origin.fetch
   [ "$output" = "$before" ]
+  [ "$(git -C "$proj/.repos/myrepo" symbolic-ref refs/remotes/origin/HEAD)" = "refs/remotes/origin/main" ]
+  [ "$(git -C "$proj/.repos/myrepo" branch --show-current)" = "main" ]
   run git -C "$proj/.repos/myrepo" fetch origin
   [ "$status" -eq 0 ]
 }
@@ -631,4 +752,21 @@ _push_update_to() {
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --force"
   [ "$status" -eq 0 ]
   assert_contains "$output" "myrepo: reset to origin/"
+}
+
+@test "sync: fetches named branches only — untracked remote branches never materialize" {
+  local proj="$SANDBOX/sync-named-only"
+  clone_project "$proj" "$SHARED_PROJECT_WITH_BRANCH"
+  cd "$proj" && orbit new "named only" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add myrepo >/dev/null 2>&1
+
+  # the remote has feature-x/feature-y; nothing local tracks them. orbit's
+  # touchpoints must not pull them in — the whole-map pull is reserved for
+  # the user's own bare fetch/pull.
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo 2>&1"
+  [ "$status" -eq 0 ]
+  run git -C "$proj/.repos/myrepo" branch -r
+  assert_contains "$output" "origin/main"
+  refute_contains "$output" "origin/feature-x"
+  refute_contains "$output" "origin/feature-y"
 }

@@ -290,12 +290,6 @@ orbit_git_supports_orphan_worktree() {
   [ "$(printf '%s\n' "2.42" "$ver" | sort -V | head -n1)" = "2.42" ]
 }
 
-orbit_git_supports_autosetupremote() {
-  local ver
-  ver=$(git --version | awk '{print $3}')
-  [ "$(printf '%s\n' "2.37" "$ver" | sort -V | head -n1)" = "2.37" ]
-}
-
 orbit_reserved_workspace() {
   case "$1" in
     ''|.|..|.repos|.git|*/*) return 0 ;;
@@ -350,166 +344,160 @@ orbit_remote_branch_exists() {
   git -C "$repo" ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1
 }
 
-orbit_add_fetch_refspec() {
-  local repo="$1" branch="$2"
-  local refspec="+refs/heads/$branch:refs/remotes/origin/$branch"
-  git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null | grep -Fqx "$refspec" && return 0
-  git -C "$repo" config --add remote.origin.fetch "$refspec"
-}
-
+# Fetch an existing remote branch's tracking ref with an explicit colon
+# refspec: layout-independent — it works under the wildcard map, under a
+# single-branch default entry, and under any user-narrowed layout, and it
+# never touches config.
+# Always fetch, even when origin/<branch> exists locally: the remote branch
+# may have advanced or been force-pushed after it was fetched, and checking
+# out the stale ref silently builds on abandoned history. Degrade when
+# offline: use the local ref with a warning; fail only when there is
+# nothing to fall back on.
 orbit_ensure_remote_branch() {
   local repo="$1" branch="$2"
-  orbit_add_fetch_refspec "$repo" "$branch"
-  # Always fetch, even when origin/<branch> exists locally: the remote branch
-  # may have advanced or been force-pushed after it was fetched, and checking
-  # out the stale ref silently builds on abandoned history. Degrade when
-  # offline: use the local ref with a warning; fail only when there is
-  # nothing to fall back on.
-    if ! git -C "$repo" fetch origin "$branch" 2>/dev/null; then
+  if ! git -C "$repo" fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null; then
     if git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null 2>&1; then
       printf 'orbit: cannot fetch origin/%s, using possibly-stale local ref\n' "$branch" >&2
     else
-      # Roll back the refspec registered above: a leftover entry pointing at a
-      # non-existent remote branch breaks every bare fetch in the pool until
-      # the next reconcile touchpoint.
-      orbit_remove_fetch_refspec "$repo" "+refs/heads/$branch:refs/remotes/origin/$branch"
       orbit_fail "cannot fetch origin/$branch"
     fi
   fi
 }
 
-# Remove one exact fetch refspec value. `git config --unset` matches the value
-# as a regex and the refspec's leading '+' is an invalid pattern, so prefer
-# --fixed-value (git >= 2.26, atomic single-value removal); older git falls
-# back to rebuilding the value list.
-orbit_remove_fetch_refspec() {
-  local repo="$1" target="$2" line
-  if git -C "$repo" config --unset --fixed-value remote.origin.fetch "$target" 2>/dev/null; then
-    return 0
-  fi
-  local keep=()
-  while IFS= read -r line; do
-    [ "$line" = "$target" ] || keep+=("$line")
-  done < <(git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null || true)
-  git -C "$repo" config --unset-all remote.origin.fetch 2>/dev/null || true
-  for line in ${keep[@]+"${keep[@]}"}; do
-    git -C "$repo" config --add remote.origin.fetch "$line"
-  done
+# Read one of the managed-config switches (project config, following the
+# branch.prefix convention): always (default) = the key is orbit-maintained
+# at every touchpoint; once = written once at clone, then the value is the
+# user's; never = never written, never corrected. Unrecognized values read as
+# always.
+orbit_managed_config_mode() {
+  local root="$1" key="$2" v
+  v=$(git config --file "$root/.repos/.orbit" --get "$key" 2>/dev/null || true)
+  case "$v" in once|never) printf '%s' "$v" ;; *) printf 'always' ;; esac
 }
 
-# Reconcile the pool's exact fetch refspecs with reality. Invariant: every
-# configured exact refspec must point at a branch the remote actually has —
-# one stale entry makes every bare `git fetch` fail with "couldn't find
-# remote ref" in every worktree of the pool.
-#
-# Phase 1 removes refspecs whose remote branch is gone (typical: auto-deleted
-# on PR merge; also legacy refspecs pre-registered by `switch -c` for branches
-# never pushed). Phase 2 registers refspecs for locally-tracked branches that
-# exist remotely but have none (scoped/raw branch pushed since last run), so
-# their remote-tracking refs can materialize. Refspecs orbit never wrote
-# (wildcards, other remote layouts) are left untouched in both phases.
-#
-# Prints one line per change (or would-change, in dry-run).
-orbit_reconcile_fetch_refspecs() {
-  local repo="$1" dry_run="${2:-0}"
-  local remote_heads refspec branch lb merge
-
-  # Local precheck before any network: the remove direction only matters when
-  # a non-default exact refspec exists, the register direction only when a
-  # local branch tracks origin without one. Both sets are pure config reads;
-  # when both are empty the round-trip cannot change anything, so it is never
-  # made. (This is what keeps an enumeration prune with dozens of pool repos
-  # at local speed; the default branch's own refspec going stale means the
-  # remote lost its default branch — the pool is broken beyond refspecs, so
-  # that case is deliberately outside the gate.)
-  local default_br rs rb needs=0
-  default_br=$(orbit_default_branch "$repo" 2>/dev/null || true)
-  local exact_branches=""
-  while IFS= read -r rs; do
-    case "$rs" in
-      +refs/heads/*:refs/remotes/origin/*) ;;
-      *) continue ;;
-    esac
-    rb="${rs#+refs/heads/}"
-    rb="${rb%%:refs/remotes/origin/*}"
-    # Foreign refspecs are not orbit's to manage: git refnames forbid '*', so
-    # anything containing a glob (e.g. a user-configured full-fetch wildcard
-    # '+refs/heads/*:refs/remotes/origin/*') stays untouched.
-    case "$rb" in *'*'*) continue ;; esac
-    exact_branches="$exact_branches$rb"$'\n'
-    if [ "$rb" != "$default_br" ]; then needs=1; fi
-  done < <(git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null || true)
-  if [ "$needs" = "0" ]; then
-    while IFS= read -r lb; do
-      [ -n "$lb" ] || continue
-      [ "$(git -C "$repo" config --get "branch.$lb.remote" 2>/dev/null)" = "origin" ] || continue
-      merge=$(git -C "$repo" config --get "branch.$lb.merge" 2>/dev/null) || continue
-      case "$merge" in
-        refs/heads/*) branch="${merge#refs/heads/}" ;;
-        *) continue ;;
-      esac
-      printf '%s\n' "$exact_branches" | grep -Fqx "$branch" && continue
-      needs=1
-      break
-    done < <(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null || true)
-  fi
-  [ "$needs" = "1" ] || return 0
-
-  # One network round-trip; on failure (offline etc.) skip reconciliation
-  # entirely so unverifiable refspecs are never removed by mistake. Prompts
-  # are disabled: a background reconcile must never block on a credential
-  # prompt — an auth-gated remote reads as "unreachable" and is skipped.
-  remote_heads=$(GIT_TERMINAL_PROMPT=0 git -C "$repo" ls-remote --heads origin 2>/dev/null) || return 0
-  while IFS= read -r refspec; do
-    case "$refspec" in
-      +refs/heads/*:refs/remotes/origin/*) ;;
-      *) continue ;;
-    esac
-    branch="${refspec#+refs/heads/}"
-    branch="${branch%%:refs/remotes/origin/*}"
-    # Foreign refspecs are not orbit's to manage: git refnames forbid '*', so
-    # anything containing a glob (e.g. a user-configured full-fetch wildcard
-    # '+refs/heads/*:refs/remotes/origin/*') stays untouched.
-    case "$branch" in *'*'*) continue ;; esac
-    # The default branch's own refspec is never auto-removed — the same
-    # exemption the precheck gate applies above: the remote losing its
-    # default branch means the pool is broken beyond refspecs, and whether a
-    # stale default refspec survives must not depend on whether some OTHER
-    # refspec happened to trigger the network call.
-    [ "$branch" = "$default_br" ] && continue
-    printf '%s\n' "$remote_heads" | awk '{print $2}' | grep -Fqx "refs/heads/$branch" && continue
-    if [ "$dry_run" = "1" ]; then
-      printf 'would remove stale fetch refspec: %s\n' "$branch"
-    else
-      orbit_remove_fetch_refspec "$repo" "$refspec"
-      git -C "$repo" update-ref -d "refs/remotes/origin/$branch" 2>/dev/null || true
-      printf 'removed stale fetch refspec: %s\n' "$branch"
+# Config maintenance — one predicate per managed key, no remote comparison,
+# no per-branch bookkeeping. The rule (spec-worktree → Git Dependency
+# Closure): a config key orbit depends on is either managed here or
+# explicitly declared premise-only.
+#   git.fetchAllBranches = always: remote.origin.fetch is exactly the full wildcard
+#     (the on-disk form of `git remote set-branches origin "*"`); exact
+#     entries, scoped wildcards, and emptied configs all converge to it.
+#   git.fetchPrune = always: fetch.prune=true is set.
+#   git.pushUpstreamByDefault = always: push.default=upstream is set — scoped local
+#     names (ws/<ws>/<name>) differ from remote names, so git's default
+#     "simple" would refuse a bare `git push`.
+# once/never pools are user territory — untouched, unreported.
+# dry_run=1 prints would-lines on stdout (prune's pool-maintenance plan);
+# real runs report each actual change on stderr, one line per key, each
+# carrying its escape-hatch command.
+orbit_maintain_pool_config() {
+  local repo="$1" root="$2" dry_run="${3:-0}"
+  local name wildcard='+refs/heads/*:refs/remotes/origin/*'
+  name=$(basename "$repo")
+  if [ "$(orbit_managed_config_mode "$root" git.fetchAllBranches)" = "always" ]; then
+    local line count=0 exact=1
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      count=$((count + 1))
+      [ "$line" = "$wildcard" ] || exact=0
+    done < <(git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null || true)
+    if [ "$count" -ne 1 ] || [ "$exact" -ne 1 ]; then
+      if [ "$dry_run" = "1" ]; then
+        printf 'would converge fetch config: git remote set-branches origin "*"\n'
+      else
+        git -C "$repo" config --replace-all remote.origin.fetch "$wildcard"
+        printf 'orbit: %s: fetch config converged: git remote set-branches origin "*" (stop converging and re-apply yours: orbit config git.fetchAllBranches once)\n' "$name" >&2
+      fi
     fi
-  done < <(git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null || true)
-  local seen_branch=" "
+  fi
+  if [ "$(orbit_managed_config_mode "$root" git.fetchPrune)" = "always" ]; then
+    if [ "$(git -C "$repo" config --type=bool --get fetch.prune 2>/dev/null || true)" != "true" ]; then
+      if [ "$dry_run" = "1" ]; then
+        printf 'would converge fetch config: git config fetch.prune true\n'
+      else
+        git -C "$repo" config fetch.prune true
+        printf 'orbit: %s: fetch config converged: git config fetch.prune true (stop converging and re-apply yours: orbit config git.fetchPrune once)\n' "$name" >&2
+      fi
+    fi
+  fi
+  if [ "$(orbit_managed_config_mode "$root" git.pushUpstreamByDefault)" = "always" ]; then
+    if [ "$(git -C "$repo" config --get push.default 2>/dev/null || true)" != "upstream" ]; then
+      if [ "$dry_run" = "1" ]; then
+        printf 'would converge push routing: git config push.default upstream\n'
+      else
+        git -C "$repo" config push.default upstream
+        printf 'orbit: %s: push routing converged: git config push.default upstream (stop converging and re-apply yours: orbit config git.pushUpstreamByDefault once)\n' "$name" >&2
+      fi
+    fi
+  fi
+}
+
+# The touchpoint fetch discipline (sync / info / context --startup / prune):
+# fetch the default branch plus every remote branch a local branch tracks
+# (branch.*.merge, deduped — several local branches can share one upstream),
+# one explicit refspec per fetch, never a bare fetch: under the wildcard map
+# a bare fetch pulls every branch's objects (defeating the single-branch
+# clone's economy), and a batch of refspecs dies atomically on the first dead
+# branch. Each fetch stands alone: git's fatal is swallowed (this path must
+# never leak the "couldn't find remote ref" this model exists to eliminate);
+# when anything failed, one closing `git remote prune origin` converges the
+# refs of remote-deleted branches — online it cleans, offline it fails and
+# deletes nothing. The prune runs only while the full wildcard is in place
+# (shape judgment, not mode forking: a narrowed clone/off layout is the
+# user's territory). The default branch is the one loud failure: if it does
+# not fetch while the remote answers, the remote may have lost its default
+# branch — a repo-level event, reported. Returns non-zero iff the default
+# branch would not fetch (sync treats this as fetch failure; advisory
+# touchpoints ignore it).
+orbit_touchpoint_fetch() {
+  local repo="$1" default_br lb merge b failed=0 default_failed=0
+  default_br=$(orbit_default_branch "$repo" 2>/dev/null || true)
+  local seen=" " branches=""
+  if [ -n "$default_br" ]; then
+    branches="$default_br
+"
+    seen=" $default_br "
+  fi
   while IFS= read -r lb; do
     [ -n "$lb" ] || continue
     [ "$(git -C "$repo" config --get "branch.$lb.remote" 2>/dev/null)" = "origin" ] || continue
     merge=$(git -C "$repo" config --get "branch.$lb.merge" 2>/dev/null) || continue
     case "$merge" in
-      refs/heads/*) branch="${merge#refs/heads/}" ;;
+      refs/heads/*) b="${merge#refs/heads/}" ;;
       *) continue ;;
     esac
-    # A refspec is per REMOTE branch: two local branches sharing one upstream
-    # produce one line, not two (a real run self-dedupes via the config
-    # check; a dry-run mutates nothing, so dedupe explicitly).
-    case "$seen_branch" in *" $branch "*) continue ;; esac
-    seen_branch="$seen_branch$branch "
-    printf '%s\n' "$remote_heads" | awk '{print $2}' | grep -Fqx "refs/heads/$branch" || continue
-    git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null \
-      | grep -Fqx "+refs/heads/$branch:refs/remotes/origin/$branch" && continue
-    if [ "$dry_run" = "1" ]; then
-      printf 'would add fetch refspec: %s\n' "$branch"
-    else
-      orbit_add_fetch_refspec "$repo" "$branch"
-      printf 'added fetch refspec: %s\n' "$branch"
+    case "$seen" in *" $b "*) continue ;; esac
+    seen="$seen$b "
+    branches="$branches$b
+"
+  done < <(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null || true)
+
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    if ! GIT_TERMINAL_PROMPT=0 git -C "$repo" fetch origin "+refs/heads/$b:refs/remotes/origin/$b" >/dev/null 2>&1; then
+      failed=1
+      [ "$b" = "$default_br" ] && default_failed=1
     fi
-  done < <(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
+  done < <(printf '%s' "$branches")
+
+  if [ "$failed" = "1" ]; then
+    if git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null | grep -Fqx '+refs/heads/*:refs/remotes/origin/*'; then
+      GIT_TERMINAL_PROMPT=0 git -C "$repo" remote prune origin >/dev/null 2>&1 || true
+    fi
+    if [ "$default_failed" = "1" ]; then
+      # Probe once to tell "remote lost its default branch" (repo-level news,
+      # reported) from "offline" (routine, silent): 0 = branch exists yet the
+      # fetch failed, 2 = branch gone from a reachable remote — both report.
+      local rc=0
+      GIT_TERMINAL_PROMPT=0 git -C "$repo" ls-remote --exit-code --heads origin "$default_br" >/dev/null 2>&1 || rc=$?
+      case "$rc" in
+        0|2)
+          printf 'orbit: %s: WARNING: cannot fetch default branch origin/%s though the remote answers — the remote may have lost its default branch\n' \
+            "$(basename "$repo")" "$default_br" >&2 ;;
+      esac
+    fi
+  fi
+  [ "$default_failed" = "0" ]
 }
 
 # --- CWD Inference ---
@@ -844,10 +832,11 @@ orbit_memo_state() {
   else printf 'ok'; fi
 }
 
-# Print the worktree's upstream tracking state: "untracked" when the branch has
-# no upstream (raw-mode branch pushed without `git fetch origin <branch>` —
-# cruise block surfaces this so the agent knows to fetch), a number when behind,
-# or empty when tracked and up-to-date. Uses local refs only — never fetches.
+# Print the worktree's upstream tracking state: "untracked" when the branch
+# has no upstream config or its tracking ref is not materialized yet (a
+# branch that was never pushed — cruise block surfaces this so the agent
+# knows), a number when behind, or empty when tracked and up-to-date.
+# Uses local refs only — never fetches.
 orbit_repo_upstream_behind() {
   local wt_dir="$1" upstream behind
   # See orbit_status: a failing rev-parse can still print '@{upstream}' —
@@ -1137,11 +1126,22 @@ orbit_clone() {
     git clone --single-branch "$remote" "$dst"
   fi
 
-  git -C "$dst" config push.default upstream
-  # Let a bare `git push` on a fresh raw-mode branch create origin/<branch> and set
-  # tracking (git >= 2.37). Without it, push.default=upstream makes bare push error on
-  # a branch with no upstream. Older git silently ignores this key (no-op).
-  git -C "$dst" config push.autoSetupRemote true
+  # Converge the fresh pool's fetch config to the two managed keys — the
+  # birth baseline: the full wildcard mapping (the on-disk form of
+  # `git remote set-branches origin "*"`, written directly because the
+  # porcelain refuses a config with no existing entry — an empty-remote
+  # clone has none) plus fetch.prune=true (tracking refs self-clean).
+  # once/never modes: written here only (once) or never (never); the default
+  # always mode re-asserts them at every touchpoint.
+  if [ "$(orbit_managed_config_mode "$root" git.fetchAllBranches)" != "never" ]; then
+    git -C "$dst" config --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+  fi
+  if [ "$(orbit_managed_config_mode "$root" git.fetchPrune)" != "never" ]; then
+    git -C "$dst" config fetch.prune true
+  fi
+  if [ "$(orbit_managed_config_mode "$root" git.pushUpstreamByDefault)" != "never" ]; then
+    git -C "$dst" config push.default upstream
+  fi
 
   if [ -n "$push_url" ]; then
     git -C "$dst" remote set-url --push origin "$push_url"
@@ -1371,11 +1371,6 @@ orbit_add() {
   # Surface the memo so agents that skipped `orbit info` still get repo context.
   # A well-behaved agent that already ran `orbit info` passes -s to suppress this.
   if [ "$silent" -eq 0 ]; then
-    # Raw-mode tracking limitation: the pool is a single-branch clone, so a branch
-    # you create with `git checkout -b <name>` and push won't show remote tracking
-    # in `git status` / `@{upstream}` until `git fetch origin <name>` materializes
-    # the ref. `orbit switch -c <name>` (scoped) wires tracking up front.
-    printf 'orbit: raw-mode branches (git checkout -b) stay untracked under the single-branch pool: run git fetch origin <branch> after pushing, or use switch -c <name> to wire the upstream config up front (the tracking ref materializes at the next sync/info/session start)\n' >&2
     local md_file="$root/.repos/.$repo_name.md"
     if [ -f "$md_file" ]; then
       printf -- '--- memo: %s (pass -s to suppress) ---\n' "$repo_name" >&2
@@ -1425,15 +1420,6 @@ orbit_switch() {
   local wt_path="$root/$ws/$repo_name"
   [ -d "$wt_path" ] || orbit_fail "repo not in workspace: $ws/$repo_name (use 'orbit add' first)"
 
-  local push_default
-  push_default=$(git -C "$repo_dir" config --get push.default 2>/dev/null || true)
-  if [ "$push_default" != "upstream" ]; then
-    git -C "$repo_dir" config push.default upstream
-  fi
-  if [ "$(git -C "$repo_dir" config --get push.autoSetupRemote 2>/dev/null || true)" != "true" ]; then
-    git -C "$repo_dir" config push.autoSetupRemote true
-  fi
-
   local local_branch
   local_branch=$(orbit_tracking_branch "$ws" "$branch_name") || return 1
 
@@ -1448,10 +1434,9 @@ orbit_switch() {
     fi
     git -C "$wt_path" checkout -b "$local_branch"
     orbit_set_upstream "$wt_path" "$local_branch" "$branch_name"
-    # Do NOT pre-register a fetch refspec here: an exact refspec for a branch
-    # the remote doesn't have yet makes every bare `git fetch` fail until the
-    # first push. sync/prune reconciliation registers it once the branch
-    # exists remotely (see orbit_reconcile_fetch_refspecs).
+    # No fetch-refspec registration: under the wildcard map the first push
+    # materializes origin/<branch> on the spot, and @{u} resolution reads the
+    # map, not any per-branch entry.
     printf '%s: created %s (upstream: origin/%s)\n' "$repo_name" "$local_branch" "$branch_name"
 
     # Post-creation conflict check: remote already has <name> with different
@@ -1499,18 +1484,12 @@ orbit_sync_one() {
   branch=$(orbit_default_branch "$repo_dir" 2>/dev/null) || { printf 'orbit: %s: cannot determine default branch (remote is empty or missing origin/HEAD; push an initial commit first)\n' "$repo_name" >&2; return 1; }
 
   if [ -n "$new_branch" ]; then
-    # Retire only the refspec of the branch being replaced. --unset-all would
-    # also drop refspecs other workspaces registered for their own branches
-    # (breaking every bare fetch in their worktrees) and any user-configured
-    # wildcard — neither is this command's to remove.
-    orbit_remove_fetch_refspec "$repo_dir" "+refs/heads/$branch:refs/remotes/origin/$branch"
-    orbit_add_fetch_refspec "$repo_dir" "$new_branch"
-    if ! git -C "$repo_dir" fetch origin "$new_branch" 2>/dev/null; then
+    orbit_maintain_pool_config "$repo_dir" "$root" 0
+    # No config writes for the switch itself: the wildcard map already covers
+    # any new default branch. Fetch the tracking ref explicitly, check it
+    # out, move origin/HEAD.
+    if ! git -C "$repo_dir" fetch origin "+refs/heads/$new_branch:refs/remotes/origin/$new_branch" 2>/dev/null; then
       printf 'orbit: %s: cannot fetch branch: %s\n' "$repo_name" "$new_branch" >&2
-      # Roll back to the pre-switch refspec set so a failed switch does not
-      # leave the pool unable to fetch its previous branch.
-      orbit_remove_fetch_refspec "$repo_dir" "+refs/heads/$new_branch:refs/remotes/origin/$new_branch"
-      orbit_add_fetch_refspec "$repo_dir" "$branch"
       return 1
     fi
     if git -C "$repo_dir" rev-parse --verify --quiet "refs/heads/$new_branch" >/dev/null 2>&1; then
@@ -1529,16 +1508,11 @@ orbit_sync_one() {
     return 0
   fi
 
-  # Reconcile fetch refspecs first: a stale entry (remote branch deleted, or
-  # pre-registered but never pushed) breaks every bare `git fetch` in every
-  # worktree of this pool.
-  while IFS= read -r line; do
-    printf '%s: %s\n' "$repo_name" "$line"
-  done < <(orbit_reconcile_fetch_refspecs "$repo_dir" 0)
-
-  # Bare fetch (not `fetch origin $branch`) so refs for refspecs just
-  # registered by the reconcile materialize too.
-  if ! git -C "$repo_dir" fetch origin 2>/dev/null; then
+  # Config maintenance, then the touchpoint fetch discipline: named branches
+  # only (default + tracked, deduped), never a bare fetch — under the
+  # wildcard map a bare fetch would pull every branch's objects.
+  orbit_maintain_pool_config "$repo_dir" "$root" 0
+  if ! orbit_touchpoint_fetch "$repo_dir"; then
     printf 'orbit: %s: fetch failed\n' "$repo_name" >&2
     return 1
   fi
@@ -1598,11 +1572,11 @@ orbit_sync() {
   root=$(orbit_require_root) || return 1
 
   # Destructive pool operations are root-scoped. --force discards the pool's
-  # local commits; --branch re-points the pool's checked-out branch, its
-  # origin/HEAD, and the fetch refspecs every workspace's worktrees rely on.
-  # Neither destroys anything the calling workspace owns — which is precisely
-  # why the call must come from the scope that does own the pool. Bare sync
-  # (ff-only) cannot lose data and stays callable from anywhere.
+  # local commits; --branch re-points the pool's checked-out branch and its
+  # origin/HEAD. Neither destroys anything the calling workspace owns — which
+  # is precisely why the call must come from the scope that does own the
+  # pool. Bare sync (ff-only) cannot lose data and stays callable from
+  # anywhere.
   if [ "$force" -eq 1 ] || [ -n "$new_branch" ]; then
     local scoped_flags=""
     [ "$force" -eq 1 ] && scoped_flags="--force"
@@ -2260,12 +2234,11 @@ orbit_info() {
   local default_branch
   default_branch=$(orbit_default_branch "$repo_dir" 2>/dev/null) || true
   if [ -n "$default_branch" ]; then
-    # Reconcile fetch refspecs, then bare fetch so refs for refspecs just
-    # registered (branch pushed since last run) materialize too.
-    while IFS= read -r line; do
-      printf 'orbit: %s: %s\n' "$repo_name" "$line" >&2
-    done < <(orbit_reconcile_fetch_refspecs "$repo_dir" 0)
-    git -C "$repo_dir" fetch origin 2>/dev/null || true
+    # Config maintenance + the touchpoint fetch discipline: named branches
+    # only (default + tracked, deduped), advisory — a fetch failure here
+    # never fails info.
+    orbit_maintain_pool_config "$repo_dir" "$root" 0
+    orbit_touchpoint_fetch "$repo_dir" || true
   fi
 
   orbit_upstream_check "$repo_name" "$root"
@@ -2707,8 +2680,9 @@ orbit_branch_protection_delete() {
   fi
 
   # The report owns the deletion line (git's own chatter is suppressed), so it
-  # carries the one informative piece of git's line: the commit, the reflog
-  # handle. Resolve before the delete; omit the suffix if unresolvable.
+  # carries the one informative piece of git's line: the commit — the recovery
+  # handle (the branch's own reflog dies with it; the SHA is what remains).
+  # Resolve before the delete; omit the suffix if unresolvable.
   local sha=""
   sha=$(git -C "$main_repo" rev-parse --short "$branch" 2>/dev/null || true)
   [ -n "$sha" ] && sha=" (was $sha)"
@@ -2821,17 +2795,19 @@ orbit_prune_ghost_group() {
       fi
     done
     [ -n "$repo_out" ] && printf '  %s:\n%s' "$repo_name" "$repo_out"
-    # Convergence (refspec reconcile + maintenance) runs here only for a
-    # TARGETED run — on enumeration the closing sweep covers every pool.
-    # Either way it reports under the pool-maintenance section, never inside
-    # the workspace block: pool accounts are not the workspace's cleanup.
+    # Config maintenance + the fetch discipline run here only for a TARGETED
+    # run — on enumeration the closing sweep covers every pool. Maintenance
+    # would-lines report under the pool-maintenance section, never inside the
+    # workspace block: pool accounts are not the workspace's cleanup.
+    # Real-run convergence reports on stderr.
     if [ "$targeted" = "1" ]; then
       local g_rlines="" g_r g_bk
       while IFS= read -r g_r; do
         if [ -n "$g_r" ]; then g_rlines="$g_rlines    $g_r
 "; fi
-      done < <(orbit_reconcile_fetch_refspecs "$repo_dir" "$dry_run")
+      done < <(orbit_maintain_pool_config "$repo_dir" "$root" "$dry_run")
       if [ "$dry_run" = "0" ]; then
+        orbit_touchpoint_fetch "$repo_dir" || true
         if g_bk=$(orbit_prune_repo_maintenance "$repo_dir" "$dry_run"); then
           g_rlines="$g_rlines    $g_bk
 "
@@ -2876,8 +2852,9 @@ orbit_prune_raw_residue() {
       case "$checked_out" in *" $branch "*) continue ;; esac   # live in a worktree
       # Remote copy = traceable: same-name ref, or a configured upstream under
       # another name. Read branch.<name>.merge directly and map by convention
-      # (refs/heads/X → refs/remotes/<remote>/X) — @{upstream} resolution goes
-      # through fetch refspecs, which a single-branch pool clone doesn't cover.
+      # (refs/heads/X → refs/remotes/<remote>/X) rather than @{upstream}
+      # resolution — the convention works under any fetch-refspec layout,
+      # including user-narrowed ones (git.fetchAllBranches=once/never pools).
       git -C "$repo_dir" rev-parse --verify --quiet "origin/$branch" >/dev/null 2>&1 && continue
       local merge_ref remote_short
       merge_ref=$(git -C "$repo_dir" config --get "branch.$branch.merge" 2>/dev/null || true)
@@ -3417,11 +3394,13 @@ EOF
     [ -n "$repo_out" ] && printf '  %s:\n%s' "$cur_repo" "$repo_out"
     [ "$d_failed" = "1" ] && continue
 
-    # D3: convergence — maintenance self-heal, fetch-refspec reconcile, and
+    # D3: convergence — maintenance self-heal, fetch-config maintenance, and
     # naming branches shaped like this workspace's but outside the configured
     # prefix (raw-mode, or born under another prefix — not orbit's to delete;
     # the branch names in git are the recoverable record). Involved repos =
-    # pool worktrees in the directory + branch-holding pools.
+    # pool worktrees in the directory + branch-holding pools. (No fetch here:
+    # this workspace's pools get theirs at the targeted ghost pass or the
+    # closing sweep.)
     local involved=" " inv_pool inv_list="" rlines rline lb
     for repo_dir in ${ws_repo_dirs[@]+"${ws_repo_dirs[@]}"}; do
       inv_list="$inv_list$root/.repos/$(basename "$repo_dir")"$'\n'
@@ -3440,7 +3419,7 @@ EOF
       while IFS= read -r rline; do
         if [ -n "$rline" ]; then rlines="$rlines    $rline
 "; fi
-      done < <(orbit_reconcile_fetch_refspecs "$inv_pool" "$dry_run")
+      done < <(orbit_maintain_pool_config "$inv_pool" "$root" "$dry_run")
       if rline=$(orbit_prune_repo_maintenance "$inv_pool" "$dry_run"); then
         rlines="$rlines    $rline
 "
@@ -3507,13 +3486,15 @@ EOF
     fi
   done
 
-  # Untraceable raw branches + pool maintenance + fetch-refspec reconcile:
-  # enumeration only (a targeted run is focused). Reconcile runs on every
-  # prune path — a run with no live candidate still repairs a stale refspec.
-  # The sweep prints under its OWN section header: same-indentation repo
-  # groups would otherwise read as belonging to the last workspace block.
+  # Untraceable raw branches + pool maintenance: enumeration only (a targeted
+  # run is focused). The fetch discipline runs FIRST so the residue scan
+  # reads refs already converged by this touchpoint (tracked-but-gone refs
+  # cleaned by the conditional `git remote prune origin`); config maintenance
+  # runs on every prune path — a run with no live candidate still converges a
+  # non-standard pool. The sweep prints under its OWN section header:
+  # same-indentation repo groups would otherwise read as belonging to the
+  # last workspace block.
   if [ -z "$target_ws" ]; then
-    orbit_prune_raw_residue "$root" "$dry_run" || true
     local bk_pool bk_line bk_out bk_r bk_header=0
     for bk_pool in "$root/.repos"/*/; do
       [ -d "$bk_pool/.git" ] || continue
@@ -3521,7 +3502,10 @@ EOF
       while IFS= read -r bk_r; do
         if [ -n "$bk_r" ]; then bk_out="$bk_out    $bk_r
 "; fi
-      done < <(orbit_reconcile_fetch_refspecs "${bk_pool%/}" "$dry_run")
+      done < <(orbit_maintain_pool_config "${bk_pool%/}" "$root" "$dry_run")
+      if [ "$dry_run" = "0" ]; then
+        orbit_touchpoint_fetch "${bk_pool%/}" || true
+      fi
       if bk_line=$(orbit_prune_repo_maintenance "${bk_pool%/}" "$dry_run"); then
         bk_out="$bk_out    $bk_line
 "
@@ -3531,6 +3515,7 @@ EOF
         printf '  %s:\n%s' "$(basename "$bk_pool")" "$bk_out"
       fi
     done
+    orbit_prune_raw_residue "$root" "$dry_run" || true
   fi
 
   # Closing block, ordered: kept-workspace summary → raw report (grouped by
@@ -3611,16 +3596,7 @@ orbit_doctor() {
   fi
 
   if command -v git >/dev/null 2>&1 && ! orbit_git_supports_orphan_worktree; then
-    # < 2.42: one consolidated warning naming every affected capability
-    local missing=""
-    if ! orbit_git_supports_autosetupremote; then
-      # backticks are literal text in the user-facing warning
-      # shellcheck disable=SC2016
-      missing='raw-mode bare `git push` needs >= 2.37'
-    fi
-    [ -n "$missing" ] && missing="$missing; "
-    missing="${missing}empty-repo bootstrap (orbit add --orphan) needs >= 2.42"
-    printf '[WARN] git %s: upgrade to >= 2.42 (%s)\n' "$git_ver" "$missing"
+    printf '[WARN] git %s: upgrade to >= 2.42 (empty-repo bootstrap (orbit add --orphan) needs >= 2.42)\n' "$git_ver"
   fi
 
   # 2. bash version check (≥ 3.2)
@@ -3707,7 +3683,10 @@ orbit_config() {
     git config --file "$orbit_file" --list 2>/dev/null | grep -v '^repos\.' | \
       sed -e 's/^memo\.minlines=/memo.minLines=/' \
           -e 's/^memo\.maxlines=/memo.maxLines=/' \
-          -e 's/^jot\.buffersize=/jot.bufferSize=/' || true
+          -e 's/^jot\.buffersize=/jot.bufferSize=/' \
+          -e 's/^git\.fetchallbranches=/git.fetchAllBranches=/' \
+          -e 's/^git\.fetchprune=/git.fetchPrune=/' \
+          -e 's/^git\.pushupstreambydefault=/git.pushUpstreamByDefault=/' || true
     return 0
   fi
 
@@ -3726,10 +3705,16 @@ orbit_config() {
   [ "$#" -le 2 ] || orbit_fail "usage: orbit config <key> [<value> | --unset]"
   local value="$2"
 
+  # git config key names are case-insensitive (subsections aside), so every
+  # key-identity check below compares the lowercased form — a differently-cased
+  # spelling of a guarded key must not slip past its guard.
+  local key_lc
+  key_lc=$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')
+
   # repos.* is the pool index orbit maintains, not project configuration. It is
   # rebuildable (Principle 3), but relying on that to excuse hand-editing means
   # the safety of this command rests on another principle rather than on itself.
-  case "$key" in
+  case "$key_lc" in
     repos.*) orbit_fail "repos.* is pool index data, not project config; refresh it with memo <repo> --refresh" ;;
   esac
 
@@ -3737,7 +3722,7 @@ orbit_config() {
   # what prune matches on to find them again. A bad value would persist, and a
   # changed one would orphan the existing branches — validate on write, and
   # refuse to move it while any branch still carries the current one.
-  if [ "$key" = "branch.prefix" ]; then
+  if [ "$key_lc" = "branch.prefix" ]; then
     local target="$value" current existing
     [ "$value" = "--unset" ] && target="$ORBIT_DEFAULT_BRANCH_PREFIX"
     if ! orbit_valid_branch_prefix "$target"; then
@@ -3750,6 +3735,18 @@ orbit_config() {
       return 1
     fi
   fi
+
+  # The managed-config switches accept exactly three modes; anything else
+  # would silently read as the default (always) while looking like a choice.
+  case "$key_lc" in
+    git.fetchallbranches|git.fetchprune|git.pushupstreambydefault)
+      if [ "$value" != "--unset" ]; then
+        case "$value" in
+          always|once|never) ;;
+          *) orbit_fail "invalid $key: $value (expected always, once, or never)" ;;
+        esac
+      fi ;;
+  esac
 
   if [ "$value" = "--unset" ]; then
     git config --file "$orbit_file" --unset "$key" 2>/dev/null || true
@@ -4039,10 +4036,8 @@ orbit_context_reignite() {
       default_branch=$(orbit_default_branch "$root/.repos/$name" 2>/dev/null || true)
       memo_behind=0 remote_ahead=0
       if [ -n "$default_branch" ]; then
-        while IFS= read -r line; do
-          printf 'orbit: %s: %s\n' "$name" "$line" >&2
-        done < <(orbit_reconcile_fetch_refspecs "$root/.repos/$name" 0)
-        git -C "$root/.repos/$name" fetch origin 2>/dev/null || true
+        orbit_maintain_pool_config "$root/.repos/$name" "$root" 0
+        orbit_touchpoint_fetch "$root/.repos/$name" || true
         local_head=$(git -C "$root/.repos/$name" rev-parse "refs/heads/$default_branch" 2>/dev/null || true)
         remote_head=$(git -C "$root/.repos/$name" rev-parse "refs/remotes/origin/$default_branch" 2>/dev/null || true)
         if [ -n "$local_head" ] && [ -n "$remote_head" ] && [ "$local_head" != "$remote_head" ]; then
@@ -4112,10 +4107,8 @@ orbit_context_reignite() {
     default_branch=$(orbit_default_branch "$root/.repos/$name" 2>/dev/null || true)
     memo_behind=0 remote_ahead=0
     if [ -n "$default_branch" ]; then
-      while IFS= read -r line; do
-        printf 'orbit: %s: %s\n' "$name" "$line" >&2
-      done < <(orbit_reconcile_fetch_refspecs "$root/.repos/$name" 0)
-      git -C "$root/.repos/$name" fetch origin 2>/dev/null || true
+      orbit_maintain_pool_config "$root/.repos/$name" "$root" 0
+      orbit_touchpoint_fetch "$root/.repos/$name" || true
       local_head=$(git -C "$root/.repos/$name" rev-parse "refs/heads/$default_branch" 2>/dev/null || true)
       remote_head=$(git -C "$root/.repos/$name" rev-parse "refs/remotes/origin/$default_branch" 2>/dev/null || true)
       if [ -n "$local_head" ] && [ -n "$remote_head" ] && [ "$local_head" != "$remote_head" ]; then
@@ -4343,7 +4336,7 @@ _orbit() {
           ;;
         config)
           _arguments \
-            '1:key:(agent.recommend memo.minLines memo.maxLines explore.paths jot.bufferSize)' \
+            '1:key:(agent.recommend branch.prefix explore.paths git.fetchAllBranches git.fetchPrune git.pushUpstreamByDefault jot.bufferSize memo.minLines memo.maxLines)' \
             '2:value:'
           ;;
         completion)
@@ -4523,7 +4516,7 @@ _orbit_completions() {
       if [[ "$cur" == --* ]]; then
         COMPREPLY=($(compgen -W "--unset" -- "$cur"))
       else
-        COMPREPLY=($(compgen -W "agent.recommend memo.minLines memo.maxLines explore.paths jot.bufferSize" -- "$cur"))
+        COMPREPLY=($(compgen -W "agent.recommend branch.prefix explore.paths git.fetchAllBranches git.fetchPrune git.pushUpstreamByDefault jot.bufferSize memo.minLines memo.maxLines" -- "$cur"))
       fi
       ;;
     completion)

@@ -88,6 +88,8 @@ Only `orbit goal` reactivates. Resuming work another way does not clear `done`: 
 
 `orbit prune` is the only command that destroys data it did not create. Its safeguards are derived from one model — the workspace footprint below, and the fixed pipeline that removes it — not accumulated incident by incident. The completeness criterion: every reachable state must fall into one of three classes — **self-healing** on the next run, **self-evident** and therefore reportable, or **explicitly out of scope**. The enumeration object is *element × pipeline step*; the tables in this section are that enumeration, they are part of the contract, and they must be re-derived whenever the pipeline changes. Message text is contract too; the full catalogue — report shapes, refusal lines, diagnostics — lives in [spec-warnings](./spec-warnings.md).
 
+Two layers are kept distinct throughout this section. The **framework and the semantic constraints** — the pipeline's shape, the guards, the verdicts, the failure and exit semantics, recoverability, the residue classes — are workspace invariants. Every git mechanism named below is the **current binding**, consolidated in [spec-worktree](./spec-worktree.md) → Prune's Git Binding; a substrate swap rewrites that section, not this one.
+
 ### Reclamation Flow
 
 ```bash
@@ -105,16 +107,16 @@ The time source for `--older` is the `done-at` field in the workspace `.orbit` f
 
 A workspace's complete footprint:
 
-| # | Element | Location | Created by |
+| # | Element (evidence class) | Current binding (git worktree) | Created by |
 |---|---------|----------|-----------|
 | E1 | workspace directory | `root/<ws>` | `orbit new` |
-| E2 | `.orbit` (goal/created → jots → status/done-at/pr.url) | inside E1 | `new` / auto-rebuilt by every writer |
-| E3 | worktree working dir + `.git` pointer | inside E1 | `orbit add` |
-| E4 | worktree registration (admin dir) | pool `.git/worktrees/` | `add` (written by git) |
-| E5 | scoped branch `refs/heads/<prefix>/<ws>/*` | pool refs | `add` / `switch -c` / `switch` |
-| E6 | `branch.<name>.*` upstream config | pool config | `add` / `switch` |
-| E7 | fetch refspec + `origin/<branch>` tracking ref | pool config/refs | `switch` (existing remote branch) / fetch |
-| E8 | git objects (commit/tree/blob) | pool ODB (`.git/objects/`, shared across worktrees) | commit/fetch — **prune never deletes**: it removes references; object reclamation belongs to git gc |
+| E2 | workspace metadata (goal/created → jots → status/done-at/pr.url) | `.orbit`, inside E1 | `new` / auto-rebuilt by every writer |
+| E3 | per-workspace repo view + registration pointer | worktree working dir + `.git` file, inside E1 | `orbit add` |
+| E4 | repo-view registration | worktree admin dir, pool `.git/worktrees/` | `add` (written by git) |
+| E5 | scoped branch state | `refs/heads/<prefix>/<ws>/*`, pool refs | `add` / `switch -c` / `switch` |
+| E6 | branch upstream wiring | `branch.<name>.*`, pool config | `add` / `switch` |
+| E7 | fetch config + tracking refs | wildcard map + `fetch.prune` + `origin/<branch>` refs, pool config/refs | `clone` (keys) / touchpoint fetches and pushes (refs) |
+| E8 | content objects | pool ODB (`.git/objects/`, shared across worktrees) | commit/fetch — **prune never deletes**: it removes references; object reclamation belongs to gc |
 
 Non-orbit content (created by native git or plain file operations): foreign repos, plain files and directories, ignored files, stashes, detached-HEAD commits, raw branches, remote branches. Each either disappears with D4 or is named in Out of scope.
 
@@ -125,14 +127,14 @@ The pipeline:
 ```text
 D1  worktree remove                     (E3+E4 go together)
 D2  branch delete                       (E5; git drops E6 along with the branch)
-D3  config/refspec convergence          (E6 leftovers, E7)
+D3  config convergence                  (E6 leftovers, E7 keys)
 D4a mv <ws> → <root>/.prune-trash/<ws>.<pid>  (atomic; the only directory-level commit point)
 D4b rm -rf <root>/.prune-trash/<ws>.<pid>     (unordered; safe to interrupt at any point)
 ```
 
 **Branch collection is pool-driven**: a candidate's branch set is the union of `refs/heads/<prefix>/<ws>/*` across pool repos, independent of whether any worktree directory still exists. (The counter-example: deriving the pool from the worktree path means an interruption between D1 and D2 drops the remaining branches from collection while D4 still removes the directory — manufacturing a ghost.)
 
-**The "directory-level" qualifier on D4a matters**: branches deleted at D2 are already irreversible in reference terms (objects remain in the ODB and the reflog window applies, but the refs are gone). D4a is the commit point for the *directory* evidence only, not a transaction boundary for the whole operation. All-or-nothing validation makes the distinction irrelevant on the normal path — passing validation means everything is slated for deletion; it only surfaces on a D2 mid-execution failure (see Execution phase).
+**The "directory-level" qualifier on D4a matters**: branches deleted at D2 are already irreversible in reference terms (objects remain in the ODB until gc, but the refs — and their per-branch reflogs — are gone). D4a is the commit point for the *directory* evidence only, not a transaction boundary for the whole operation. All-or-nothing validation makes the distinction irrelevant on the normal path — passing validation means everything is slated for deletion; it only surfaces on a D2 mid-execution failure (see Execution phase).
 
 #### The `.prune-trash` Transient
 
@@ -273,7 +275,7 @@ Every step is **idempotent**, and every failure mode leaves a state the next run
 
 - **D1 worktree remove**: failures split by cause. "Is not a working tree" (never registered) leaves nothing git-side, so the pipeline proceeds. Any other failure (locked, IO) means git still tracks the directory; deleting the directory would leave a registration pointing at a vanished path, and every later deletion of that branch would refuse (`used by worktree at <gone path>`) — so the whole workspace is kept and reported. Directory removal runs only when git has no stake in the outcome.
 - **D2 branch delete**: a git refusal forwards **git's first line only** on stderr (its `hint:` continuations name `git branch -D` — the bypass instruction a refusal must not hand out; see spec-warnings.md → Refusals and skips), and the **whole workspace is kept** (no rename) — an execution failure, not a validation outcome. "Kept" names the directory and whatever elements remain: worktree directories already removed at D1 do not come back (they passed the dirty guard), and the next run re-enters through the ordinary candidate row — D1 on them reports "not a working tree" and proceeds. Two refusals are retryable and retried exactly once: a stale worktree registration (clean the confirmed-dead path, retry), and — for branches the merged layers already proved upstream — `-d`'s "not fully merged", which measures against the local default checkout rather than `origin/<default>` and so lags after a fetch; that one is retried with `-D`.
-- **D3 convergence**: best-effort, convergent by construction; leftover config sections and refspecs are re-derived on the next run.
+- **D3 convergence**: best-effort, convergent by construction; leftover config sections are re-derived and the managed fetch keys are re-asserted on the next run.
 - **D4a rename**: a failure (EXDEV on a mount point, permissions) keeps the workspace in place, reports, and exits non-zero.
 - **D4b trash removal**: unordered deletion; a failure reports, exits non-zero, and is resumed by the next run's opening sweep. The workspace is already out of the namespace, so the message is not a "skipping" line.
 - **Scan failure**: a git error while enumerating refs reports `cannot scan branches — residue check skipped for this repo` instead of reading as "no branches". A blind scan never passes as empty.
@@ -290,29 +292,12 @@ Residue is produced **externally** — an agent force-deleting a workspace direc
 
 - **Ghost groups** (scoped branches `<prefix>/<ws>/…` whose directory is gone): convergent per-item cleanup through the git verdict layers (2 and 3 — a ghost carries no recorded PRs, so layer 1 never fires): merged → deleted, unmerged → kept and reported, `--force` → force-deleted. A targeted `orbit prune <ws>` with no directory but residue branches processes the ghost group instead of erroring. **The report of one ghost group lists the deleted and the kept branches in the same block** — never counts alone. Run N's report is complete *for run N*; with `(was <sha>)` on every deletion line, the deleted half doubles as the recoverable record. No history is persisted across runs (it would break the pure-function premise validation stands on; a history store would be a new agent-writable element needing its own guards — a new residue source; and merged content is upstream anyway, so cross-run records belong to terminal scrollback and CI logs, not to orbit). Note the two counts differ in kind: a ghost's kept count **decreases across runs** (each run cleans the merged part), while a live workspace's changes only by human action — a reader must not read a dropping ghost count as "something was silently deleted". The group block — header, deletion lines, kept lines — is report content on **stdout** in dry-run and real runs alike; only true errors (scan failures, deletion refusals) go to stderr. The two halves must stay adjacent, and a channel split would silently un-adjacent them.
 - **Untraceable raw branches** (not scoped-shaped — a single-segment `<prefix>/<name>` does not qualify — no `origin/<name>` copy, not checked out in any worktree): report only, never deleted by orbit — listed with merged status and the exact native `branch -D` command for the human operator, grouped by repo. Raw-mode branches and branches created under a former prefix only ever appear in this report — no automatic deletion path exists for them.
-- **Worktree registry self-heal**: a registration whose gitdir target is gone (`git worktree list --porcelain` reports it `prunable`; equivalently, `<path>/.git` is absent) splits by whether the worktree **path** itself still exists. Path gone → **stale registration**, repaired automatically with no `--force`: leaving it would make every later deletion of that branch refuse forever, and nothing else surfaces it once the branch is gone (the branch-deletion retry only fires while a branch still exists to be refused). Path present → a **damaged worktree**, which validation refuses; the registration is deliberately left intact, because it is the only evidence that makes that state recognizable at all. `git worktree prune` alone cannot tell the two apart, so it is never run bare; orbit prunes by confirmed-dead path only, and maintenance is never repaired at the cost of un-persisted content.
-
-  What that removal touches, stated precisely because "just metadata" is doing real work in the sentence above: the admin directory (`gitdir`, `commondir`, `HEAD`, `ORIG_HEAD`, `index`, `logs/HEAD`, per-worktree `refs/`) and nothing else — no object is deleted, no file with content, no ref under `refs/heads` or `refs/remotes`, nothing inside any workspace, and no registration whose path still exists. One thing does narrow: `logs/HEAD` is that worktree's HEAD reflog, and for a worktree whose directory is already gone it is the last *named* handle on any detached-HEAD commit made there. The objects stay in the shared store until gc, so recovery degrades from `git reflog` to `git fsck --lost-found` — which is exactly what git's own `git worktree prune` does in this state, and consistent with detached HEAD being out of scope.
+- **Worktree registry self-heal**: a registration whose gitdir target is gone (`git worktree list --porcelain` reports it `prunable`; equivalently, `<path>/.git` is absent) splits by whether the worktree **path** itself still exists. Path gone → **stale registration**, repaired automatically with no `--force`: leaving it would make every later deletion of that branch refuse forever, and nothing else surfaces it once the branch is gone (the branch-deletion retry only fires while a branch still exists to be refused). Path present → a **damaged worktree**, which validation refuses; the registration is deliberately left intact, because it is the only evidence that makes that state recognizable at all. `git worktree prune` alone cannot tell the two apart, so it is never run bare; orbit prunes by confirmed-dead path only, and maintenance is never repaired at the cost of un-persisted content. Exactly what a stale-registration removal touches (admin directory only — never objects, content, refs, or live registrations) is enumerated in [spec-worktree](./spec-worktree.md) → Prune's Git Binding.
 - **Orphan branch config**: `branch.<name>.*` sections whose branch no longer exists are dropped in the same pass — three config lines describing a branch that is not there, reconstructible by the next `orbit switch`. Left in place, a stale `branch.<name>.merge` can make an untraceable branch look traceable and suppress its report.
 - **Branches left outside `branch.prefix`**: a local branch shaped like this workspace's (`*/<workspace>/*`) but outside the configured prefix is named rather than silently left behind — it is not orbit's to delete (a raw-mode branch, or one created while the prefix held another value). Git holds the branch names, so they remain the recoverable record even if the config that named them is lost.
-- **Fetch refspec reconciliation** belongs to this family: one exact refspec pointing at a branch the remote no longer has breaks every bare `git fetch` in that pool. The contract is in Fetch Refspec Reconciliation below; it runs on every prune path, so a run with no live candidate still repairs it.
+- **Pool config maintenance** belongs to this family: a pool's managed config keys are re-asserted on every prune path, so a run with no live candidate still converges them. The contract is in [spec-worktree](./spec-worktree.md) → Config Ownership and Touchpoint Fetch Discipline.
 - **Closing block**: after the whole report, every workspace with kept content — a validation refusal (live) or a kept ghost branch — gets one force-delete suggestion (`orbit prune <ws> --force`), gated behind the single confirm-useless caveat; raw-branch `branch -D` commands follow last.
 - **`nothing to prune`** prints only when there are no live candidates, no ghosts, and no untraceable branches. Trash contents are not candidates — they are resumed deletions — but a run whose opening sweep cleared anything does not print it either: the sweep's summary line already reported the work.
-
-#### Fetch Refspec Reconciliation
-
-The pool is a single-branch clone, so `orbit switch` to an existing remote branch registers a per-branch fetch refspec (`+refs/heads/<branch>:refs/remotes/origin/<branch>`) to materialize the remote-tracking ref. Every configured exact refspec must point at a branch the remote actually has — one stale entry makes every bare `git fetch` fail with `couldn't find remote ref`, in every worktree of that pool.
-
-Every orbit command that already fetches opportunistically — `orbit sync`, `orbit info`, the `orbit context --startup` reignite block — plus `orbit prune` reconciles refspecs with the remote first:
-
-- **Remove** a refspec when the remote no longer has the branch (typical: auto-deleted on PR merge; also legacy refspecs registered for branches that were never pushed). The stale `refs/remotes/origin/<branch>` ref is deleted along with it.
-- **Never auto-remove the default branch's own refspec** — the remote losing its default branch means the pool is broken beyond refspec reconciliation, and whether a stale default entry survives must not depend on whether some other refspec happened to need the network call (the same exemption gates the call itself). A *rename* of the default branch is still reconciled: the stale entry no longer matches the new default.
-- **Register** a refspec when a local branch tracks a remote branch that exists but has no refspec (scoped/raw branch pushed since last run). The bare fetch that follows materializes the tracking ref immediately.
-- **Leave foreign refspecs untouched.** Only orbit-managed exact refspecs are reconciled — an entry orbit never wrote (e.g. a user-configured wildcard `+refs/heads/*:refs/remotes/origin/*` converting the pool to full fetch) is never removed or complemented, in either phase.
-
-`orbit switch -c` deliberately does NOT pre-register a refspec for the new branch — the branch doesn't exist on the remote yet, so the refspec would break every bare `git fetch` until the first push. The upstream config is still wired up front (push/pull work immediately); the tracking ref materializes at the first fetching command after the push (session start / `orbit info` / `orbit sync`), or instantly via a manual `git fetch origin <branch>`. Conversely, `orbit switch <branch>` to a branch that turns out not to exist on the remote rolls back the refspec it just registered before failing, so the invariant above is never violated between reconcile touchpoints.
-
-`orbit prune --dry-run` reports `would remove stale fetch refspec: <branch>` / `would add fetch refspec: <branch>` without mutating. Reconciliation is skipped entirely when the remote is unreachable, so unverifiable refspecs are never removed by mistake.
 
 ### Recoverability
 
@@ -321,12 +306,12 @@ The pipeline compresses the irreversible surface to two points — nothing befor
 | Step | Recovery | Irreversible part |
 |:-----|:---------|:------------------|
 | D1 worktree remove | none needed — `orbit add` recreates it | — |
-| D2 branch delete (`-d` / `-D`) | reflog, for `gc.reflogExpireUnreachable` (90 days by default) — **only if the operator still has the SHA** | anything past the reflog window |
-| D3 drop `branch.<name>.*` / remove a fetch refspec | re-set, or rebuilt by the next `switch` / `sync` | — |
+| D2 branch delete (`-d` / `-D`) | `git branch <name> <sha>` from the report's `(was <sha>)`, while the objects survive gc (`gc.pruneExpire`, two weeks by default — a deleted branch's own reflog is deleted with it, so the 90-day reflog window does **not** extend post-deletion coverage) | anything gc has already collected |
+| D3 drop `branch.<name>.*` / converge the fetch config | re-set, or re-asserted by the next touchpoint | — |
 | D4a rename | the directory sits whole in the trash, undeleted | — |
 | D4b `rm -rf` the trash entry | tracked content: the remote copy | ignored files, non-repo content, detached-HEAD commits — **permanently** |
 
-Two consequences the reports must carry. Every deletion line names the commit it removed (`(was <sha>)`, resolved before the deletion; the suffix is omitted entirely rather than left empty if the ref cannot be resolved): suppressing git's own `Deleted branch …` chatter is deliberate — the report owns the wording — so the report has to carry the one piece of that line with information in it, or the reflog window is unusable. And `--force` releasing a guard over content that cannot be recovered is announced before the act, in two forms: for a workspace the uncommitted-changes guard would have refused, and for a **damaged worktree**, where orbit cannot read what is at stake at all — the least verifiable case must not be the quietest one. Both are statements of consequence, not ways around a refusal. E8 covers the other half: prune deletes references, never objects, so within the reflog window a wrong deletion is always recoverable.
+Two consequences the reports must carry. Every deletion line names the commit it removed (`(was <sha>)`, resolved before the deletion; the suffix is omitted entirely rather than left empty if the ref cannot be resolved): suppressing git's own `Deleted branch …` chatter is deliberate — the report owns the wording — so the report has to carry the one piece of that line with information in it, or the recovery handle is lost with it. And `--force` releasing a guard over content that cannot be recovered is announced before the act, in two forms: for a workspace the uncommitted-changes guard would have refused, and for a **damaged worktree**, where orbit cannot read what is at stake at all — the least verifiable case must not be the quietest one. Both are statements of consequence, not ways around a refusal. E8 covers the other half: prune deletes references, never objects, so a wrong deletion stays recoverable until gc collects them.
 
 ### Out of Scope — What Prune Does Not Protect
 
@@ -335,7 +320,7 @@ Naming these is part of the contract. A reader told that "uncommitted changes ar
 - **`.gitignore`d files** — neither uncommitted nor untracked, so `git status` does not report them and no guard sees them. Agent scratch output frequently lands here. Recovery: none.
 - **Non-repo content at the workspace top level** — the data guards enumerate direct children that are git repos, plus `.orbit`. A hand-written note or a `scratch/` directory has no guard and no report. Recovery: none.
 - **Stashes** — `refs/stash` lives in the pool's common dir, so a stash survives the prune, but `git status` never reports it and the workspace it belonged to is gone: the entry outlives its attribution.
-- **Detached-HEAD commits** — the branch protections assume work sits on a branch. A worktree left detached has commits no ref points at; deregistration makes them unreachable. Recovery: reflog, if the SHA is known.
+- **Detached-HEAD commits** — the branch protections assume work sits on a branch. A worktree left detached has commits no ref points at; deregistration makes them unreachable. Recovery: a new ref on the SHA if it was noted, else `git fsck --lost-found` — while the objects survive gc.
 - **Concurrency** — orbit assumes one operator, one session, and takes no lock. The initiation guard covers a process whose *cwd* stands inside a workspace; it cannot see a process whose cwd is elsewhere while it writes into one (an editor, a build, a background agent).
 - **Direct writes into `.repos/`** — the pool's internal structure is git's to maintain. Rewriting refs or worktree admin files by hand is outside every guard; recovery is re-cloning, since the objects are on the remote.
 - **Content moved into `.prune-trash/` by hand** — the opening sweep deletes trash contents without validation; the "definitionally garbage" guarantee holds by exclusion (only the post-D1–D3 rename enters). Same class as direct writes into `.repos/`.
@@ -356,26 +341,4 @@ Naming these is part of the contract. A reader told that "uncommitted changes ar
 
 ## Branch Prefix (`branch.prefix`)
 
-The scoped-mode branch prefix is **project config**, not an environment variable:
-
-```bash
-orbit config branch.prefix team     # scoped branches become team/<workspace>/<name>
-```
-
-Default `ws`. It is read from `.repos/.orbit`.
-
-Why config and not an env var: the prefix is written into every branch name orbit creates (`orbit add`, `orbit switch -c`) **and** it is the selector `orbit prune` matches on to decide which branches are orbit's to delete. Those two moments are often days and sessions apart, so the value has to be stable and durable. A per-invocation env var could differ between them, with two failure modes:
-
-- prefix changed after creation → prune looks under the new prefix, never finds the old branches, and they leak;
-- prefix pointed at a namespace orbit never created (e.g. `release` while real `release/<x>/*` branches exist) → prune treats *foreign* branches as its own and deletes them under `--force`.
-
-Two write-side guards follow from that:
-
-- The value is validated on write (one path segment, legal in a git refname, no leading `-`), because a bad value now persists.
-- Changing it is **refused while any branch still carries the current prefix** (`branch.prefix is part of existing branch names under '<current>/': <repo> (n)`). Reclaim or rename those branches first — the prefix is part of their names, and moving it would orphan them.
-
-Use cases:
-- Teams using different prefixes to avoid conflicts with existing branch naming
-- Multi-layer workspace management schemes distinguishing different levels
-
-> Note: The slash is automatically added by orbit (format: `<prefix>/<workspace>/<name>`); do not include a trailing slash when setting.
+The scoped-mode branch prefix contract lives in [spec-worktree](./spec-worktree.md) → The Prefix — it is part of the branching strategy (the name encodes the workspace so prune can attribute branches after the directory is gone), which is why prune matches on `refs/heads/<branch.prefix>/<workspace>/`.

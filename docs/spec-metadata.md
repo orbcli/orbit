@@ -118,7 +118,7 @@ See [`spec-knowledge.md` Memo Lifecycle](./spec-knowledge.md#memo-lifecycle).
 
 ### Push Target
 
-Not managed in metadata. `orbit clone <url> --push <fork-url>` configures push remote at the git level; worktrees inherit automatically. Agent checks via `git remote -v`. See [spec-branching](./spec-branching.md).
+Not managed in metadata. `orbit clone <url> --push <fork-url>` configures push remote at the git level; worktrees inherit automatically. Agent checks via `git remote -v`. See [spec-worktree](./spec-worktree.md) → Fork Push Targets.
 
 ## Workspace Metadata: `<workspace>/.orbit`
 

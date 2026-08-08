@@ -44,7 +44,7 @@ The tiers below are the contract. Anything not in the first two tiers must keep 
 
 **Why the first tiers are safe to auto-run:** they cannot lose the user's work or leak outside the machine. Reads have no effect; the idempotent writes only build up the workspace the agent is already working in (worktrees, memos, jots) and are trivially reversible with git. **Why the last tier still prompts:** `prune` deletes worktrees and branches, `done` flips lifecycle state, `clone` writes into the shared pool, `config` changes project-wide behavior, and `sync --force`/`--branch` reset or re-point the pool every workspace shares — each is either hard to reverse or visible beyond the current workspace, so the user should stay in the loop.
 
-**Flag-level exceptions are part of the contract:** a subcommand in a safe tier does not make all of its flags safe. `sync` is auto-approved bare or with a repo name; `sync --force` (pool `reset --hard`) and `sync --branch` (rewrites the pool's checked-out branch, `origin/HEAD`, and the fetch refspecs other workspaces' worktrees depend on) must prompt — and both run **only from the project root**, since they destroy or re-point state the calling workspace does not own. Hook implementations compare *normalized* tokens (quotes and backslashes stripped), because `'--force'`, `--force''` and `\-\-force` all reach the CLI as the same `--force`.
+**Flag-level exceptions are part of the contract:** a subcommand in a safe tier does not make all of its flags safe. `sync` is auto-approved bare or with a repo name; `sync --force` (pool `reset --hard`) and `sync --branch` (re-points the pool's checked-out branch and `origin/HEAD`) must prompt — and both run **only from the project root**, since they destroy or re-point state the calling workspace does not own. Hook implementations compare *normalized* tokens (quotes and backslashes stripped), because `'--force'`, `--force''` and `\-\-force` all reach the CLI as the same `--force`.
 
 `new` is excluded on purpose: new workspaces are created at project root, outside the agent's scope (see Anti-Pattern #3), so it should be human-initiated regardless of permissions.
 
@@ -149,6 +149,7 @@ If you change the tier of any subcommand, or add/remove a subcommand, update **a
 - orbit only handles operations that cross the workspace<->.repos boundary
 - Don't wrap operations in orbit if git can handle them directly
 - orbit switch -c is an enhanced option, not mandatory
+- The skill must state the config-ownership boundary: `git config` inside a worktree writes the pool's *shared* config, so the keys orbit manages (`remote.origin.fetch`, `fetch.prune`, `push.default`, scoped branches' `branch.*`) are off-limits to agent writes — behaviorally explained, keys named (docs/spec-worktree.md → Config Ownership is the canonical table)
 
 ### 5. Layer Evolution
 - Orbit is Layer 2 (Workspace structure management); it does not assume Layer 3 (agent session) or Layer 4 (GUI)
@@ -432,7 +433,7 @@ Skill does not need to explain internal mechanics (prefix stripping, push.defaul
 
 ## Anti-Pattern Checklist (Must Be Warned in Skill)
 
-1. **Directly accessing .repos/** — breaks Layer 2 boundary
+1. **Directly accessing .repos/** — breaks Layer 2 boundary (including the config channel: `git config` from a worktree reaches the pool's shared config — see principle 4)
 2. **Assuming the agent understands git config internals** — use behavioral descriptions instead of config details
 3. **Agent running orbit new inside a workspace** — new workspaces are created at project root, but the agent's scope is the current workspace and it cannot switch to the new workspace. `orbit new` should be initiated by humans
 4. **Forcing scoped mode** — raw mode is a perfectly valid choice
@@ -481,7 +482,7 @@ When the command system changes, check in this order:
 
 - Design principles and key decisions: `PRINCIPLES.md`
 - Directory structure: `docs/spec-directory.md`
-- Branching strategy: `docs/spec-branching.md`
+- Worktree model (branching strategy, config ownership, fetch discipline, push routing, git dependency closure): `docs/spec-worktree.md`
 - Command system: `docs/spec-commands.md`
 - Metadata design: `docs/spec-metadata.md`
 - Knowledge system: `docs/spec-knowledge.md`

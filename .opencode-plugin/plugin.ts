@@ -107,8 +107,8 @@ const allowsOrbitCommand = (cmd: string): boolean => {
   const sub = parts[1] ?? ""
   if (!SAFE_SUBCOMMANDS.has(sub)) return false
   // sync --force resets the pool repo; sync --branch rewrites pool-wide state
-  // (checked-out branch, origin/HEAD, fetch refspecs every worktree relies on).
-  // Both stay behind a prompt. Strip quotes and backslashes per token first:
+  // (checked-out branch, origin/HEAD). Both stay behind a prompt. Strip
+  // quotes and backslashes per token first:
   // bash hands `'--force'`, `--force''` and `\-\-force` to orbit as the very
   // same `--force`, so the guard must match what the CLI will actually see.
   if (sub === "sync") {

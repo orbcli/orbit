@@ -64,8 +64,7 @@ normalize_token() {
 }
 
 # sync --force resets the pool repo; sync --branch rewrites pool-wide state
-# (checked-out branch, origin/HEAD, fetch refspecs every worktree relies on).
-# Both are destructive — still prompt.
+# (checked-out branch, origin/HEAD). Both are destructive — still prompt.
 #
 # Match on normalized tokens, not raw text: bash passes `'--force'`,
 # `--force''` and `\-\-force` to orbit as the very same `--force`, so

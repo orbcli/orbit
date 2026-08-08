@@ -54,7 +54,7 @@ in [spec-knowledge.md](spec-knowledge.md)).
 | memo behind HEAD | any command running staleness check; stored memo commit ≠ repo HEAD | `orbit_memo_staleness` | `memo <repo>` (update) or `memo <repo> --refresh` (reset counter if unchanged) | skill workflow step 7 |
 | new commits on origin | staleness check; local pool branch behind `origin/<branch>` | `orbit_upstream_check` | `sync <repo>` before add/rely | skill step 5 (cold-start sync) |
 | workspace done + prune-eligible | `orbit add` in a `status=done` workspace | `orbit_add` | `goal "<text>"` to reactivate first | skill (reactivation rules), spec-lifecycle |
-| raw-mode branch (not scoped) | `orbit add` (non-silent), or per-repo status (context/status/done) | `orbit_add`, `orbit_collect_repo_status` | `orbit switch -c <name>` to convert to scoped mode | skill step 8, spec-branching |
+| raw-mode branch (not scoped) | `orbit add` (non-silent), or per-repo status (context/status/done) | `orbit_add`, `orbit_collect_repo_status` | `orbit switch -c <name>` to convert to scoped mode | skill step 8, spec-worktree |
 | no memo for repo (add) | `orbit add` (non-silent), memo missing | `orbit_add` | explore `explore.paths`, then `memo <repo>` | per-repo status (context), done gate, skill step 7 |
 | memo thin for repo (add) | `orbit add` (non-silent), memo below `minLines` | `orbit_add` | explore `explore.paths`, expand via `memo <repo>` before done | per-repo status (context), done gate, skill step 7 |
 | memo over budget | `orbit memo` writeback (in a workspace), card exceeds `maxLines`+`minLines` | `orbit_memo` | curate the card back to `<min>~<max>` lines | done gate, per-repo status (context) |
@@ -67,6 +67,31 @@ in [spec-knowledge.md](spec-knowledge.md)).
 | done: only memo survives | `orbit done`, when any per-repo warning fired | `orbit_done` | (closing line — session working memory and the jot queue do not survive done; memo is the only durable artifact) | — (no named action; reinforces the debt above) |
 | index out of sync | `orbit repos`, index brief missing but memo has one | `orbit_repos` | `memo <repo> --refresh` (repairs an existing memo's cache; no add/exploration needed) | — |
 
+## Config convergence lines (contract text)
+
+Three steering lines report config convergence, one per managed key, and their text is
+fixed by contract (a changelog-visible output surface):
+
+```text
+orbit: <repo>: fetch config converged: git remote set-branches origin "*" (stop converging and re-apply yours: orbit config git.fetchAllBranches once)
+orbit: <repo>: fetch config converged: git config fetch.prune true (stop converging and re-apply yours: orbit config git.fetchPrune once)
+orbit: <repo>: push routing converged: git config push.default upstream (stop converging and re-apply yours: orbit config git.pushUpstreamByDefault once)
+```
+
+| Warning | Trigger (command + condition) | Source (function) | Named next action | Backstops |
+|:--------|:------------------------------|:------------------|:------------------|:----------|
+| config converged (per key, forms above) | any fetching touchpoint (`orbit sync` / `orbit info` / `orbit context --startup` / `orbit prune`) that converges a non-standard pool config value, per managed key, under the default `always` maintenance mode | `orbit_maintain_pool_config` | the parenthesized opt-out: `config git.fetchAllBranches once` / `config git.fetchPrune once` / `config git.pushUpstreamByDefault once` stops future convergence; re-applying the custom value is the user's step | — (one-shot: fires only when a write actually happens; `once`/`never` pools are untouched and unreported) |
+
+The lines deviate from the two-colon shape on purpose: their first duty is *reporting a
+mutation orbit just made* (silent config rewrites are forbidden), and the extra colons belong
+to the embedded native command and the opt-out command, quoted verbatim so they can be run
+as-is. The parenthetical names two steps deliberately — convergence happens first and the
+report second (a pre-warning would need a persisted "already warned" flag, which the
+zero-state model forbids), so the wording must admit the value was replaced: the switch
+only stops future convergence; it does not bring the replaced value back. Under `--dry-run`, prune previews the same convergence on stdout unprefixed as
+`would converge fetch config: git remote set-branches origin "*"` / `would converge fetch
+config: git config fetch.prune true` / `would converge push routing: git config push.default
+upstream` (Report lines below).
 
 ## Informational notes (not steering — no named action)
 
@@ -84,6 +109,7 @@ next command. `orbit repos` carries the fact in its table's MEMO column (`ok` / 
 | `<repo> has no memo, showing README` | `orbit info`, memo absent, README present | `orbit_info` |
 | `<repo> has no memo; showing first <N> of <M> README lines` | `orbit info` README fallback exceeds `memo.maxLines` | `orbit_info` |
 | `<repo> has no memo` | `orbit info`, both absent | `orbit_info` |
+| `<repo>: WARNING: cannot fetch default branch origin/<branch> though the remote answers — the remote may have lost its default branch` | any fetching touchpoint: the default branch's named fetch failed while the remote answers a probe — a repo-level event (a renamed/deleted default), deliberately naming no remedy: the right one depends on what happened on the remote. Offline everything fails quietly instead | `orbit_touchpoint_fetch` |
 
 The `building` note is a count without a named action — the queue is filling but has not hit the aggregation threshold; the `overflow` steering warning (registry above) fires when it does. Naming an action at `building` would cry wolf.
 
@@ -124,6 +150,7 @@ A third class: a destructive command declining to act. These state the fact and 
 | `sync <flags> must be run from the project root` (no replay) | `orbit sync --force` / `--branch` with CWD inside a workspace but ancestry unreadable — blind guard withholds the replay (aborts) | `orbit_sync` |
 | `branch.prefix is part of existing branch names under '<current>/': <repo> (n)` | `orbit config branch.prefix <new>` while branches still carry the current prefix (aborts) | `orbit_config` |
 | `invalid branch.prefix: <value>` | `orbit config branch.prefix` with a value that is not one refname-legal segment (aborts) | `orbit_config` |
+| `invalid <key>: <value> (expected always, once, or never)` | `orbit config git.fetchAllBranches` / `git.fetchPrune` / `git.pushUpstreamByDefault` with a value outside the three-mode vocabulary (aborts) | `orbit_config` |
 | `invalid repo name: <name> (expected a pool repo basename: [A-Za-z0-9._-], no leading '.' or '-')` | `clone --name` / `add` / `info` / `memo` / `sync` with a repo name outside the contract in [spec-commands.md](spec-commands.md#repo-name-contract) (aborts; `sync` skips that argument) | `orbit_require_repo_name` / `orbit_sync_one` |
 | `repos.* is pool index data, not project config` | `orbit config repos.<...>` set or unset (aborts) | `orbit_config` |
 
@@ -143,12 +170,14 @@ pruning: <ws> (residue) / pruned: <ws> (residue) (N branches deleted, M kept)   
 would prune: <ws> … / would skip: <ws> (<reasons>) / would clear N interrupted deletion(s)   # dry-run
   (no worktrees)                                                  # a candidate with no repo dirs
 would remove workspace directory (via .prune-trash)               # dry-run only: the D4 step
-    deleted branch (force|PR merged|merged|content upstream): <branch> (was <sha>)   # the SHA is the reflog handle — the only recovery path
+    deleted branch (force|PR merged|merged|content upstream): <branch> (was <sha>)   # the SHA is the recovery handle — good while the objects survive gc
     would delete branch (merged|PR merged|content upstream): <branch> / would force-delete branch: <branch>   # dry-run
     would keep unmerged branch: <branch> …                        # dry-run only; a real-run live keep is a stderr diagnostic
     kept branch (unmerged): <branch> — review: …                            # ghost group only: kept lines report in the same block as deletions
     would leave branch outside branch.prefix: <branches>          # dry-run; the real run is a stderr note
-pool maintenance:                                                 # section header for pool-level accounts (refspec reconcile / maintenance) — from the enumeration sweep or a targeted ghost run; never nested inside a workspace block
+    would converge fetch config: git remote set-branches origin "*" / git config fetch.prune true   # dry-run; the real run is the stderr steering lines above
+    would converge push routing: git config push.default upstream   # dry-run; likewise
+pool maintenance:                                                 # section header for pool-level accounts (config convergence previews / pool self-heal) — from the enumeration sweep or a targeted ghost run; never nested inside a workspace block
 nothing to prune
 ```
 

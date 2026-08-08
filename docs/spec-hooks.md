@@ -145,6 +145,16 @@ two safe tiers — the tier contract itself lives in
 
 ## TODO
 
+- **First-convergence steering at the session-start touchpoint reaches no one** —
+  `session-start.sh` runs `orbit context --startup 2>/dev/null` to keep the
+  injected `<orbit-context>` block free of stderr, so if a pool's first config
+  convergence happens exactly at that touchpoint, the steering line (with its
+  escape-hatch command) is discarded and never re-fires — convergence reports
+  only on write, and later touchpoints find nothing to converge. Inherited from
+  the hook's original design (the old reconcile lines had the same channel
+  behavior); a real fix needs a deliberately designed visible channel, not just
+  dropping the redirect — hook stderr is not a reliable user channel, and
+  folding steering into stdout would pollute the injection contract.
 - **OpenCode resume routing** — blocked on
   [anomalyco/opencode#5409](https://github.com/anomalyco/opencode/issues/5409)
   (SessionStart hook with startup/resume/compact sources). Verified by

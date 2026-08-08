@@ -18,6 +18,14 @@ export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0="core.hooksPath"
 export GIT_CONFIG_VALUE_0="/dev/null"
 
+# Hermetic config layers: a runner's global/system gitconfig (e.g. a global
+# fetch.prune=true) must not leak into assertions about what orbit did or did
+# not write. GIT_CONFIG_NOSYSTEM covers git < 2.32, which predates the two
+# path overrides; on those gits the global file is still read (status quo).
+export GIT_CONFIG_NOSYSTEM=1
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+
 # --- Setup / Teardown ---
 
 common_setup() {
