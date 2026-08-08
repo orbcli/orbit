@@ -18,7 +18,7 @@ if ! command -v orbit >/dev/null 2>&1; then
 The Orbit skill is installed but the `orbit` command is not on your PATH.
 Orbit needs its runtime to work. Ask the user to install it, then start a new session:
 
-  curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh | bash
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh)"
 
 Only if the user explicitly says they do not want Orbit, remove this plugin
 via your agent's plugin manager (e.g. `claude plugin uninstall orbit` or

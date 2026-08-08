@@ -39,15 +39,33 @@ The following assumes `orbit` as the command name. For global installation:
 ./install.sh --zsh
 ```
 
-If you use bash, change to `--bash`. To overwrite an existing installation, add `--force`. To switch where a plugin's marketplace points (for example from a local checkout to the public git repo), add `--replace-marketplace` — e.g. `ORBIT_SOURCE=orbcli/orbit ./install.sh --codex --replace-marketplace`. Plain `--force` only refreshes content from the already-configured source; it does not change where the source points.
+If you use bash, change to `--bash`. To overwrite an existing installation, add `--force`. To switch where a plugin's marketplace points (for example from a local checkout to the public git repo), add `--replace-marketplace` — e.g. `ORBIT_SOURCE=orbcli/orbit ./install.sh --codex --replace-marketplace`. Plain `--force` only refreshes content from the already-configured source; it does not change where the source points. To uninstall: `./install.sh --uninstall --all`, or pick individual targets (`--cli`, `--claude`, `--codex`, …) — `./install.sh --help` lists them.
 
-`ORBIT_SOURCE` also picks the clone protocol for the plugin marketplace: the `owner/repo` shorthand leaves that choice to the agent CLI (some expand it to SSH, which fails without an SSH key), while an explicit URL is used as-is. On a machine without SSH keys, pass the HTTPS URL:
+### Network-resilient installs
 
-```bash
-ORBIT_SOURCE=https://github.com/orbcli/orbit.git ./install.sh --claude
-```
+This section only matters when installing over the network (piped `curl | bash`, or a remote `ORBIT_SOURCE`); running `./install.sh` from a local checkout touches no network at all.
 
-`examples/demo/try.sh` does exactly this by default when piped from the network, so first-time users get the zero-setup HTTPS path; the plain `install.sh` default stays the shorthand, leaving the protocol choice to each CLI.
+Every network operation install.sh performs (the orbit.sh download, a URL-source clone, the OpenCode file downloads, the agent CLIs' marketplace/plugin installs) is retried through transient failures and never fails silently — the final attempt prints the real underlying error.
+
+| knob | default | meaning |
+|---|---|---|
+| `ORBIT_RETRY` | `3` | attempts per network operation before giving up |
+| `ORBIT_RETRY_DELAY_SECONDS` | `5` | seconds between attempts |
+| `ORBIT_TIMEOUT_SECONDS` | `60` | per-attempt cap — a hung connection is killed and retried |
+
+**Source chain.** Sources resolve by priority: `ORBIT_SOURCES` > `ORBIT_SOURCE` > this local checkout > the default `orbcli/orbit`.
+
+- `ORBIT_SOURCES` takes a space-separated chain; each retry rotates to the next entry, spreading attempts across route *and* time (intermittent blocks rarely sit on every host+protocol combo at once). A one-entry chain never rotates, so plain install.sh stays single-source and stable.
+- `try.sh` supplies `orbcli/orbit` → HTTPS clone → SSH clone for zero-setup demo runs.
+- `ORBIT_SOURCE` also picks the clone protocol for the plugin marketplace: the `owner/repo` shorthand leaves that choice to the agent CLI (some expand it to SSH, which fails without an SSH key), while an explicit URL is used as-is. On a machine without SSH keys, pass the HTTPS URL:
+
+  ```bash
+  ORBIT_SOURCE=https://github.com/orbcli/orbit.git ./install.sh --claude
+  ```
+
+**Marketplace failures.** A marketplace add/update that fails through every retry is not immediately fatal: install.sh prints the CLI's real error plus a warning naming it as the root cause, then lets the plugin install decide — an existing local snapshot still installs offline; a missing marketplace fails the install with the CLI's own clear error.
+
+**Escape hatch.** When all retries fail, the remaining issue is network reachability: get the repo onto the machine yourself (proxy / mirror / another network) and run `./install.sh` from the checkout — a local path source needs no network.
 
 ## 3. Adding Repos to the Pool
 

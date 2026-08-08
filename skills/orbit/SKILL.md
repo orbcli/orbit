@@ -54,7 +54,7 @@ Do NOT check for `.orbit` files directly — metadata files are cache and may be
 - Agents are launched from a workspace directory (not project root).
 - `.repos/` is internal infrastructure — never `cd` into it or read/write files there directly.
 
-If the `orbit` command is not found, tell the user to install the runtime with `! curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh | bash`.
+If the `orbit` command is not found, tell the user to install the runtime with `! /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh)"`.
 
 ## Core concepts
 

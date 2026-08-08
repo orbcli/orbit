@@ -8,10 +8,16 @@
 # local bare repos this script builds, so `git push` just works.
 #
 # Usage:
-#   curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh | bash
-#   # or, from a checkout:  ./examples/demo/try.sh
+#   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/orbcli/orbit/main/try.sh)"
+#   # or, from a checkout:  ./try.sh
 #
 # Override where it lands:  ORBIT_TRY_DIR=~/somewhere ./try.sh
+# Pin one install source:   ORBIT_SOURCE=… ./try.sh   (disables the source chain)
+# Override the chain:       ORBIT_SOURCES="owner/repo https://… git@…" ./try.sh
+# Tune the retries:         ORBIT_RETRY=5 ORBIT_RETRY_DELAY_SECONDS=10
+#                           ORBIT_TIMEOUT_SECONDS=30 ./try.sh
+#                           (used by this script's own fetch AND passed through
+#                           to install.sh's per-attempt retry/timeout)
 #
 set -euo pipefail
 
@@ -19,41 +25,84 @@ TRY_DIR="${ORBIT_TRY_DIR:-$HOME/orbit-try}"
 UPSTREAM="$TRY_DIR/upstream"
 BIN_DIR="$TRY_DIR/bin"          # runtime lands here so `rm -rf $TRY_DIR` wipes it too
 INSTALL_URL="https://raw.githubusercontent.com/orbcli/orbit/main/install.sh"
-# Install source handed to install.sh when piped from the network. Default is
-# the explicit HTTPS URL, NOT the owner/repo shorthand: the shorthand leaves the
-# clone protocol to each agent CLI, and claude expands it to SSH with no
-# fallback — a fresh machine without SSH keys can't install the plugin. Try-it
-# must succeed with zero setup. Override with ORBIT_SOURCE (e.g. back to SSH).
-TRY_SOURCE="${ORBIT_SOURCE:-https://github.com/orbcli/orbit.git}"
 
 say()  { printf '\033[36m%s\033[0m\n' "$*"; }
 warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 
+# net_try <label> <cmd> [args...] — retry a network fetch through transient
+# blocking windows: ${ORBIT_RETRY:-3} attempts, ${ORBIT_RETRY_DELAY_SECONDS:-5}s
+# apart; the last attempt's error is printed, never swallowed.
+# NOTE: net_try has no per-attempt killer — the command MUST bound itself
+# (curl does via --connect-timeout/--max-time). Never put a bare git/CLI call
+# here: a blocked connection would hang silently, the very thing this fixes.
+net_try() {
+  local label="$1"; shift
+  local attempt=1 log
+  log="$(mktemp)"
+  while :; do
+    if "$@" >"$log" 2>&1; then rm -f "$log"; return 0; fi
+    if [ "$attempt" -ge "${ORBIT_RETRY:-3}" ]; then
+      warn "$label — giving up after ${ORBIT_RETRY:-3} attempts; last error:"
+      sed 's/^/    /' "$log" >&2
+      rm -f "$log"
+      return 1
+    fi
+    warn "$label — attempt $attempt/${ORBIT_RETRY:-3} failed; retrying in ${ORBIT_RETRY_DELAY_SECONDS:-5}s ..."
+    sleep "${ORBIT_RETRY_DELAY_SECONDS:-5}"
+    attempt=$((attempt + 1))
+  done
+}
+
 # Resolve install.sh source, mirroring how install.sh itself finds orbit.sh:
-# prefer a co-located checkout copy (../../install.sh) so local edits take effect
-# and orbit.sh resolves locally too; fall back to the published URL when piped
-# (curl | bash), where $0 gives no usable path.
+# prefer the co-located checkout copy (./install.sh — try.sh lives at the repo
+# root) so local edits take effect and orbit.sh resolves locally too; fall
+# back to the published URL when piped (bash -c "$(curl …)"), where $0 gives
+# no usable path.
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd) || SCRIPT_DIR=""
 LOCAL_INSTALL=""
 REPO_ROOT=""
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../../install.sh" ]; then
-  REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/install.sh" ]; then
+  REPO_ROOT="$SCRIPT_DIR"
   LOCAL_INSTALL="$REPO_ROOT/install.sh"
+fi
+
+# Zero-setup demo runs get install.sh's source chain: each retry rotates across
+# the shorthand (raw HTTPS downloads), an HTTPS clone and an SSH clone, riding
+# out intermittent network blocks. A user-set ORBIT_SOURCES passes through
+# untouched, and a pinned ORBIT_SOURCE must not be overridden by the chain —
+# so only supply the default when neither is set and we're not in a checkout.
+if [ -z "$LOCAL_INSTALL" ] && [ -z "${ORBIT_SOURCES:-}" ] && [ -z "${ORBIT_SOURCE:-}" ]; then
+  ORBIT_SOURCES="orbcli/orbit https://github.com/orbcli/orbit.git git@github.com:orbcli/orbit.git"
+  export ORBIT_SOURCES
 fi
 
 # Run install.sh with the runtime steered into the demo dir. Uses the local
 # checkout when available (so ORBIT_BIN_DIR is honored regardless of what version
-# is published), else the remote. Extra args (e.g. --claude) pass through.
+# is published). When piped, install.sh is fetched ONCE (with retries), then
+# run with output flowing live. ORBIT_SOURCE / ORBIT_SOURCES pass through the
+# environment untouched: a pinned ORBIT_SOURCE installs from just that source;
+# otherwise install.sh's retries rotate its built-in source chain.
+INSTALL_SCRIPT=""
 run_install() {
   if [ -n "$LOCAL_INSTALL" ]; then
-    # Local checkout: no TRY_SOURCE here — install.sh must keep sourcing from
-    # the checkout (path type) so local edits take effect. A user-exported
-    # ORBIT_SOURCE still passes through the environment untouched.
+    # Local checkout: install.sh keeps sourcing from the checkout (path type)
+    # so local edits take effect.
     ORBIT_BIN_DIR="$BIN_DIR" bash "$LOCAL_INSTALL" "$@"
-  else
-    curl -sL "$INSTALL_URL" | ORBIT_SOURCE="$TRY_SOURCE" ORBIT_BIN_DIR="$BIN_DIR" bash -s -- "$@"
+    return
   fi
+  if [ -z "$INSTALL_SCRIPT" ]; then
+    INSTALL_SCRIPT="$TRY_DIR/.install.sh"   # inside TRY_DIR: wiped with the demo
+    if ! net_try "download install.sh" \
+      curl -fsSL --connect-timeout 10 --max-time "${ORBIT_TIMEOUT_SECONDS:-60}" "$INSTALL_URL" -o "$INSTALL_SCRIPT"; then
+      warn "   could not fetch install.sh — this is a network reachability issue, not a bug."
+      warn "   get the repo onto this machine yourself (proxy / mirror / another network),"
+      warn "   then run the demo from the checkout:"
+      warn "     git clone https://github.com/orbcli/orbit.git && cd orbit && ./try.sh $*"
+      return 1
+    fi
+  fi
+  ORBIT_BIN_DIR="$BIN_DIR" bash "$INSTALL_SCRIPT" "$@"
 }
 
 # --- args -----------------------------------------------------------------
@@ -81,6 +130,24 @@ for arg in "$@"; do
 done
 
 # --- preflight ------------------------------------------------------------
+# Validate the retry knobs before any network operation — net_try compares
+# `[ "$attempt" -ge "$ORBIT_RETRY" ]`, and a non-numeric value makes that test
+# error out and evaluate false forever: an infinite silent retry loop, the
+# exact failure mode this script exists to defeat.
+for knob in ORBIT_RETRY ORBIT_RETRY_DELAY_SECONDS ORBIT_TIMEOUT_SECONDS; do
+  val=""
+  eval "val=\"\${$knob:-}\""
+  case "$val" in
+    '') ;;   # unset: net_try falls back to its defaults
+    *[!0-9]*) die "$knob must be a positive integer (got: $val)" ;;
+  esac
+done
+unset knob val
+[ -z "${ORBIT_RETRY:-}" ] || [ "$ORBIT_RETRY" -ge 1 ] \
+  || die "ORBIT_RETRY must be >= 1 (got: $ORBIT_RETRY)"
+[ -z "${ORBIT_TIMEOUT_SECONDS:-}" ] || [ "$ORBIT_TIMEOUT_SECONDS" -ge 1 ] \
+  || die "ORBIT_TIMEOUT_SECONDS must be >= 1 (got: $ORBIT_TIMEOUT_SECONDS)"
+
 command -v git >/dev/null 2>&1 || die "git is required but not found on PATH."
 
 # If the user already has a global orbit in ~/.local/bin, a piped `curl | bash`
@@ -313,7 +380,8 @@ orbit new "$GOAL" --name mission >/dev/null
 #     install folded the plugin into the bootstrap above and cleared this flag) --
 if [ -n "$AGENT_INSTALL" ]; then
   say "⚙  Installing the Orbit plugin for $AGENT ..."
-  if run_install "$AGENT_INSTALL" >/dev/null 2>&1; then
+  # Output flows live: a failing install must show its real error, never fail silently.
+  if run_install "$AGENT_INSTALL"; then
     say "   plugin installed."
   else
     warn "   plugin install failed — falling back to manual launch instructions."
@@ -348,7 +416,7 @@ elif [ "$AGENT" = opencode ]; then
   AGENT_SECTION="── Let your agent fly it (OpenCode plugin installed) ──────────────────
     # The system.transform hook detects this workspace — no magic phrase needed.
 
-    ${ORBIT_PATH}cd $TRY_DIR/mission && opencode run start
+    ${ORBIT_PATH}cd $TRY_DIR/mission && opencode --prompt start
 "
 elif [ "$AGENT" = qodercli ]; then
   AGENT_SECTION="── Let your agent fly it (Qoder CLI plugin installed) ─────────────────
@@ -370,10 +438,10 @@ else
     # Orbit. Copy the skill dir into your agent's skills folder:
     #   $SKILL_DIR
     # Prefer a plugin + auto-detecting hook? Install one:
-    #   curl -sL $INSTALL_URL | bash -s -- --claude      # Claude Code
-    #   curl -sL $INSTALL_URL | bash -s -- --codex       # Codex
-    #   curl -sL $INSTALL_URL | bash -s -- --opencode    # OpenCode
-    #   curl -sL $INSTALL_URL | bash -s -- --qodercli    # Qoder CLI
+    #   /bin/bash -c \"\$(curl -fsSL $INSTALL_URL)\" _ --claude      # Claude Code
+    #   /bin/bash -c \"\$(curl -fsSL $INSTALL_URL)\" _ --codex       # Codex
+    #   /bin/bash -c \"\$(curl -fsSL $INSTALL_URL)\" _ --opencode    # OpenCode
+    #   /bin/bash -c \"\$(curl -fsSL $INSTALL_URL)\" _ --qodercli    # Qoder CLI
     ${ORBIT_PATH}cd $TRY_DIR/mission
     <agent> \"orbit start\"        # your CLI/IDE Agent: claude, qodercli, …"
 fi
