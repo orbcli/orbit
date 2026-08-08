@@ -4,22 +4,39 @@ set -euo pipefail
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 LOCAL_ORBIT="$SCRIPT_DIR/orbit.sh"
 
-# Single source knob (same semantics as `claude plugin marketplace add`). It drives
-# BOTH the orbit.sh download and the plugin marketplace install. Accepts:
+# Source resolution always lands on a CHAIN of candidate sources (same
+# semantics per entry as `claude plugin marketplace add`):
 #   - a GitHub repo shorthand   owner/repo             -> raw.githubusercontent.com
-#   - a git URL                 https://… | git@…:…    -> shallow single-file clone
+#   - a git URL                 https://… | git@…:…    -> shallow clone
 #   - a local path              /… | ./… | existing dir
-# Override with ORBIT_SOURCE (and ORBIT_REF for the branch/tag). Default: this
-# checkout when run from a clone, else the public GitHub repo.
+# Priority: ORBIT_SOURCES > ORBIT_SOURCE > this local checkout > the default
+# GitHub repo. Each RETRY of a network operation rotates to the next chain
+# entry — rotating spreads attempts across both route and time, and a
+# one-entry chain simply never rotates (the stable default). The first attempt
+# of each operation reuses the source that last succeeded. try.sh supplies a
+# multi-entry chain (shorthand → HTTPS → SSH) for zero-setup demo runs.
+# ORBIT_REF pins the branch/tag for raw downloads (default: main).
 DEFAULT_SOURCE="orbcli/orbit"
 ORBIT_REF="${ORBIT_REF:-main}"
-if [ -n "${ORBIT_SOURCE:-}" ]; then
-  SOURCE="$ORBIT_SOURCE"
-elif [ -f "$LOCAL_ORBIT" ]; then
-  SOURCE="$SCRIPT_DIR"
-else
-  SOURCE="$DEFAULT_SOURCE"
+# bash < 4.4 under `set -u` errors on ${#arr[@]} when the array is EMPTY, so
+# never size-test a possibly-empty array — resolve strictly in priority order.
+SOURCE_CHAIN=()
+if [ -n "${ORBIT_SOURCES:-}" ]; then
+  # Intentional word splitting: the chain is space-separated.
+  # shellcheck disable=SC2206,SC2086
+  SOURCE_CHAIN=(${ORBIT_SOURCES})
 fi
+if [ -z "${SOURCE_CHAIN[0]:-}" ]; then
+  if [ -n "${ORBIT_SOURCE:-}" ]; then
+    SOURCE_CHAIN=("$ORBIT_SOURCE")
+  elif [ -f "$LOCAL_ORBIT" ]; then
+    SOURCE_CHAIN=("$SCRIPT_DIR")
+  else
+    SOURCE_CHAIN=("$DEFAULT_SOURCE")
+  fi
+fi
+SOURCE="${SOURCE_CHAIN[0]}"
+chain_idx=1   # the first rotation moves to entry 2; a one-entry chain wraps to itself
 
 # Where the `orbit` runtime lands. Defaults to ~/.local/bin; override with
 # ORBIT_BIN_DIR to install into a caller-managed dir (e.g. a throwaway demo dir).
@@ -28,6 +45,21 @@ TARGET_BIN_DIR="${ORBIT_BIN_DIR:-$HOME/.local/bin}"
 TARGET_HELPER="$TARGET_BIN_DIR/orbit"
 # shellcheck disable=SC2016
 PATH_EXPORT_LINE='export PATH="$HOME/.local/bin:$PATH"'
+
+# Network resilience knobs (env-only, same style as ORBIT_SOURCE). Intermittent
+# blocks come and go by the minute and a blocked TCP connect otherwise hangs
+# for over a minute with no output — so every network operation goes through
+# net_run: up to ORBIT_RETRY attempts, ORBIT_RETRY_DELAY_SECONDS apart, each
+# attempt killed at ORBIT_TIMEOUT_SECONDS.
+ORBIT_RETRY="${ORBIT_RETRY:-3}"
+ORBIT_RETRY_DELAY_SECONDS="${ORBIT_RETRY_DELAY_SECONDS:-5}"
+ORBIT_TIMEOUT_SECONDS="${ORBIT_TIMEOUT_SECONDS:-60}"
+
+# An unattended installer must never prompt: a 404/private repo makes git ask
+# for credentials on /dev/tty (or a GUI askpass) and the run looks frozen.
+# Credential helpers and SSH keys are unaffected — only interactive prompts.
+# Exported so the agent CLIs' own internal clones inherit it too.
+export GIT_TERMINAL_PROMPT=0
 
 FORCE=0
 REPLACE_MP=0
@@ -56,9 +88,99 @@ hint_https_source() {
     printf '%s\n' "hint: no SSH key for GitHub? retry with an explicit HTTPS source:" >&2
     # The typical victim here piped install.sh from the network and has no
     # local checkout — print the curl form (same precedent as completion_hint).
-    printf '%s\n' "  curl -sL https://raw.githubusercontent.com/$SOURCE/$ORBIT_REF/install.sh \\" >&2
-    printf '%s\n' "    | ORBIT_SOURCE=https://github.com/$SOURCE.git bash -s -- $flag --replace-marketplace" >&2
+    printf '%s\n' "  ORBIT_SOURCE=https://github.com/$SOURCE.git \\" >&2
+    printf '%s\n' "    /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/$SOURCE/$ORBIT_REF/install.sh)\" _ $flag --replace-marketplace" >&2
   fi
+}
+
+# When every network attempt failed, hand the problem back to the user: the
+# remaining issue is network reachability between this machine and the source
+# host — not something install.sh can work around. A local checkout installs
+# with zero network.
+hint_local_source() {
+  local flag="${1:-}" url="$SOURCE"
+  if [ "$SOURCE_TYPE" = "path" ]; then
+    # A lone path source never touched the network — the hint is noise there.
+    # But a path entry inside a MULTI-entry chain still gets the escape hatch,
+    # pointed at the chain's first network entry (same classification order as
+    # classify_source).
+    [ "${#SOURCE_CHAIN[@]}" -gt 1 ] || return 0
+    url=""
+    local entry
+    for entry in "${SOURCE_CHAIN[@]}"; do
+      case "$entry" in
+        *://*|*@*:*)        url="$entry"; break ;;
+        /*|./*|../*|~*)     ;;  # path entry — skip
+        */*)                url="https://github.com/$entry.git"; break ;;
+      esac
+    done
+    [ -n "$url" ] || return 0
+  fi
+  [ "$SOURCE_TYPE" != "repo" ] || url="https://github.com/$SOURCE.git"
+  printf '%s\n' "hint: all retries failed — this is a network reachability issue between this" >&2
+  printf '%s\n' "  machine and the source host, not something install.sh can work around." >&2
+  printf '%s\n' "  get the repo onto this machine yourself (proxy / mirror / another network), then" >&2
+  printf '%s\n' "  install from the checkout — a local path source needs no network:" >&2
+  printf '%s\n' "    git clone $url && cd $(basename "$url" .git) && ./install.sh${flag:+ $flag}" >&2
+}
+
+# net_run <label> <cmd> [args...] — run a network command through intermittent
+# blocks: up to $ORBIT_RETRY attempts, $ORBIT_RETRY_DELAY_SECONDS apart, each
+# attempt killed at $ORBIT_TIMEOUT_SECONDS (portable per-attempt timeout —
+# macOS has no GNU timeout). The first attempt reuses the current source; each
+# RETRY rotates to the next chain source when the chain has more than one
+# entry. Every attempt's output is captured; the final attempt's output is
+# printed so the real error (DNS, timeout, refused) is never silent.
+# Must be called in a guarded context (if / ||) — it returns the last status.
+net_run() {
+  local label="$1"; shift
+  local attempt=1 rc=0 log pid timer via=""
+  log="$(mktemp)"
+  while :; do
+    [ "$attempt" -eq 1 ] || chain_advance
+    via=""
+    [ "${#SOURCE_CHAIN[@]}" -le 1 ] || via=" via $SOURCE"
+    "$@" >"$log" 2>&1 &
+    pid=$!
+    # Timeout killer: TERM the command at the cap, KILL 2s later if it
+    # lingers. The timer sleeps run in its background so an incoming TERM
+    # interrupts `wait` immediately (a foreground sleep would defer the trap),
+    # and the trap kills the timer sleep — no orphaned sleep is left behind
+    # for callers like bats to wait on.
+    (
+      trap 'kill -KILL "$s" 2>/dev/null; exit 0' TERM
+      sleep "$ORBIT_TIMEOUT_SECONDS" & s=$!
+      wait "$s" 2>/dev/null
+      kill -TERM "$pid" 2>/dev/null
+      sleep 2 & s=$!
+      wait "$s" 2>/dev/null
+      kill -KILL "$pid" 2>/dev/null
+      exit 0
+    ) >/dev/null 2>&1 &
+    timer=$!
+    wait "$pid" 2>/dev/null; rc=$?
+    kill -TERM "$timer" 2>/dev/null; wait "$timer" 2>/dev/null
+    if [ "$rc" -eq 0 ]; then rm -f "$log"; return 0; fi
+    if [ "$attempt" -ge "$ORBIT_RETRY" ]; then
+      # A killed attempt may leave an empty/partial log — name the timeout
+      # explicitly or the user sees "last error:" with nothing under it.
+      if [ "$rc" -eq 143 ] || [ "$rc" -eq 137 ]; then
+        printf '%s\n' "$label — giving up after $ORBIT_RETRY attempts (last$via timed out after ${ORBIT_TIMEOUT_SECONDS}s); last error:" >&2
+      else
+        printf '%s\n' "$label — giving up after $ORBIT_RETRY attempts (last$via); last error:" >&2
+      fi
+      sed 's/^/    /' "$log" >&2
+      rm -f "$log"
+      return 1
+    fi
+    if [ "$rc" -eq 143 ] || [ "$rc" -eq 137 ]; then
+      printf '%s\n' "$label — attempt $attempt/$ORBIT_RETRY$via timed out (${ORBIT_TIMEOUT_SECONDS}s); retrying in ${ORBIT_RETRY_DELAY_SECONDS}s ..." >&2
+    else
+      printf '%s\n' "$label — attempt $attempt/$ORBIT_RETRY$via failed; retrying in ${ORBIT_RETRY_DELAY_SECONDS}s ..." >&2
+    fi
+    sleep "$ORBIT_RETRY_DELAY_SECONDS"
+    attempt=$((attempt + 1))
+  done
 }
 
 cleanup() {
@@ -84,6 +206,16 @@ classify_source() {
         fail "cannot classify source '$SOURCE' (expected owner/repo, a git URL, or a path)"
       fi ;;
   esac
+}
+
+# Rotate $SOURCE to the next chain entry and re-classify it. No-op for a
+# one-entry chain (a pinned ORBIT_SOURCE, a local checkout, or the default) —
+# which also dodges set -u on old bash: entry 2 doesn't exist to be read.
+chain_advance() {
+  [ "${#SOURCE_CHAIN[@]}" -gt 1 ] || return 0
+  SOURCE="${SOURCE_CHAIN[$chain_idx]}"
+  chain_idx=$(( (chain_idx + 1) % ${#SOURCE_CHAIN[@]} ))
+  classify_source
 }
 
 usage() {
@@ -125,7 +257,17 @@ uninstall:
 environment:
   ORBIT_SOURCE  install source: owner/repo, a git URL, or a local path
                 (default: this checkout when cloned, else orbcli/orbit)
+  ORBIT_SOURCES space-separated source chain, taking priority over
+                ORBIT_SOURCE: each retry of a network operation rotates to
+                the next entry. try.sh supplies a shorthand/HTTPS/SSH chain
+                for demo runs; plain install.sh stays single-source.
   ORBIT_REF     branch/tag for the github raw orbit.sh download (default: main)
+  ORBIT_RETRY   attempts per network operation before giving up (default: 3)
+  ORBIT_RETRY_DELAY_SECONDS
+                seconds between attempts (default: 5)
+  ORBIT_TIMEOUT_SECONDS
+                per-attempt cap in seconds; a blocked connection is killed
+                and retried instead of hanging silently (default: 60)
 
 examples:
   ./install.sh
@@ -133,14 +275,14 @@ examples:
   ORBIT_SOURCE=orbcli/orbit ./install.sh --codex --replace-marketplace
   ./install.sh --uninstall --claude --codex
   ./install.sh --uninstall --all
-  curl -sL REMOTE/install.sh | bash
-  curl -sL REMOTE/install.sh | bash -s -- --claude
-  curl -sL REMOTE/install.sh | bash -s -- --codex
-  curl -sL REMOTE/install.sh | bash -s -- --claude --force
-  curl -sL REMOTE/install.sh | bash -s -- --opencode
-  curl -sL REMOTE/install.sh | bash -s -- --qoder
-  curl -sL REMOTE/install.sh | bash -s -- --zsh
-  curl -sL REMOTE/install.sh | bash -s -- --claude --zsh --force
+  /bin/bash -c "$(curl -fsSL REMOTE/install.sh)"
+  /bin/bash -c "$(curl -fsSL REMOTE/install.sh)" _ --claude
+  /bin/bash -c "$(curl -fsSL REMOTE/install.sh)" _ --codex
+  /bin/bash -c "$(curl -fsSL REMOTE/install.sh)" _ --claude --force
+  /bin/bash -c "$(curl -fsSL REMOTE/install.sh)" _ --opencode
+  /bin/bash -c "$(curl -fsSL REMOTE/install.sh)" _ --qoder
+  /bin/bash -c "$(curl -fsSL REMOTE/install.sh)" _ --zsh
+  /bin/bash -c "$(curl -fsSL REMOTE/install.sh)" _ --claude --zsh --force
 EOF
 }
 
@@ -162,28 +304,66 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-# --- Fetch orbit.sh from $SOURCE (path: direct; repo: raw; url: sparse clone) ---
-resolve_source() {
-  case "$SOURCE_TYPE" in
-    path)
-      [ -f "$SOURCE/orbit.sh" ] || fail "orbit.sh not found in path source: $SOURCE"
-      SRC_ORBIT="$SOURCE/orbit.sh"
-      ;;
-    repo)
-      command -v curl >/dev/null 2>&1 || fail "curl is required to download orbit.sh"
-      SRC_ORBIT="$(mktemp)"; SRC_ORBIT_TMP="$SRC_ORBIT"
-      curl -fsSL "https://raw.githubusercontent.com/$SOURCE/$ORBIT_REF/orbit.sh" -o "$SRC_ORBIT" \
-        || fail "failed to download orbit.sh from github:$SOURCE@$ORBIT_REF"
-      ;;
-    url)
-      command -v git >/dev/null 2>&1 || fail "git is required to install from a URL source"
-      CLONE_TMP="$(mktemp -d)"
-      git clone --depth 1 --filter=blob:none --sparse "$SOURCE" "$CLONE_TMP" >/dev/null 2>&1 \
-        || fail "failed to clone $SOURCE"
-      [ -f "$CLONE_TMP/orbit.sh" ] || fail "orbit.sh not found at the top level of $SOURCE"
-      SRC_ORBIT="$CLONE_TMP/orbit.sh"
-      ;;
+# Validate the network knobs before any network operation.
+for knob in ORBIT_RETRY ORBIT_RETRY_DELAY_SECONDS ORBIT_TIMEOUT_SECONDS; do
+  val=""
+  eval "val=\$$knob"
+  case "$val" in
+    ''|*[!0-9]*) fail "$knob must be a positive integer (got: $val)" ;;
   esac
+done
+unset knob val
+[ "$ORBIT_RETRY" -ge 1 ] || fail "ORBIT_RETRY must be >= 1 (got: $ORBIT_RETRY)"
+[ "$ORBIT_TIMEOUT_SECONDS" -ge 1 ] || fail "ORBIT_TIMEOUT_SECONDS must be >= 1 (got: $ORBIT_TIMEOUT_SECONDS)"
+
+# --- Fetch orbit.sh from $SOURCE (path: direct; repo: raw; url: shallow clone) ---
+resolve_source() {
+  # A lone path source needs no fetch at all — fail fast if it's missing
+  # orbit.sh. A path entry INSIDE a multi-entry chain fetches like any other
+  # entry (mixed chains rotate, so every entry must be reachable via net_run).
+  if [ "$SOURCE_TYPE" = "path" ] && [ "${#SOURCE_CHAIN[@]}" -le 1 ]; then
+    [ -f "$SOURCE/orbit.sh" ] || fail "orbit.sh not found in path source: $SOURCE"
+    SRC_ORBIT="$SOURCE/orbit.sh"
+    return 0
+  fi
+  # With a multi-entry chain a retry can rotate between repo (raw download
+  # via curl), url (git clone) and path sources, so both tools must be
+  # present; a single-entry chain needs only its own tool.
+  if [ "${#SOURCE_CHAIN[@]}" -gt 1 ]; then
+    command -v curl >/dev/null 2>&1 || fail "curl is required to download orbit.sh"
+    command -v git >/dev/null 2>&1 || fail "git is required to install from a URL source"
+  elif [ "$SOURCE_TYPE" = "repo" ]; then
+    command -v curl >/dev/null 2>&1 || fail "curl is required to download orbit.sh"
+  elif [ "$SOURCE_TYPE" = "url" ]; then
+    command -v git >/dev/null 2>&1 || fail "git is required to install from a URL source"
+  fi
+  SRC_ORBIT="$(mktemp)"; SRC_ORBIT_TMP="$SRC_ORBIT"   # repo/path-type target
+  CLONE_TMP="$(mktemp -d)"                             # url-type target
+  # Fetch via the CURRENT source (net_run rotates it across the chain on
+  # retry). repo = raw file download; url = full shallow clone (NOT
+  # --sparse: the OpenCode plugin files live in subdirectories that a
+  # sparse checkout never materializes) into a fresh dir per attempt, so a
+  # retried clone never dies on the previous attempt's partial leftovers;
+  # path = plain copy — a mixed chain (e.g. a local mirror as fallback)
+  # must have every entry be self-sufficient.
+  fetch_orbit_sh() {
+    case "$SOURCE_TYPE" in
+      repo)
+        curl -fsSL --connect-timeout 10 --max-time "$ORBIT_TIMEOUT_SECONDS" \
+          "https://raw.githubusercontent.com/$SOURCE/$ORBIT_REF/orbit.sh" -o "$SRC_ORBIT" ;;
+      url)
+        rm -rf "$CLONE_TMP"
+        git clone --depth 1 --filter=blob:none "$SOURCE" "$CLONE_TMP" ;;
+      path)
+        cp "$SOURCE/orbit.sh" "$SRC_ORBIT" ;;
+    esac
+  }
+  net_run "fetch orbit.sh" fetch_orbit_sh \
+    || { hint_local_source; fail "failed to fetch orbit.sh (last source: $SOURCE)"; }
+  if [ "$SOURCE_TYPE" = "url" ]; then
+    [ -f "$CLONE_TMP/orbit.sh" ] || fail "orbit.sh not found at the top level of $SOURCE"
+    SRC_ORBIT="$CLONE_TMP/orbit.sh"
+  fi
 }
 
 # --- Detect the rc file for the user's login shell ---
@@ -218,6 +398,24 @@ install_cli() {
   printf '%s\n' "Installed orbit command to: $TARGET_HELPER"
 }
 
+# Point the marketplace at $SOURCE (fresh add) or refresh an existing snapshot.
+claude_marketplace_ensure() {
+  claude plugin marketplace add "$SOURCE" && return 0
+  claude plugin marketplace update orbcli
+}
+
+# After marketplace add/update fails through every retry: warn and let the
+# plugin install be the decider. We deliberately do NOT parse `marketplace
+# list` output (three CLIs, three unstable formats — not worth the
+# maintenance): an existing local snapshot installs fine offline, and if
+# 'orbcli' was never installed the plugin install below fails on its own with
+# a clear error — the root cause is the add failure, not the install.
+marketplace_warn() {
+  printf '%s\n' "warning: marketplace add/update failed (see the error above). If 'orbcli' was never" >&2
+  printf '%s\n' "  installed on this machine, the plugin install below will fail too — the root" >&2
+  printf '%s\n' "  cause is the add error, not the install." >&2
+}
+
 install_claude_plugin() {
   command -v claude >/dev/null 2>&1 || fail "claude CLI not found; install Claude Code first"
   [ "$SOURCE_TYPE" != "path" ] || [ -f "$SOURCE/.claude-plugin/marketplace.json" ] \
@@ -230,9 +428,13 @@ install_claude_plugin() {
     claude plugin uninstall claude-orbit -y >/dev/null 2>&1 || true
     claude plugin marketplace remove orbcli >/dev/null 2>&1 || true
   fi
-  # Point the marketplace at $SOURCE (fresh add) or refresh an existing snapshot.
-  claude plugin marketplace add "$SOURCE" >/dev/null 2>&1 \
-    || claude plugin marketplace update orbcli >/dev/null 2>&1 || true
+  # `add` fails on a name collision (expected when the marketplace is already
+  # present) — the `update` fallback covers that. If BOTH fail through every
+  # retry it's a real error (network, bad source) and net_run has printed the
+  # CLI's own message; warn and let the install decide.
+  if ! net_run "claude plugin marketplace add/update (source: $SOURCE)" claude_marketplace_ensure; then
+    marketplace_warn
+  fi
   # Claude has no `plugin update`, so --force is a remove-then-install; a refreshed
   # marketplace snapshot (above) is what actually carries new content. Plain install
   # never removes — it just (re)installs, which is a no-op if already present.
@@ -240,8 +442,15 @@ install_claude_plugin() {
   if [ "$FORCE" -eq 1 ] || [ "$REPLACE_MP" -eq 1 ]; then
     claude plugin uninstall claude-orbit -y >/dev/null 2>&1 || true
   fi
-  claude plugin install "claude-orbit@orbcli" || { hint_https_source --claude; fail "claude plugin install failed"; }
+  net_run "claude plugin install claude-orbit@orbcli" claude plugin install "claude-orbit@orbcli" \
+    || { hint_https_source --claude; hint_local_source --claude; fail "claude plugin install failed"; }
   printf '%s\n' "Installed Orbit plugin into Claude Code"
+}
+
+# Point the marketplace at $SOURCE (fresh add) or refresh an existing snapshot.
+qoder_marketplace_ensure() {
+  qodercli plugins marketplace add "$SOURCE" && return 0
+  qodercli plugins marketplace update orbcli
 }
 
 install_qoder_plugin() {
@@ -254,9 +463,11 @@ install_qoder_plugin() {
     qodercli plugins uninstall "qoder-orbit@orbcli" -s user >/dev/null 2>&1 || true
     qodercli plugins marketplace remove orbcli >/dev/null 2>&1 || true
   fi
-  # Point the marketplace at $SOURCE (fresh add) or refresh an existing snapshot.
-  qodercli plugins marketplace add "$SOURCE" >/dev/null 2>&1 \
-    || qodercli plugins marketplace update orbcli >/dev/null 2>&1 || true
+  # Same add/update flow as install_claude_plugin: on total failure print the
+  # causal warning and let the plugin install be the decider.
+  if ! net_run "qodercli plugins marketplace add/update (source: $SOURCE)" qoder_marketplace_ensure; then
+    marketplace_warn
+  fi
   if [ "$FORCE" -eq 1 ] || [ "$REPLACE_MP" -eq 1 ]; then
     # qodercli has a real `plugins update`, so --force updates in place first;
     # only fall back to remove-then-install if the update path does not apply
@@ -269,8 +480,25 @@ install_qoder_plugin() {
     qodercli plugins uninstall "qoder-orbit@orbcli" -s user >/dev/null 2>&1 || true
   fi
   # Plain install never removes; it just installs (no-op if already present).
-  qodercli plugins install "qoder-orbit@orbcli" -s user || { hint_https_source --qoder; fail "qodercli plugin install failed"; }
+  net_run "qodercli plugins install qoder-orbit@orbcli" qodercli plugins install "qoder-orbit@orbcli" -s user \
+    || { hint_https_source --qoder; hint_local_source --qoder; fail "qodercli plugin install failed"; }
   printf '%s\n' "Installed Orbit plugin via qodercli"
+}
+
+# Point the marketplace at $SOURCE (fresh add) or refresh an existing snapshot.
+codex_marketplace_ensure() {
+  codex plugin marketplace add "$SOURCE" && return 0
+  codex plugin marketplace upgrade orbcli
+}
+
+# Re-add after a --replace-marketplace teardown; honors $ORBIT_REF for
+# git/repo sources via --ref (verified codex flag).
+codex_marketplace_readd() {
+  if [ "$SOURCE_TYPE" = "path" ]; then
+    codex plugin marketplace add "$SOURCE"
+  else
+    codex plugin marketplace add "$SOURCE" --ref "$ORBIT_REF"
+  fi
 }
 
 install_codex_plugin() {
@@ -285,20 +513,20 @@ install_codex_plugin() {
   # --replace-marketplace: tear down plugin + existing marketplace, then re-add
   # 'orbcli' from $SOURCE. Needed to switch source (e.g. local path -> git repo):
   # a plain `marketplace add` collides on the existing name and falls back to
-  # `upgrade`, which refreshes the OLD source rather than re-pointing it. For a
-  # git/repo source the re-add honors $ORBIT_REF via --ref (verified codex flag).
+  # `upgrade`, which refreshes the OLD source rather than re-pointing it.
   if [ "$REPLACE_MP" -eq 1 ]; then
     codex plugin remove "codex-orbit@orbcli" >/dev/null 2>&1 || true
     codex plugin marketplace remove orbcli >/dev/null 2>&1 || true
-    if [ "$SOURCE_TYPE" = "path" ]; then
-      codex plugin marketplace add "$SOURCE" >/dev/null 2>&1 || true
-    else
-      codex plugin marketplace add "$SOURCE" --ref "$ORBIT_REF" >/dev/null 2>&1 || true
-    fi
+    # The marketplace was just removed, so a re-add that fails through every
+    # retry is certainly fatal — fail now with the real error already printed.
+    net_run "codex plugin marketplace add (source: $SOURCE)" codex_marketplace_readd \
+      || { hint_https_source --codex; hint_local_source --codex; fail "codex plugin marketplace add failed (source: $SOURCE)"; }
   else
-    # Point the marketplace at $SOURCE (fresh add) or refresh an existing snapshot.
-    codex plugin marketplace add "$SOURCE" >/dev/null 2>&1 \
-      || codex plugin marketplace upgrade orbcli >/dev/null 2>&1 || true
+    # Same add/upgrade flow as install_claude_plugin: on total failure print
+    # the causal warning and let the plugin add be the decider.
+    if ! net_run "codex plugin marketplace add/upgrade (source: $SOURCE)" codex_marketplace_ensure; then
+      marketplace_warn
+    fi
   fi
   # Codex has no `plugin update`, so --force is a remove-then-install; the refreshed
   # marketplace snapshot (above) is what carries new content. Plain install never
@@ -307,30 +535,50 @@ install_codex_plugin() {
   if [ "$FORCE" -eq 1 ] || [ "$REPLACE_MP" -eq 1 ]; then
     codex plugin remove "codex-orbit@orbcli" >/dev/null 2>&1 || true
   fi
-  codex plugin add "codex-orbit@orbcli" || { hint_https_source --codex; fail "codex plugin add failed"; }
+  net_run "codex plugin add codex-orbit@orbcli" codex plugin add "codex-orbit@orbcli" \
+    || { hint_https_source --codex; hint_local_source --codex; fail "codex plugin add failed"; }
   printf '%s\n' "Installed Orbit plugin into Codex"
 }
 
 install_opencode_plugin() {
   local plugin_src skill_src
-  case "$SOURCE_TYPE" in
-    path)
-      plugin_src="$SOURCE/.opencode-plugin/plugin.ts"
-      skill_src="$SOURCE/skills/orbit/SKILL.md"
-      ;;
-    repo)
+  # A lone path source reads the files directly. A path entry INSIDE a
+  # multi-entry chain goes through net_run like any other entry, so a failed
+  # local mirror rotates on to the next source (see resolve_source).
+  if [ "$SOURCE_TYPE" = "path" ] && [ "${#SOURCE_CHAIN[@]}" -le 1 ]; then
+    plugin_src="$SOURCE/.opencode-plugin/plugin.ts"
+    skill_src="$SOURCE/skills/orbit/SKILL.md"
+  else
       plugin_src="$(mktemp)"; OC_PLUGIN_TMP="$plugin_src"
       skill_src="$(mktemp)"; OC_SKILL_TMP="$skill_src"
-      curl -fsSL "https://raw.githubusercontent.com/$SOURCE/$ORBIT_REF/.opencode-plugin/plugin.ts" -o "$plugin_src" \
-        || fail "failed to download plugin.ts from github:$SOURCE@$ORBIT_REF"
-      curl -fsSL "https://raw.githubusercontent.com/$SOURCE/$ORBIT_REF/skills/orbit/SKILL.md" -o "$skill_src" \
-        || fail "failed to download SKILL.md from github:$SOURCE@$ORBIT_REF"
-      ;;
-    url)
-      plugin_src="$CLONE_TMP/.opencode-plugin/plugin.ts"
-      skill_src="$CLONE_TMP/skills/orbit/SKILL.md"
-      ;;
-  esac
+      # Fetch BOTH files within one attempt via the current source (net_run
+      # rotates it on retry). repo = two raw downloads; url = copy from the
+      # resolve-time clone when it holds the files, else clone fresh (a
+      # rotated-in URL source has no local copy yet); path = plain copy —
+      # a mixed chain (e.g. a local mirror as fallback) must have every
+      # entry be self-sufficient.
+      fetch_oc_files() {
+        case "$SOURCE_TYPE" in
+          repo)
+            curl -fsSL --connect-timeout 10 --max-time "$ORBIT_TIMEOUT_SECONDS" \
+              "https://raw.githubusercontent.com/$SOURCE/$ORBIT_REF/.opencode-plugin/plugin.ts" -o "$plugin_src" \
+            && curl -fsSL --connect-timeout 10 --max-time "$ORBIT_TIMEOUT_SECONDS" \
+              "https://raw.githubusercontent.com/$SOURCE/$ORBIT_REF/skills/orbit/SKILL.md" -o "$skill_src" ;;
+          url)
+            if [ ! -f "$CLONE_TMP/.opencode-plugin/plugin.ts" ]; then
+              rm -rf "$CLONE_TMP"
+              git clone --depth 1 --filter=blob:none "$SOURCE" "$CLONE_TMP" || return 1
+            fi
+            cp "$CLONE_TMP/.opencode-plugin/plugin.ts" "$plugin_src" \
+              && cp "$CLONE_TMP/skills/orbit/SKILL.md" "$skill_src" ;;
+          path)
+            cp "$SOURCE/.opencode-plugin/plugin.ts" "$plugin_src" \
+              && cp "$SOURCE/skills/orbit/SKILL.md" "$skill_src" ;;
+        esac
+      }
+      net_run "fetch opencode plugin files" fetch_oc_files \
+        || { hint_local_source --opencode; fail "failed to fetch the OpenCode plugin files (last source: $SOURCE)"; }
+  fi
 
   [ -f "$plugin_src" ] || fail "plugin.ts not found: $plugin_src"
   [ -f "$skill_src" ] || fail "SKILL.md not found: $skill_src"
@@ -438,7 +686,7 @@ completion_hint() {
   esac
   printf '%s\n' "To install shell tab-completion:"
   if [ "$SOURCE_TYPE" = "repo" ]; then
-    printf '  %s\n' "curl -sL https://raw.githubusercontent.com/$SOURCE/$ORBIT_REF/install.sh | bash -s -- $flag"
+    printf '  %s\n' "/bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/$SOURCE/$ORBIT_REF/install.sh)\" _ $flag"
   else
     printf '  %s\n' "./install.sh $flag"
   fi

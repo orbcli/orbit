@@ -96,7 +96,7 @@ cd task-01 && claude "orbit start"
 Or bootstrap without cloning the repo first:
 
 ```bash
-curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh | bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh)"
 ```
 
 ---

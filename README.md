@@ -48,67 +48,69 @@ After working, the agent captures discoveries with `orbit jot` and folds them in
 
 **Knowledge repo as a workspace member.** A dedicated knowledge repo — design notes, PRDs, decisions — sits alongside code repos as a first-class member. The agent reads from it and writes back via branch + PR, so knowledge accumulates in one place instead of getting lost in chat or session memory. Solo devs sweep whenever; teams aggregate daily. Same mechanism, no server. See [`docs/recipes.md`](docs/recipes.md#knowledge--notes-repo-as-a-workspace-member) for the pattern.
 
-## Try it now (60 seconds, no setup)
+## Try it now (a few minutes, no setup)
 
-Spins up a two-repo mission — a probe's flight computer and its ground station, wired by a shared contract — entirely on your machine. No GitHub account, no network, no server.
+Spins up a two-repo mission — a probe's flight computer and its ground station, wired by a shared contract — entirely on your machine: the two mission repos are local fakes, so no GitHub account, no push, no server.
+
+**Claude Code**
 
 ```bash
-# Claude Code
-curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh \
-  | bash -s -- --claude
-
-# Codex
-curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh \
-  | bash -s -- --codex
-
-# OpenCode
-curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh \
-  | bash -s -- --opencode
-
-# Qoder CLI
-curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh \
-  | bash -s -- --qodercli
-
-# Runtime only (other agents)
-curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/examples/demo/try.sh | bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/orbcli/orbit/main/try.sh)" _ --claude
 ```
 
-The demo drops you into a ready workspace: add a `fuel` field to the telemetry downlink — a change that must land in *both* repos in lockstep. With `--claude`, `--codex`, or `--qodercli`, the plugin install is folded in — just `claude start`, `codex`, or `qodercli start`. The folded-in install pulls from an explicit HTTPS source (override with `ORBIT_SOURCE`), so a fresh machine without SSH keys works out of the box. Clean up with `rm -rf ~/orbit-try`.
+**Codex**
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/orbcli/orbit/main/try.sh)" _ --codex
+```
+
+**Other agents**
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/orbcli/orbit/main/try.sh)" _ --opencode  # OpenCode
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/orbcli/orbit/main/try.sh)" _ --qodercli  # Qoder CLI
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/orbcli/orbit/main/try.sh)"               # runtime only
+```
+
+(The `_` is a bash placeholder for the script name — copy a line as-is. Runtime-only skips the plugin; you maintain the skill yourself.)
+
+The demo drops you into a ready workspace: add a `fuel` field to the telemetry downlink — a change that must land in *both* repos in lockstep. With an agent flag, the plugin install is folded in — just `claude start`, `codex start`, `opencode --prompt start`, or `qodercli start`. Works on a fresh machine with no SSH keys — the demo rides a shorthand → HTTPS → SSH source chain and retries through flaky networks. Clean up with `rm -rf ~/orbit-try`.
 
 ## Quick Start
 
 ### 1. Install
 
+**One-line, with your agents' plugins**
+
 ```bash
-# From a local checkout
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh)" _ --claude --zsh
+```
+
+Flags combine freely — agent plugins: `--claude` / `--codex` / `--opencode` / `--qoder` (`--qodercli`); shell completion: `--zsh` / `--bash` (or neither).
+
+**Runtime only**
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh)"
+```
+
+**From a local clone**
+
+```bash
+git clone https://github.com/orbcli/orbit.git && cd orbit
 ./install.sh --claude          # Claude Code plugin
 ./install.sh --codex           # Codex plugin
 ./install.sh --opencode        # OpenCode plugin
 ./install.sh --qoder           # Qoder plugin (--qodercli is an alias)
 ./install.sh --claude --zsh    # add shell completion: --zsh or --bash
-
-# Or without cloning
-curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh | bash
-curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh \
-  | bash -s -- --claude --zsh
-
-# By default the marketplace source is the orbcli/orbit shorthand and the
-# agent CLI picks the clone protocol (some CLIs try SSH first). No SSH
-# key on this machine? Point it at an explicit HTTPS source instead:
-curl -sL https://raw.githubusercontent.com/orbcli/orbit/main/install.sh \
-  | ORBIT_SOURCE=https://github.com/orbcli/orbit.git bash -s -- --claude
 ```
 
-`install.sh` installs the runtime to `~/.local/bin` and puts it on your PATH. Add `--force` to reinstall an existing plugin (refreshes content from the already-configured source). Add `--replace-marketplace` to switch where a plugin's marketplace points — e.g. moving an install from a local checkout to the public git repo (`ORBIT_SOURCE=orbcli/orbit ./install.sh --codex --replace-marketplace`); plain `--force` cannot re-point the source. To uninstall: `./install.sh --uninstall --all` (or pick targets: `--uninstall --claude --codex`, `--uninstall --cli` for just the runtime, etc.).
+`install.sh` installs the runtime to `~/.local/bin` and puts it on your PATH. To uninstall: `./install.sh --uninstall --all` (or pick targets — `./install.sh --help`).
 
-Codex plugin hooks require a one-time trust review (`/hooks` in the CLI) before they run.
-
-**Codex sandbox** — Orbit writes to `.repos/` outside the workspace root,
-which Codex's sandbox may block. Orbit commands may need escalation.
-See [USAGE.md](USAGE.md#12-codex-sandbox-escalation) for the recommended approach
-and the risks of `--add-dir` / `writable_roots`.
-
-**OpenCode via npm** (alternative): add `"opencode-orbit"` to the `plugin` array in `opencode.json` — OpenCode auto-installs it at startup. The plugin self-registers its bundled skill path, so no manual skill setup is needed.
+- **[Reinstall or switch the plugin source](USAGE.md#2-prerequisites)** — `--force` refreshes from the configured source; `--replace-marketplace` re-points it.
+- **[Flaky or blocked network](USAGE.md#network-resilient-installs)** — retries, source-chain rotation, no silent failures, no hangs.
+- **[Codex notes](USAGE.md#12-codex-sandbox-escalation)** — plugin hooks need a one-time trust review (`/hooks` in the CLI); Orbit writes to `.repos/` outside the workspace root, which Codex's sandbox may block.
+- **OpenCode via npm** (alternative) — add `"opencode-orbit"` to the `plugin` array in `opencode.json`; the plugin self-registers its skill, no manual setup needed.
 
 ### 2. Configure agent launch command (one-time)
 
