@@ -71,11 +71,16 @@ test("startup hint is unconditional — a fresh session never has the skill", ()
   assert.equal(STARTUP_HINT.includes("skip"), false)
 })
 
-test("cruise hint keys on content-in-context, not loaded-this-session", () => {
+test("cruise hint keys on enumeration recall, not content-in-context", () => {
   // A compaction can wipe the skill content while a summary still
-  // "remembers" loading it — skipping on session history would misfire.
-  assert.match(CRUISE_HINT, /skip only if its content is already in your context/)
-  assert.equal(CRUISE_HINT.includes("already loaded this session"), false)
+  // "remembers" it — a presence check can't tell the two apart, so the
+  // skip condition is an enumeration-recall test on the skill's
+  // "Safety rules" section, with a source exclusion and a doubt default.
+  assert.match(CRUISE_HINT, /skip only if you can fully recall its "Safety rules" section/)
+  assert.match(CRUISE_HINT, /count included/)
+  assert.match(CRUISE_HINT, /not from a summary/)
+  assert.match(CRUISE_HINT, /on any doubt, invoke/)
+  assert.equal(CRUISE_HINT.includes("already in your context"), false)
 })
 
 test("wrapContext: tier-specific hint inside the tags, content untouched", () => {

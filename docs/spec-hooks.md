@@ -27,10 +27,16 @@
   `<!-- orbit workspace: invoke the orbit skill before your first reply -->`
   (unconditional — a fresh session never has the skill loaded). Cruise
   blocks carry `<!-- orbit workspace: invoke the orbit skill (skip only if
-  its content is already in your context) -->` — resume/compact fires
-  mid-session, and a compaction can wipe the skill CONTENT while a summary
-  still "remembers" loading it, so the condition is content-in-context, not
-  loaded-this-session. XML comment syntax keeps the hint out of the data.
+  you can fully recall its "Safety rules" section, count included, from
+  the loaded skill text — not from a summary; on any doubt, invoke) -->` —
+  resume/compact fires mid-session, and a compaction can wipe the skill
+  content while a summary still "remembers" it, so the skip condition is
+  an enumeration-recall test: a summary typically preserves at most a
+  single-rule paraphrase, not the full enumeration with its count; for a
+  diligent summarizer that does keep the full enumeration, the source
+  clause ("from the loaded skill text — not from a summary") is the named
+  defense; and "on any doubt, invoke" collapses uncertainty toward the
+  cheap reload. XML comment syntax keeps the hint out of the data.
   `orbit.sh` never emits it — hook furniture, not runtime output. In
   skill-only setups with no hook, the launch phrase (`orbit start`) remains
   the only entry point.
@@ -142,6 +148,10 @@ two safe tiers — the tier contract itself lives in
   applies the same tier set (`SAFE_SUBCOMMANDS`).
 - Fail-safe: missing `jq`, non-Bash tool, or any parse problem → no output
   (or non-zero exit), i.e. the normal confirmation prompt.
+- **Auto-approve cuts confirmation friction; it is not a security
+  boundary.** The hook can only allow, never deny — non-matching commands
+  fall through to the agent's native permission flow, which orbit neither
+  controls nor sees.
 
 ## TODO
 

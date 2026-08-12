@@ -224,12 +224,12 @@ Rules:
 
 ## Safety rules
 
-- **Never access `.repos/` directly.** All repos operations go through orbit commands.
-- **Never hand-edit orbit-managed git config.** `git config` inside a worktree writes the pool repo's *shared* config — a worktree is not a config boundary. The keys orbit manages — `remote.origin.fetch`, `fetch.prune`, `push.default`, and scoped branches' `branch.*` sections — are off-limits: edits to converged keys are reverted at the next touchpoint, and edits to `branch.*` silently corrupt tracking and prune's bookkeeping.
-- **Don't run `orbit new` if already in a workspace.** It creates at project root level.
-- **Reclaiming workspaces is not yours.** `orbit prune` deletes worktrees, branches and workspace directories across the whole project — it belongs to whoever operates the project root, not to a session working inside a workspace. If cleanup comes up, report the need and stop there; don't run it, and don't relocate to make it runnable. The same rule covers `sync --force` / `sync --branch`: they destroy or re-point the shared pool, which your workspace does not own.
-- **Default scope is the current workspace** inferred from CWD. Don't target other workspaces unless explicitly asked.
-- **Understand before your first target action on an added repo.** A *knowledge* gate, not an approval gate: before your first edit / branch / push / tag / release on a repo, complete Workflow steps 3–7 (info → memo → explore). `add` only creates a worktree — it is not understanding and never clears the gate. Normal work clears it at edit time; the trap is jumping straight from `add` to a high-impact action ("just tag a release", publish) on a repo you never read. (Gates on *understanding*, not permission — orbit takes no stance on *whether* you push or commit.)
+1. **Never access `.repos/` directly.** All repos operations go through orbit commands.
+2. **Never hand-edit orbit-managed git config.** `git config` inside a worktree writes the pool repo's *shared* config — a worktree is not a config boundary. The keys orbit manages — `remote.origin.fetch`, `fetch.prune`, `push.default`, and scoped branches' `branch.*` sections — are off-limits: edits to converged keys are reverted at the next touchpoint, and edits to `branch.*` silently corrupt tracking and prune's bookkeeping.
+3. **Don't run `orbit new` if already in a workspace.** It creates at project root level.
+4. **Reclaiming workspaces is not yours.** `orbit prune` deletes worktrees, branches and workspace directories across the whole project — it belongs to whoever operates the project root, not to a session working inside a workspace. If cleanup comes up, report the need and stop there; don't run it, and don't relocate to make it runnable. The same rule covers `sync --force` / `sync --branch`: they destroy or re-point the shared pool, which your workspace does not own.
+5. **Default scope is the current workspace** inferred from CWD. Don't target other workspaces unless explicitly asked.
+6. **Understand before your first target action on an added repo.** A *knowledge* gate, not an approval gate: before your first edit / branch / push / tag / release on a repo, complete Workflow steps 3–7 (info → memo → explore). `add` only creates a worktree — it is not understanding and never clears the gate. Normal work clears it at edit time; the trap is jumping straight from `add` to a high-impact action ("just tag a release", publish) on a repo you never read. (Gates on *understanding*, not permission — orbit takes no stance on *whether* you push or commit.)
 
 ## Safe to run freely
 

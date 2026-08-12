@@ -567,6 +567,8 @@ An orbit session runs read-only and idempotent subcommands (`context` / `repos` 
 
 The exact command tiers, the ready-to-paste allowlist snippet, and the rationale for each tier all live in [`skills/CONSTRAINTS.md`](skills/CONSTRAINTS.md#permission-and-auto-execution-policy).
 
+> Auto-approve **cuts confirmation friction; it is not a security boundary** — the hook can only allow, never deny. Non-matching commands fall back to the agent's native permission flow, which orbit neither controls nor sees.
+
 ## 18. Command Reference
 
 ```text
