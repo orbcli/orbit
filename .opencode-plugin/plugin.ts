@@ -46,13 +46,15 @@ const pluginDir = dirname(fileURLToPath(import.meta.url))
 //   startup — a fresh session never has the skill loaded, so the call is
 //     unconditional ("before your first reply");
 //   cruise  — resume/compact blocks fire mid-session, and a compaction can
-//     wipe the skill CONTENT while a summary still "remembers" loading it —
-//     so the condition is content-in-context, not loaded-this-session.
+//     wipe the skill content while a summary still "remembers" it — a
+//     presence check can't tell the two apart, so the skip condition is an
+//     enumeration-recall test (recite the "Safety rules" section in full,
+//     count included, from the loaded skill text — not from a summary).
 // XML comment syntax keeps the hint out of the data.
 const STARTUP_HINT =
   "<!-- orbit workspace: invoke the orbit skill before your first reply -->"
 const CRUISE_HINT =
-  "<!-- orbit workspace: invoke the orbit skill (skip only if its content is already in your context) -->"
+  '<!-- orbit workspace: invoke the orbit skill (skip only if you can fully recall its "Safety rules" section, count included, from the loaded skill text — not from a summary; on any doubt, invoke) -->'
 
 const wrapContext = (text: string, startup: boolean): string =>
   `<orbit-context>\n${startup ? STARTUP_HINT : CRUISE_HINT}\n${text}\n</orbit-context>`
