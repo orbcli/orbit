@@ -22,7 +22,7 @@ hook_decide() {
   printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$1" | bash "$HOOK"
 }
 
-@test "auto-approve: safe subcommands are allowed" {
+@test "auto-approve: framework-verified subcommands are allowed" {
   run hook_decide "orbit status"
   [ "$status" -eq 0 ]
   assert_contains "$output" '"permissionDecision":"allow"'
@@ -31,11 +31,22 @@ hook_decide() {
   assert_contains "$output" '"permissionDecision":"allow"'
 }
 
-@test "auto-approve: destructive tier prompts" {
-  for sub in done prune clone config new; do
+@test "auto-approve: always-prompt tiers prompt" {
+  for sub in prune clone config; do
     run hook_decide "orbit $sub"
     [ -z "$output" ]
   done
+}
+
+@test "auto-approve: framework-neutral lifecycle subcommands are not bundled" {
+  # done/new are non-destructive and reversible, but orbit cannot judge
+  # *when* running them is right — workflow timing is the user's call, so
+  # the framework takes no position: not bundled, not must-confirm. Users
+  # who want them prompt-less allowlist them in their own agent settings.
+  run hook_decide "orbit done --pr https://example.com/pr/1"
+  [ -z "$output" ]
+  run hook_decide "orbit new \"fix api\""
+  [ -z "$output" ]
 }
 
 @test "auto-approve: sync --force and --branch prompt" {

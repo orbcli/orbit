@@ -2,9 +2,10 @@
 # Orbit PreToolUse hook — auto-approve safe orbit commands.
 #
 # Reduces confirmation prompts for the agent's high-frequency orbit calls.
-# Only auto-approves read-only + idempotent-workspace-write subcommands; the
-# destructive / externally-visible ones (done, prune, clone, config, new) still
-# fall through to the normal confirmation flow.
+# Only auto-approves framework-verified subcommands (read-only + idempotent
+# workspace-write). done/new are framework-neutral (workflow timing — the
+# user's own allowlist decides); prune/clone/config always prompt. Anything
+# non-matching falls through to the normal confirmation flow.
 #
 # Contract: on a match, print a PreToolUse "allow" decision on stdout and exit 0.
 # On anything else, print nothing and exit 0 (normal confirmation preserved).
@@ -45,8 +46,10 @@ rest=${trimmed#"$first"}
 rest=${rest#"${rest%%[![:space:]]*}"}
 subcmd=${rest%%[[:space:]]*}
 
-# Auto-approve tier: read-only + idempotent workspace writes.
-# Excluded (still prompt): done, prune, clone, config, new.
+# Auto-approve tier: framework-verified only (read-only + idempotent
+# workspace writes). Excluded: prune, clone, config (always prompt —
+# destructive / shared-infrastructure); done, new (framework-neutral —
+# workflow timing, the user's own allowlist decides).
 case "$subcmd" in
   repos|info|status|context|goal|jot|memo|add|switch|sync|version|doctor|completion) ;;
   *) exit 0 ;;
