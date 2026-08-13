@@ -274,9 +274,9 @@ _push_update_to() {
   ! assert_contains "$output" "untouched by sync"
 }
 
-# --- info fetch behavior ---
+# --- info behavior (purely local — no fetch touchpoint) ---
 
-@test "info: shows upstream behind warning after fetch" {
+@test "info: never fetches — upstream warning reflects last-fetched refs" {
   local proj="$SANDBOX/info-fetch"
   local remote="$REMOTES/info-fetch.git"
   clone_remote "$remote"
@@ -295,7 +295,15 @@ _push_update_to() {
   )
   rm -rf "$tmp"
 
+  # purely local: the push is invisible to info until some fetch refreshes
+  # the tracking refs
   local stderr_output
+  stderr_output=$(cd "$proj" && orbit info myrepo 2>&1 >/dev/null || true)
+  refute_contains "$stderr_output" "new commits on origin/main"
+
+  # after any fetch (a fetching touchpoint, or the user's own), info reads
+  # the refreshed refs
+  git -C "$proj/.repos/myrepo" fetch origin main >/dev/null 2>&1
   stderr_output=$(cd "$proj" && orbit info myrepo 2>&1 >/dev/null || true)
   assert_contains "$stderr_output" "1 new commits on origin/main"
 }
@@ -529,7 +537,7 @@ _push_update_to() {
   [ "$output" = "+refs/heads/*:refs/remotes/origin/*" ]
 }
 
-@test "info: a tracked branch the remote lost does not leak git's fatal" {
+@test "info: purely local — a remote-lost tracked branch's stale ref stays put" {
   local proj="$SANDBOX/info-gone"
   clone_project "$proj"
   git -C "$proj/.repos/myrepo" branch demo main
@@ -541,9 +549,10 @@ _push_update_to() {
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' info myrepo 2>&1"
   [ "$status" -eq 0 ]
   refute_contains "$output" "couldn't find remote ref"
-  # the touchpoint really ran: the wildcard-shaped prune converged the stale ref
+  # no fetch touchpoint here: converging the stale ref is the fetching
+  # touchpoints' business (the sync variant above), not a screening command's
   run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/remotes/origin/demo-gone
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
 }
 
 # --- Pool-wide scope: --branch is root-only ---

@@ -113,7 +113,7 @@ View detailed memo of a specific repo:
 orbit info backend
 ```
 
-`orbit info` automatically fetches upstream and detects two layers of staleness:
+`orbit info` is purely local (never fetches) and detects two layers of staleness against last-fetched refs — refreshed by `orbit sync` / `orbit prune`, or your own fetch/pull:
 - **Pool behind upstream**: stderr shows `N new commits on origin/main`, run `orbit sync` to synchronize
 - **Memo behind pool HEAD**: stderr shows `memo is N commits behind HEAD`, consider updating memo
 

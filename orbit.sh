@@ -432,7 +432,7 @@ orbit_maintain_pool_config() {
   fi
 }
 
-# The touchpoint fetch discipline (sync / info / context --startup / prune):
+# The touchpoint fetch discipline (sync / prune):
 # fetch the default branch plus every remote branch a local branch tracks
 # (branch.*.merge, deduped — several local branches can share one upstream),
 # one explicit refspec per fetch, never a bare fetch: under the wildcard map
@@ -447,8 +447,8 @@ orbit_maintain_pool_config() {
 # user's territory). The default branch is the one loud failure: if it does
 # not fetch while the remote answers, the remote may have lost its default
 # branch — a repo-level event, reported. Returns non-zero iff the default
-# branch would not fetch (sync treats this as fetch failure; advisory
-# touchpoints ignore it).
+# branch would not fetch (sync treats this as fetch failure; prune ignores
+# it).
 orbit_touchpoint_fetch() {
   local repo="$1" default_br lb merge b failed=0 default_failed=0
   default_br=$(orbit_default_branch "$repo" 2>/dev/null || true)
@@ -2234,11 +2234,11 @@ orbit_info() {
   local default_branch
   default_branch=$(orbit_default_branch "$repo_dir" 2>/dev/null) || true
   if [ -n "$default_branch" ]; then
-    # Config maintenance + the touchpoint fetch discipline: named branches
-    # only (default + tracked, deduped), advisory — a fetch failure here
-    # never fails info.
+    # Config maintenance only — info is a screening command and stays purely
+    # local (zero network, like `orbit repos` and the cruise block). The
+    # staleness checks below read last-fetched refs, refreshed by the
+    # fetching touchpoints (sync / prune) or the user's own fetch/pull.
     orbit_maintain_pool_config "$repo_dir" "$root" 0
-    orbit_touchpoint_fetch "$repo_dir" || true
   fi
 
   orbit_upstream_check "$repo_name" "$root"
@@ -4038,7 +4038,9 @@ orbit_context_prime() {
 
 # reignite: session (re)start with worktrees present — rebuilds what the ignite
 # phase had read: each repo's memo card + two-layer staleness (memoBehind +
-# remoteAhead; fetches like `orbit info`, advisory only — sync stays on-demand),
+# remoteAhead; read from last-fetched refs — the startup hook is the session's
+# main path and never fetches; without an async daemon, auto-fetch here would
+# tax every session start for an advisory hint, and sync stays on-demand),
 # conditional per-repo status, and small jot queues inlined. No roster, no source.
 orbit_context_reignite() {
   local root="$1" ws="$2" ws_dir="$3" goal="$4" state_val="$5" index="$6" json_mode="$7"
@@ -4063,8 +4065,11 @@ orbit_context_reignite() {
       default_branch=$(orbit_default_branch "$root/.repos/$name" 2>/dev/null || true)
       memo_behind=0 remote_ahead=0
       if [ -n "$default_branch" ]; then
+        # Config maintenance only — the startup hook is the session's main
+        # path and stays purely local (zero network). remoteAhead below reads
+        # last-fetched refs, refreshed by sync / prune or the user's own
+        # fetch/pull.
         orbit_maintain_pool_config "$root/.repos/$name" "$root" 0
-        orbit_touchpoint_fetch "$root/.repos/$name" || true
         local_head=$(git -C "$root/.repos/$name" rev-parse "refs/heads/$default_branch" 2>/dev/null || true)
         remote_head=$(git -C "$root/.repos/$name" rev-parse "refs/remotes/origin/$default_branch" 2>/dev/null || true)
         if [ -n "$local_head" ] && [ -n "$remote_head" ] && [ "$local_head" != "$remote_head" ]; then
@@ -4130,12 +4135,11 @@ orbit_context_reignite() {
     name=$(basename "$d")
     branch=$(git -C "$d" branch --show-current 2>/dev/null || echo "detached")
 
-    # Two-layer staleness (fetch like orbit info; advisory only, no sync).
+    # Two-layer staleness (purely local, last-fetched refs; no sync).
     default_branch=$(orbit_default_branch "$root/.repos/$name" 2>/dev/null || true)
     memo_behind=0 remote_ahead=0
     if [ -n "$default_branch" ]; then
       orbit_maintain_pool_config "$root/.repos/$name" "$root" 0
-      orbit_touchpoint_fetch "$root/.repos/$name" || true
       local_head=$(git -C "$root/.repos/$name" rev-parse "refs/heads/$default_branch" 2>/dev/null || true)
       remote_head=$(git -C "$root/.repos/$name" rev-parse "refs/remotes/origin/$default_branch" 2>/dev/null || true)
       if [ -n "$local_head" ] && [ -n "$remote_head" ] && [ "$local_head" != "$remote_head" ]; then

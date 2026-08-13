@@ -44,8 +44,9 @@
   - **startup** (`orbit context --startup`): cold start (empty workspace) →
     durables (`path` / `goal` / `state`, DONE banner when done) + the pool
     roster; populated workspace → durables + each repo's memo card + two-layer
-    staleness (memoBehind + remoteAhead — fetches like `orbit info`, advisory
-    only; sync stays on-demand) + conditional per-repo status + small jot
+    staleness (memoBehind + remoteAhead — purely local, read from
+    last-fetched refs, advisory only; the hook is the session's main path
+    and never fetches; sync stays on-demand) + conditional per-repo status + small jot
     queues inlined (up to `jot.bufferSize`).
   - **cruise** (bare `orbit context`): cheap durables + conditional per-repo
     status only (pending jots with level / commits behind upstream /

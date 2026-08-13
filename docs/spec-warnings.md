@@ -80,7 +80,7 @@ orbit: <repo>: push routing converged: git config push.default upstream (stop co
 
 | Warning | Trigger (command + condition) | Source (function) | Named next action | Backstops |
 |:--------|:------------------------------|:------------------|:------------------|:----------|
-| config converged (per key, forms above) | any fetching touchpoint (`orbit sync` / `orbit info` / `orbit context --startup` / `orbit prune`) that converges a non-standard pool config value, per managed key, under the default `always` maintenance mode | `orbit_maintain_pool_config` | the parenthesized opt-out: `config git.fetchAllBranches once` / `config git.fetchPrune once` / `config git.pushUpstreamByDefault once` stops future convergence; re-applying the custom value is the user's step | — (one-shot: fires only when a write actually happens; `once`/`never` pools are untouched and unreported) |
+| config converged (per key, forms above) | any config touchpoint (`orbit sync` / `orbit info` / `orbit context --startup` / `orbit prune`) that converges a non-standard pool config value, per managed key, under the default `always` maintenance mode | `orbit_maintain_pool_config` | the parenthesized opt-out: `config git.fetchAllBranches once` / `config git.fetchPrune once` / `config git.pushUpstreamByDefault once` stops future convergence; re-applying the custom value is the user's step | — (one-shot: fires only when a write actually happens; `once`/`never` pools are untouched and unreported) |
 
 The lines deviate from the two-colon shape on purpose: their first duty is *reporting a
 mutation orbit just made* (silent config rewrites are forbidden), and the extra colons belong

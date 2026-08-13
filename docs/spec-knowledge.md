@@ -10,7 +10,7 @@ Agents fetch repo information on demand, drilling down level by level, autonomou
 
 ```
 Level 0:   orbit repos              <- global index: name + url + brief + memoBehind (purely local)
-Level 1:   orbit info <repo>        <- per-repo markdown full text + fetch + two-layer staleness detection
+Level 1:   orbit info <repo>        <- per-repo markdown full text + two-layer staleness detection (purely local)
 Level 2:   orbit add                <- worktree enters workspace
 Level 3:   agent reads/writes code  <- memo describes pool repo's stable branch (main branch) state
 ```
@@ -44,10 +44,9 @@ fi
 
 ### Layer 1: Pool Behind Upstream (`remoteAhead`)
 
-When `orbit info` executes, it automatically fetches the repo's tracking branch, then compares the local branch with `origin/<branch>`:
+`orbit info` never fetches — a screening command stays purely local. It compares the local branch with the **last-fetched** `origin/<branch>`; the refs are refreshed by the fetching touchpoints (`orbit sync` / `orbit prune`) or the user's own `git fetch` / `git pull`:
 
 ```bash
-git -C .repos/backend fetch origin main 2>/dev/null
 local_head=$(git -C .repos/backend rev-parse refs/heads/main)
 remote_head=$(git -C .repos/backend rev-parse refs/remotes/origin/main)
 if [ "$local_head" != "$remote_head" ]; then
@@ -59,10 +58,10 @@ fi
 ### Design Points
 
 - Both layers output hints to **stderr**, avoiding stdout pollution
-- `orbit repos` only checks Layer 2 (purely local, fast); `orbit info` checks both layers (triggers fetch)
+- `orbit repos` only checks Layer 2 (purely local, fast); `orbit info` checks both layers (purely local — Layer 1 reads last-fetched refs)
 - No hard thresholds are set; only distance numbers are reported, leaving the agent/human to decide whether to update
 - Layer 2 precondition: `head` field exists **and** per-repo `.md` file exists (no .md triggers the fallback path)
-- Layer 1 silently skips on fetch failure (network unavailability does not block viewing)
+- Layer 1 freshness is bounded by the last fetching touchpoint (network unavailability never blocks viewing)
 - `orbit clone` writes basic index fields (url + head) but does not generate per-repo `.md`
 
 ## Sync and Memo Cascading Relationship
