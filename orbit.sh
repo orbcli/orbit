@@ -2893,32 +2893,59 @@ $repo_group"
 #     path still exists is a damaged worktree: validation's job, never
 #     auto-repaired — the registration is the only evidence of that state)
 #   - orphan branch.<name>.* config sections whose branch no longer exists
+#     (existence ≠ having a ref: an UNBORN branch — e.g. an empty repo's
+#     orphan worktree — is alive while checked out in a NON-pool worktree,
+#     ref or no ref; the pool's own checkout does NOT protect — its
+#     clone-written branch.<default>.* stays reapable, mirroring the
+#     registration side's pool exemption)
 # Neither touches an object or a file with content, so no --force. Prints one
 # summary line when it repaired anything. --dry-run evaluates and stays
 # silent (the line's exact counts add no plan value over the dry-run's other
 # output).
 orbit_prune_repo_maintenance() {
   local repo="$1" dry_run="$2" n_reg=0 n_cfg=0 line wt_path br
+  # Porcelain prints PHYSICAL paths (macOS /var → /private/var); a logical
+  # $repo would never match the pool's own worktree line (physical-vs-logical
+  # mismatch lesson from the prune cwd-protection pitfall). Keep the logical
+  # basename for display: callers print group headers from the un-resolved
+  # path — a symlinked pool dir must not rename the line under its header.
+  local display
+  display=$(basename "$repo")
+  repo=$(cd "$repo" 2>/dev/null && pwd -P) || return 1
   if [ "$dry_run" = "0" ]; then
+    local porcelain checked_out=" " pool_wt=0
+    porcelain=$(git -C "$repo" worktree list --porcelain 2>/dev/null || true)
     while IFS= read -r line; do
       case "$line" in
         worktree\ *)
           wt_path="${line#worktree }"
+          pool_wt=0
           # The pool's own checkout is never stale, whatever the registry says.
-          [ "$wt_path" = "$repo" ] && continue
+          if [ "$wt_path" = "$repo" ]; then pool_wt=1; continue; fi
           [ -e "$wt_path" ] && continue
           if git -C "$repo" worktree remove --force "$wt_path" >/dev/null 2>&1; then
             n_reg=$((n_reg + 1))
           fi
           ;;
+        branch\ refs/heads/*)
+          # Porcelain groups the branch line under its worktree: the pool's own
+          # checkout is infrastructure, not a user worktree — its (possibly
+          # unborn) branch must not shield clone-written config residue.
+          [ "$pool_wt" = "1" ] && continue
+          checked_out="$checked_out${line#branch refs/heads/} " ;;
       esac
-    done < <(git -C "$repo" worktree list --porcelain 2>/dev/null || true)
+    done <<EOF
+$porcelain
+EOF
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       # branch.<name>.<key>: the KEY is the last segment — strip it only.
       # Truncating at the first dot would orphan "feat.v2" forever.
       br="${line#branch.}"; br="${br%.*}"
       git -C "$repo" rev-parse --verify --quiet "refs/heads/$br" >/dev/null 2>&1 && continue
+      # A branch checked out in a worktree is alive even without a ref (unborn)
+      # — its upstream config is push routing in use, not an orphan.
+      case "$checked_out" in *" $br "*) continue ;; esac
       if git -C "$repo" config --remove-section "branch.$br" 2>/dev/null; then
         n_cfg=$((n_cfg + 1))
       fi
@@ -2926,7 +2953,7 @@ orbit_prune_repo_maintenance() {
   fi
   if [ "$n_reg" -gt 0 ] || [ "$n_cfg" -gt 0 ]; then
     printf '%s: pruned %d stale worktree registration(s), %d orphan branch config section(s)\n' \
-      "$(basename "$repo")" "$n_reg" "$n_cfg"
+      "$display" "$n_reg" "$n_cfg"
     return 0
   fi
   return 1
