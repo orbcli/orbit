@@ -83,8 +83,9 @@ const invokesOrbitCli = (cmd: string): boolean =>
     return false
   })
 
-// Subcommands in tiers 1–2 (read-only + idempotent workspace-write) from
-// skills/CONSTRAINTS.md. Excluded: done, prune, clone, config, new.
+// Subcommands in the framework-verified auto-approve tiers from
+// skills/CONSTRAINTS.md. Excluded: prune, clone, config (always prompt);
+// done, new (framework-neutral — the user's own allowlist decides).
 const SAFE_SUBCOMMANDS = new Set([
   "repos", "info", "status", "context", "goal",
   "jot", "memo", "add", "switch", "sync",
@@ -93,9 +94,9 @@ const SAFE_SUBCOMMANDS = new Set([
 
 // Auto-approve decision for a single bash command line, mirroring
 // hooks/auto-approve.sh (parity contract: docs/spec-hooks.md). Only a bare,
-// un-chained orbit invocation whose subcommand is in the safe tiers is
-// allowed. All matching is token-exact — never substring: `--forceful` or an
-// `--force=x`-style spelling must not trip the destructive guard.
+// un-chained orbit invocation whose subcommand is in the framework-verified
+// tiers is allowed. All matching is token-exact — never substring:
+// `--forceful` or an `--force=x`-style spelling must not trip the destructive guard.
 const allowsOrbitCommand = (cmd: string): boolean => {
   // Refuse anything with shell chaining/redirection/substitution.
   if (/[;&|`$()><\n]/.test(cmd)) return false
@@ -204,9 +205,10 @@ const orbitPlugin = (async ({ client, $ }) => {
 
     // ── PreToolUse/Bash equivalent ──────────────────────────────────────
     // Auto-approves single, un-chained orbit invocations whose subcommand is
-    // in the two safe tiers. Destructive/externally-visible subcommands
-    // (done, prune, clone, config, new) and sync --force still prompt. The
-    // decision itself lives in allowsOrbitCommand (pure, test-covered).
+    // in the framework-verified tiers. prune/clone/config always prompt;
+    // done/new are framework-neutral (not bundled — the user's own allowlist
+    // decides); sync --force/--branch prompt. The decision itself lives in
+    // allowsOrbitCommand (pure, test-covered).
     "permission.ask": async (input, output) => {
       try {
         if (input.type !== "bash") return

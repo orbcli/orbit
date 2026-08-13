@@ -125,6 +125,7 @@ There is no standalone `orbit init` command. Commands that require `.repos/` (`c
 | `orbit doctor` | ✓ | ✓ | ✓ |
 | `orbit version` | ✓ | ✓ | ✓ |
 | `orbit completion` | ✓ | ✓ | ✓ |
+| `orbit config` | ✓ | ✓ | ✓ |
 
 ## Workspace and Repo Inference
 

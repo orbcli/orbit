@@ -128,13 +128,15 @@ fallback (the agent runs bare `orbit context` itself).
 `hooks/auto-approve.sh` (wired as `PreToolUse`/`Bash` for Claude/Qoder,
 `PermissionRequest`/`Bash` for Codex via the exit-code wrapper) auto-approves
 only a **single, un-chained** `orbit` invocation whose subcommand is in the
-two safe tiers — the tier contract itself lives in
+auto-approve tiers — the tier contract itself lives in
 [skills/CONSTRAINTS.md](../skills/CONSTRAINTS.md#permission-and-auto-execution-policy):
 
 - Refuses anything with shell chaining/redirection/substitution (`;` `&` `|`
   `` ` `` `$(` `>` `<`, newline) — the normal confirmation prompt happens.
-- Refuses non-orbit binaries and tier-3 subcommands (`done` `prune` `clone`
-  `config` `new`, and `sync --force` / `sync --branch`).
+- Refuses non-orbit binaries, the always-prompt tiers (`prune` `clone`
+  `config`, and `sync --force` / `sync --branch`), and the framework-neutral
+  workflow-timing commands (`done` `new` — not bundled; the user's own
+  allowlist decides).
 - Matching is **token-exact** (whitespace split), never substring: `sync
   --forceful` must not trip the destructive guard. Each token is normalized
   (quotes and backslashes stripped) before comparison, because `'--force'`,

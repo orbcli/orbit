@@ -89,15 +89,26 @@ test("wrapContext: tier-specific hint inside the tags, content untouched", () =>
   assert.equal(wrapContext(body, false), `<orbit-context>\n${CRUISE_HINT}\n${body}\n</orbit-context>`)
 })
 
-test("allowsOrbitCommand: safe tiers auto-approved", () => {
+test("allowsOrbitCommand: framework-verified tiers auto-approved", () => {
   assert.equal(allowsOrbitCommand("orbit status"), true)
   assert.equal(allowsOrbitCommand("orbit memo backend"), true)
   assert.equal(allowsOrbitCommand("orbit.sh jot backend \"discovery\""), true)
   assert.equal(allowsOrbitCommand("/usr/local/bin/orbit context --startup"), true)
 })
 
-test("allowsOrbitCommand: destructive / externally-visible tiers still prompt", () => {
-  for (const sub of ["done", "prune", "clone", "config", "new"]) {
+test("allowsOrbitCommand: framework-neutral lifecycle subcommands are not bundled", () => {
+  // done/new are non-destructive and reversible, but orbit cannot judge
+  // *when* running them is right — workflow timing is the user's call, so
+  // the framework takes no position: not bundled into the allow set, not
+  // marked must-confirm. Users who want them prompt-less allowlist them in
+  // their own agent settings.
+  assert.equal(allowsOrbitCommand("orbit done"), false)
+  assert.equal(allowsOrbitCommand("orbit done --pr https://example.com/pr/1"), false)
+  assert.equal(allowsOrbitCommand("orbit new \"fix api\""), false)
+})
+
+test("allowsOrbitCommand: always-prompt tiers still prompt", () => {
+  for (const sub of ["prune", "clone", "config"]) {
     assert.equal(allowsOrbitCommand(`orbit ${sub}`), false)
   }
 })

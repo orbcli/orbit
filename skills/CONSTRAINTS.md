@@ -31,28 +31,34 @@ There is one `SKILL.md` (`skills/orbit/SKILL.md`), shared by Claude, Qoder, and 
 
 Agents gate every shell command behind a user confirmation prompt. For an orbit session that runs `context` / `repos` / `info` / `status` dozens of times, that turns into confirmation fatigue. This section defines which orbit subcommands are safe to run without a prompt, why, and how to enable that per agent.
 
-### Command Tiers (by side effect)
+### Command Tiers (by where the judgment lives)
 
-The tiers below are the contract. Anything not in the first two tiers must keep prompting.
+The tiers below are the contract. **Yes** rows are bundled into the auto-approve hooks; **always-prompt** rows are a framework position; the **neutral** row is a non-position — prompting is the default, and users mirror their own workflow habit via their own static allowlist.
 
-| Tier | Subcommands | Side effect | Auto-approve? |
-|------|-------------|-------------|---------------|
-| **Read-only** | `repos` `info` `status` `context` `goal` (read) `version` `doctor` `completion` | None, or reads workspace/pool metadata. No repo, no remote, no filesystem mutation outside `.orbit` cache | **Yes** |
-| **Destructive read** | `jot --pop` | Reads *and* deletes the queue in one step — no undo, no archive. Auto-approved because it is the mandatory first half of pop→merge, but the skill must pair it with the memo write in the same turn | **Yes** |
-| **Idempotent workspace-write** | `add` `switch` `sync` (bare / with repo name) `memo` `goal` (write) `jot` (write) | Mutates the local workspace/worktree or the `.orbit` cache. Re-runnable, reversible, never touches a remote | **Yes** |
-| **Destructive / externally-visible** | `done` `prune` `clone` `config` `new` `sync --force` `sync --branch` | Marks lifecycle state, deletes worktrees/branches, writes to `.repos/`, changes project config, or resets/reshapes pool-wide state | **No — always prompt** |
+| Tier | Subcommands | Rationale | Auto-approve? |
+|------|-------------|-----------|---------------|
+| **Framework-verified — read-only** | `repos` `info` `status` `context` `version` `doctor` `completion` | orbit can verify these are safe: no side effect, or reads of workspace/pool metadata. No repo, no remote, no filesystem mutation outside `.orbit` cache | **Yes** |
+| **Framework-verified — destructive read** | `jot --pop` | Reads *and* deletes the queue in one step — no undo, no archive. Safe on two pillars: the queue is not user data (jot+memo is agent-maintained by design), and pop timing is procedural, not user rhythm — the skill mandates pairing pop with the same-turn memo write | **Yes** |
+| **Framework-verified — idempotent workspace-write** | `add` `switch` `sync` (bare / with repo name) `memo` `goal` `jot` (write) | Mutates the local workspace/worktree or the `.orbit` cache. Re-runnable, reversible, never touches a remote | **Yes** |
+| **Framework-neutral — workflow timing** | `done` `new` | Non-destructive and reversible (`done` flips lifecycle state — setting a goal reactivates the workspace; `new` only creates a guarded, `prune`-reclaimable directory). But orbit cannot judge *when* running them is right — that timing is the user's workflow. The framework takes no position: not bundled into the hooks, not marked must-confirm; users who want them prompt-less allowlist them in their own agent settings (snippet below). The behavior rules live at the skill layer (Done Trigger Rules, workspace-creation conventions) | **No — neutral (user's own allowlist may)** |
+| **Project-level / shared-infrastructure change** | `config` `clone` | Changes project-wide behavior; creates a shared-pool entry (network fetch + `.repos/` write) — structural change to state every workspace shares | **No — always prompt** |
+| **Irreversible delete/reset — runtime-gated** | `prune` `sync --force` `sync --branch` | Deletes worktrees/branches, resets or re-points the shared pool. Already machine-refused from inside any workspace at the runtime layer (process-ancestry + cwd guards); the prompt and the skill's "report the need" stance mirror that same policy at their own layers | **No — always prompt** |
 
-**Why the first tiers are safe to auto-run:** they cannot lose the user's work or leak outside the machine. Reads have no effect; the idempotent writes only build up the workspace the agent is already working in (worktrees, memos, jots) and are trivially reversible with git. **Why the last tier still prompts:** `prune` deletes worktrees and branches, `done` flips lifecycle state, `clone` writes into the shared pool, `config` changes project-wide behavior, and `sync --force`/`--branch` reset or re-point the pool every workspace shares — each is either hard to reverse or visible beyond the current workspace, so the user should stay in the loop.
+**Why the framework-verified tiers are safe to auto-run:** they cannot lose the user's work or leak outside the machine. Pure reads have no effect; `jot --pop` deletes only the agent-maintained queue, not user data; the idempotent writes only build up the workspace the agent is already working in (worktrees, memos, jots, goal) and are trivially reversible.
+
+**Why workflow-timing commands are neutral:** gating `done`/`new` buys no safety (nothing is destroyed), but orbit cannot judge *when* they should run — is the work complete, should a new workspace exist? That judgment is the user's workflow rhythm, and bundling them into the hooks would be the framework taking a position on it. So the framework ships neither an allow nor a must-confirm: the default permission flow prompts, and users mirror their own habit with their own static allowlist. The skill layer carries the behavior rules.
+
+**Why the last two tiers still prompt:** `config`/`clone` structurally change state every workspace shares; `prune`/`sync --force`/`--branch` are irreversible — and for those the runtime is the primary enforcement (root-only, machine-checked), with the hook prompt and skill guidance deliberately consistent with it. The dividing line is **where the judgment lives and whether the effect is reversible** — not "touches pool state": `sync` (ff-only) and `memo` (writes `.repos/.<repo>.md`) both write pool-side state yet stay auto-approved, because neither destroys anything. **Actor is not a dimension:** human and agent invocations are treated identically at every tier.
 
 **Flag-level exceptions are part of the contract:** a subcommand in a safe tier does not make all of its flags safe. `sync` is auto-approved bare or with a repo name; `sync --force` (pool `reset --hard`) and `sync --branch` (re-points the pool's checked-out branch and `origin/HEAD`) must prompt — and both run **only from the project root**, since they destroy or re-point state the calling workspace does not own. Hook implementations compare *normalized* tokens (quotes and backslashes stripped), because `'--force'`, `--force''` and `\-\-force` all reach the CLI as the same `--force`.
 
-`new` is excluded on purpose: new workspaces are created at project root, outside the agent's scope (see Anti-Pattern #3), so it should be human-initiated regardless of permissions.
+`new` creates at the project root from any CWD — the calling agent stays scoped to its current workspace and cannot enter the one it just created. From a non-project CWD it implicitly bootstraps a fresh project (`.repos/`) there — non-destructive and reversible; users who allowlist `new` should know they are also allowlisting that bootstrap.
 
 ### Two ways to enable it
 
-**1. Bundled auto-approve hook (zero config, recommended).** All three plugins (Claude, Codex, Qoder) ship the shared `hooks/auto-approve.sh`, wired as a `PreToolUse` / `Bash` (Claude/Qoder) or `PermissionRequest` / `Bash` (Codex) matcher; OpenCode uses the `permission.ask` hook in plugin.ts. The matching semantics (single un-chained invocation, safe tiers only, JSON allow vs exit-code translation, fail-safe to the normal prompt) are specified in [docs/spec-hooks.md](../docs/spec-hooks.md#auto-approve-semantics). Nothing to configure; installing the plugin is enough.
+**1. Bundled auto-approve hook (zero config, recommended).** All three plugins (Claude, Codex, Qoder) ship the shared `hooks/auto-approve.sh`, wired as a `PreToolUse` / `Bash` (Claude/Qoder) or `PermissionRequest` / `Bash` (Codex) matcher; OpenCode uses the `permission.ask` hook in plugin.ts. The matching semantics (single un-chained invocation, framework-verified tiers only, JSON allow vs exit-code translation, fail-safe to the normal prompt) are specified in [docs/spec-hooks.md](../docs/spec-hooks.md#auto-approve-semantics). Nothing to configure; installing the plugin is enough.
 
-**2. Static allowlist in agent settings (opt-in, for users who prefer explicit config or run skill-only without the plugin hook).** Plugins cannot declare a permission allowlist — only the user's own settings can — so this path is manual. Mirror the two safe tiers:
+**2. Static allowlist in agent settings (opt-in, for users who prefer explicit config or run skill-only without the plugin hook).** Plugins cannot declare a permission allowlist — only the user's own settings can — so this path is manual. Mirror the auto-approve tiers:
 
 *Claude Code* — `.claude/settings.json` (project) or `~/.claude/settings.json` (global):
 
@@ -117,6 +123,8 @@ The tiers below are the contract. Anything not in the first two tiers must keep 
   }
 }
 ```
+
+**Workflow-timing commands (optional, your call).** `done` and `new` are deliberately absent from every snippet above — the framework takes no position on when they should run. If your workflow wants them prompt-less, allowlist them yourself — Claude: `"Bash(orbit done:*)"`, `"Bash(orbit new:*)"`; opencode: `"orbit done": "allow"`, `"orbit done *": "allow"`, `"orbit new": "allow"`, `"orbit new *": "allow"`. Note that allowlisting `new` also allowlists its implicit project bootstrap in a non-project CWD (see the tier notes above).
 
 ### Maintainer contract
 
@@ -214,8 +222,8 @@ The skill must not blur the two classes by telling the agent to "act on all `orb
 
 Every skill must guide the agent to discover before acting:
 
-1. `orbit goal` — understand the workspace objective
-2. `orbit repos` — screen: view available repos (name + url + brief), identify potentially relevant candidates
+1. `orbit context goal` — understand the workspace objective (skip it when a held block already carries the goal; bare `orbit goal` never reads: a TTY opens an editor, non-TTY sets from stdin)
+2. `orbit repos` — screen: view available repos (name + url + brief), identify potentially relevant candidates. Skip when the startup block's pool roster already answers it (cold start); re-run to refresh when the pool may have changed or a needed field (URL) is beyond the brief
 3. `orbit info <repo>` — assess: read the memo card for candidate repos (roles: when/why to add; entry points: where to start), also detects upstream freshness and memo staleness
    - **README fallback = no memo.** When `orbit info` falls back to the README, no memo exists. The README is the repo's unprocessed façade, not decision context — it must not be treated as "enough" to skip `orbit add` or the step 7 exploration
    - Mid-work self-check: bare `orbit context` shows goal + per-repo status (jots / behind / memo state), not memos — it does not replace steps 1–3
@@ -224,7 +232,7 @@ Every skill must guide the agent to discover before acting:
 5. **Cold-start sync** — if step 3 showed remoteAhead > 0, run `orbit sync <repo>` now (before add). Agent hasn't started relying on the code yet, so sync cost is lowest. This ensures `orbit add` creates the worktree from the latest pool HEAD
 6. `orbit add <repo>` — bring into workspace only repos confirmed in step 4 as needing full source. Worktree starts from pool's current HEAD (latest after sync). `-s` suppresses the memo echo only when context is already held (from step 3 `orbit info`, the startup block, or a prior session). **Hard rule:** if step 3 showed **no memo** (README fallback), `-s` is forbidden — no memo means zero inherited context, so add without `-s` and explore in step 7
     - **No/low-memo nudge at add:** when the added repo's memo is missing or thin, `orbit add` prints a one-shot stderr naming the scope to explore — explore and write the card before done. The skill must guide the agent to act on it in step 7 (the same state resurfaces via per-repo status in bare `orbit context` and at `orbit done`)
-7. **Memo check** — first, pop any residual jot entries from a prior session: `orbit jot <repo> --pop`. Then, based on staleness info from step 3 (recalculated after sync):
+7. **Memo check** — if the startup block (hook-injected or self-run `orbit context --startup`) reported pending jots for this repo, pop them first (`orbit jot <repo> --pop`) and merge them into the same write. The startup moment is the discriminator: the session has not worked yet, so those entries are a prior session's by construction — their capturing context is gone, and this memo write is their only survival path. Same-session jots aggregate at wrap-up or the overflow warning (capture/aggregate split, [docs/spec-knowledge.md](../docs/spec-knowledge.md)). Then, based on staleness info from step 3 (recalculated after sync):
    - "memo is N commits behind HEAD" → memo is stale. Read existing memo as a base, check whether recent changes involve structural changes, only incrementally append or correct — don't rewrite. Merge any popped jot entries into the same write. If no structural changes and no jot entries, run `orbit memo <repo> --refresh` to reset the staleness counter (prevents re-evaluation in future sessions)
     - No memo or thin card (doesn't answer both card questions) → first check what you already know from prior code work this session (grep/edit/commit/trace all count as exploring). If that context is sufficient, go straight to write. Only if context is still insufficient do you trigger explore, and only within the scope orbit names for you (the add-time stderr carries it). Use `orbit memo <repo> --scaffold` for the template, then write. Include any popped jot entries
    - **This step builds understanding *now*** (read code / draft the memo skeleton) — it cannot be deferred to wrap-up. Step 10 only aggregates incremental discoveries on top of it; it is not where first-time exploration happens
@@ -252,7 +260,7 @@ Human: orbit new "fix API" --exec "claude"
                 ↓
 orbit: implicit init (if needed) → mkdir task-01 → write .orbit → exec claude in task-01/
                 ↓
-Agent launches, orbit goal → learns the workspace objective
+Agent launches, orbit context goal → learns the workspace objective
                 ↓
 Agent: orbit repos → view available repos in pool → determine which are needed
                 ↓
@@ -299,7 +307,7 @@ Brand new project, `.repos/` just initialized with no repos. Agent uses the skil
 | `orbit sync [repo...] [--force] [--branch <branch>]` | Sync pool repo to upstream latest | Needs to operate on repos inside .repos/ (ff/reset/switch branch) — `--force` / `--branch` are **root-level only** |
 | `orbit done [--pr]` | Mark task complete | Workspace-level semantic, not a git concept |
 | `orbit status` | View workspace status | Aggregates multi-repo branch/ahead/behind |
-| `orbit goal` | Read/set workspace objective | Reads/writes workspace/.orbit goal field |
+| `orbit goal` | Set/clear workspace objective (read via `orbit context goal`) | Writes workspace/.orbit goal field |
 | `orbit context [<key>] [--startup|--prime|--reignite] [--json]` | Model-facing context blocks: bare = cruise block (durables + conditional per-repo status: jots / behind / memo state); `--startup` = session-start block (cold start → pool roster; populated → memos + staleness + per-repo status); key = single value (workspace/path/goal/state); `--prime`/`--reignite` are human/debug routing targets | Aggregates workspace durables + per-repo status, needs to read .repos/ |
 | `orbit prune` | Reclaim completed workspaces | Cross-workspace cleanup of worktrees + branches — **root-level role, not the skill's** (see below) |
 | `orbit config [<key> [<value>]]` | Read/set project configuration | Needs to read/write .repos/.orbit |
@@ -435,7 +443,7 @@ Skill does not need to explain internal mechanics (prefix stripping, push.defaul
 
 1. **Directly accessing .repos/** — breaks Layer 2 boundary (including the config channel: `git config` from a worktree reaches the pool's shared config — see principle 4)
 2. **Assuming the agent understands git config internals** — use behavioral descriptions instead of config details
-3. **Agent running orbit new inside a workspace** — new workspaces are created at project root, but the agent's scope is the current workspace and it cannot switch to the new workspace. `orbit new` should be initiated by humans
+3. **Running `orbit new` expecting to land in the new workspace** — `new` creates at the project root from any CWD and does not move the caller: a workspace is entered by launching a session in it, not by the session that created it
 4. **Forcing scoped mode** — raw mode is a perfectly valid choice
 5. **Scanning the entire codebase to write descriptions without having worked in the repo** — memo should arise naturally from actual work, not as a standalone summarization task
 6. **Writing memo for repos you haven't touched** — memo writeback is on-demand; only manage repos you added and worked in
