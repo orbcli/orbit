@@ -254,8 +254,8 @@ teardown() {
   # spot, before any touchpoint runs.
   git rev-parse --verify --quiet origin/feat-x >/dev/null
 
-  # The startup block fetches the named branches only: no registration
-  # output, no config change, @{u} resolves.
+  # The startup block never fetches (session start is the main path): no
+  # registration output, no fatal leak, no config change, @{u} resolves.
   run bash -c "cd '$proj/ws1/myrepo' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' context --startup 2>&1"
   [ "$status" -eq 0 ]
   refute_contains "$output" "fetch refspec"

@@ -13,7 +13,7 @@
 - `orbit context`: output complete context of current workspace (goal + repo brief/memo + background info), agent gets all needed context with one command after entering workspace
 - `orbit repos --json` output adds `memoBehind` field: agent can judge memo freshness at Level 0
 - `orbit sync [repo...] [--force] [--branch <branch>]`: sync pool repo to upstream latest (fast-forward / force reset / switch tracking branch)
-- `orbit info` auto-fetch + two-layer staleness detection (remoteAhead / memoBehind)
+- `orbit info` two-layer staleness detection (remoteAhead / memoBehind), reading last-fetched refs
 - `orbit doctor`: environment health check (git ≥2.20 / bash ≥3.2 / jq+gh optional dependencies / `.repos/` structural integrity diagnostics)
 - `orbit jot`: lightweight discovery queue (push/pop) for recording knowledge during work, aggregated into memo at natural breakpoints — reduces per-discovery cost from ~500 tokens to ~20 tokens
 - Deterministic session-start context injection: the plugin ships a `SessionStart` hook (startup / resume / compact) that runs `orbit context` to keep the agent aware it is inside a workspace — proven on **Claude Code** and **Qoder**, zero user effort (prompts to install the runtime when `orbit` is missing).
