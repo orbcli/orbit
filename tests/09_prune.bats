@@ -2062,6 +2062,52 @@ EOF
   [ -z "$output" ]
 }
 
+@test "prune: live orphan-worktree upstream config survives pool maintenance (empty repo)" {
+  local proj="$SANDBOX/prune-empty-live"
+  local remote="$SANDBOX/empty_remote_prune-empty-live.git"
+  create_empty_bare_repo "$remote"
+  TEST_PROJECT="$proj"
+  mkdir -p "$proj"
+  cd "$proj" && orbit clone "$remote" --name emptyrepo >/dev/null 2>&1
+  cd "$proj" && orbit new "empty prune" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add emptyrepo >/dev/null 2>&1
+  cd "$SANDBOX"
+
+  # The worktree's branch is UNBORN (no ref) but checked out — its upstream
+  # config is push routing in use, never an orphan. Only the clone-written
+  # branch.main section (pool's own checkout — NOT protected) is reaped.
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "1 orphan branch config section(s)"
+  local merge
+  merge=$(git -C "$proj/.repos/emptyrepo" config --get branch.ws/dev/main.merge)
+  [ "$merge" = "refs/heads/main" ]
+  run git -C "$proj/.repos/emptyrepo" config --get branch.main.merge
+  [ -z "$output" ]
+}
+
+@test "prune: done empty-repo workspace reclaims cleanly — unborn config unprotected after D1" {
+  local proj="$SANDBOX/prune-empty-done"
+  local remote="$SANDBOX/empty_remote_prune-empty-done.git"
+  create_empty_bare_repo "$remote"
+  TEST_PROJECT="$proj"
+  mkdir -p "$proj"
+  cd "$proj" && orbit clone "$remote" --name emptyrepo >/dev/null 2>&1
+  cd "$proj" && orbit new "empty done" --name dev >/dev/null 2>&1
+  cd "$proj/dev" && orbit add emptyrepo >/dev/null 2>&1
+  cd "$proj/dev" && orbit done >/dev/null 2>&1
+  cd "$SANDBOX"
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "pruned: dev (1 worktree removed, 0 branches deleted)"
+  [ ! -d "$proj/dev" ]
+  # D1 removed the worktree first, so by maintenance time the unborn branch
+  # was checked out nowhere — guard self-limits, both sections reaped.
+  run git -C "$proj/.repos/emptyrepo" config --get-regexp '^branch\.'
+  [ -z "$output" ]
+}
+
 @test "prune: a pool that cannot scan branches blocks the live workspace — both modes" {
   local proj="$SANDBOX/prune-scan-fail"
   local remote="$REMOTES/prune-scan-fail-repo.git"
