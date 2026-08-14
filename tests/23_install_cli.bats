@@ -61,39 +61,39 @@ EOF
 @test "help: --help exits 0 and prints usage" {
   run_install --help
   [ "$status" -eq 0 ]
-  [[ "$output" == *"usage:"* ]]
+  assert_contains "$output" "usage:"
 }
 
 @test "parse: unknown flag exits 1" {
   run_install --bogus
   [ "$status" -eq 1 ]
-  [[ "$output" == *"unknown option: --bogus"* ]]
+  assert_contains "$output" "unknown option: --bogus"
 }
 
 @test "uninstall: no target is rejected" {
   run_install --uninstall
   [ "$status" -eq 1 ]
-  [[ "$output" == *"--uninstall requires at least one target"* ]]
+  assert_contains "$output" "--uninstall requires at least one target"
 }
 
 @test "uninstall: a single plugin target no-ops when its CLI is absent" {
   run_install --uninstall --claude
   [ "$status" -eq 0 ]
-  [[ "$output" == *"claude CLI not found"* ]]
+  assert_contains "$output" "claude CLI not found"
 }
 
 @test "uninstall: --all runs every target and exits 0 when nothing is installed" {
   run_install --uninstall --all
   [ "$status" -eq 0 ]
   # --all expands to all plugin targets; missing CLIs are skipped, not fatal.
-  [[ "$output" == *"codex CLI not found"* ]] || [[ "$output" == *"Removed"* ]]
-  [[ "$output" == *"Done."* ]]
+  assert_contains "$output" "codex CLI not found" || assert_contains "$output" "Removed"
+  assert_contains "$output" "Done."
 }
 
 @test "uninstall: --cli reports nothing to remove when runtime is absent" {
   run_install --uninstall --cli
   [ "$status" -eq 0 ]
-  [[ "$output" == *"nothing to remove"* ]]
+  assert_contains "$output" "nothing to remove"
 }
 
 # --- network resilience (ORBIT_RETRY / ORBIT_RETRY_DELAY_SECONDS / ORBIT_TIMEOUT_SECONDS) ---
@@ -101,19 +101,19 @@ EOF
 @test "env: non-numeric ORBIT_RETRY is rejected" {
   run env HOME="$FAKE_HOME" PATH="/usr/bin:/bin" ORBIT_RETRY=abc bash "$INSTALL"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"ORBIT_RETRY must be a positive integer"* ]]
+  assert_contains "$output" "ORBIT_RETRY must be a positive integer"
 }
 
 @test "env: ORBIT_RETRY=0 is rejected" {
   run env HOME="$FAKE_HOME" PATH="/usr/bin:/bin" ORBIT_RETRY=0 bash "$INSTALL"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"ORBIT_RETRY must be >= 1"* ]]
+  assert_contains "$output" "ORBIT_RETRY must be >= 1"
 }
 
 @test "env: non-numeric ORBIT_TIMEOUT_SECONDS is rejected" {
   run env HOME="$FAKE_HOME" PATH="/usr/bin:/bin" ORBIT_TIMEOUT_SECONDS=soon bash "$INSTALL"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"ORBIT_TIMEOUT_SECONDS must be a positive integer"* ]]
+  assert_contains "$output" "ORBIT_TIMEOUT_SECONDS must be a positive integer"
 }
 
 @test "retry: a download that fails transiently succeeds within ORBIT_RETRY" {
@@ -121,8 +121,8 @@ EOF
   run_install_mocked CURL_FAILS=2 ORBIT_SOURCE=acme/widgets \
     ORBIT_RETRY=3 ORBIT_RETRY_DELAY_SECONDS=0 bash "$INSTALL"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"attempt 1/3 failed"* ]]
-  [[ "$output" == *"Installed orbit command to:"* ]]
+  assert_contains "$output" "attempt 1/3 failed"
+  assert_contains "$output" "Installed orbit command to:"
   [ -x "$FAKE_HOME/.local/bin/orbit" ]
 }
 
@@ -131,10 +131,10 @@ EOF
   run_install_mocked CURL_FAILS=99 ORBIT_SOURCE=acme/widgets \
     ORBIT_RETRY=2 ORBIT_RETRY_DELAY_SECONDS=0 bash "$INSTALL"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"giving up after 2 attempts"* ]]
-  [[ "$output" == *"Could not resolve host"* ]]                  # the real curl error
-  [[ "$output" == *"failed to fetch orbit.sh"* ]]
-  [[ "$output" == *"local path source needs no network"* ]]      # escape-hatch hint
+  assert_contains "$output" "giving up after 2 attempts"
+  assert_contains "$output" "Could not resolve host"                  # the real curl error
+  assert_contains "$output" "failed to fetch orbit.sh"
+  assert_contains "$output" "local path source needs no network"      # escape-hatch hint
 }
 
 @test "timeout: a hung download is killed at ORBIT_TIMEOUT_SECONDS, not waited out" {
@@ -143,8 +143,8 @@ EOF
   run_install_mocked ORBIT_SOURCE=acme/widgets \
     ORBIT_RETRY=2 ORBIT_RETRY_DELAY_SECONDS=0 ORBIT_TIMEOUT_SECONDS=1 bash "$INSTALL"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"timed out (1s)"* ]]
-  [[ "$output" == *"failed to fetch orbit.sh"* ]]
+  assert_contains "$output" "timed out (1s)"
+  assert_contains "$output" "failed to fetch orbit.sh"
 }
 
 @test "timeout: a TERM-immune download is KILLed after the grace period" {
@@ -158,8 +158,8 @@ EOF
   run_install_mocked ORBIT_SOURCE=acme/widgets \
     ORBIT_RETRY=1 ORBIT_RETRY_DELAY_SECONDS=0 ORBIT_TIMEOUT_SECONDS=1 bash "$INSTALL"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"timed out after 1s"* ]]   # giving-up message names the timeout
-  [[ "$output" == *"failed to fetch orbit.sh"* ]]
+  assert_contains "$output" "timed out after 1s"   # giving-up message names the timeout
+  assert_contains "$output" "failed to fetch orbit.sh"
 }
 
 # --- marketplace error surfacing (fake claude on PATH) ---------------------
@@ -193,10 +193,10 @@ EOF
   run_install_mocked ORBIT_SOURCE="${BATS_TEST_DIRNAME}/.." \
     ORBIT_RETRY=2 ORBIT_RETRY_DELAY_SECONDS=0 bash "$INSTALL" --claude
   [ "$status" -eq 1 ]
-  [[ "$output" == *"unable to connect to github.com (fake)"* ]]   # the real add error
-  [[ "$output" == *"marketplace add/update failed"* ]]            # the causal warning…
-  [[ "$output" == *"cause is the add error"* ]]                   # …naming the root cause
-  [[ "$output" == *"not found in marketplace"* ]]                 # the install error
+  assert_contains "$output" "unable to connect to github.com (fake)"   # the real add error
+  assert_contains "$output" "marketplace add/update failed"            # the causal warning…
+  assert_contains "$output" "cause is the add error"                   # …naming the root cause
+  assert_contains "$output" "not found in marketplace"                 # the install error
 }
 
 @test "marketplace: refresh failure warns but does not block an offline install" {
@@ -204,8 +204,8 @@ EOF
   run_install_mocked ORBIT_SOURCE="${BATS_TEST_DIRNAME}/.." \
     ORBIT_RETRY=2 ORBIT_RETRY_DELAY_SECONDS=0 CLAUDE_INSTALL_OK=1 bash "$INSTALL" --claude
   [ "$status" -eq 0 ]
-  [[ "$output" == *"cause is the add error"* ]]
-  [[ "$output" == *"Installed Orbit plugin into Claude Code"* ]]
+  assert_contains "$output" "cause is the add error"
+  assert_contains "$output" "Installed Orbit plugin into Claude Code"
   [ -e "$MOCK_STATE/plugin-installed" ]
 }
 
@@ -278,7 +278,7 @@ run_install_chained() {
   [ "$(sed -n '1p' "$MOCK_STATE/calls")" = "curl https://raw.githubusercontent.com/orbcli/orbit/main/orbit.sh" ]
   [ "$(sed -n '2p' "$MOCK_STATE/calls")" = "git-clone https://github.com/orbcli/orbit.git" ]
   [ "$(wc -l < "$MOCK_STATE/calls" | tr -d ' ')" -eq 2 ]   # SSH never needed
-  [[ "$output" == *"attempt 1/3 via orbcli/orbit failed"* ]]
+  assert_contains "$output" "attempt 1/3 via orbcli/orbit failed"
   [ -x "$FAKE_HOME/.local/bin/orbit" ]
   # The clone saw the no-prompt env (installer must never ask interactively):
   [ "$(sed -n '1p' "$MOCK_STATE/gtp")" = "gtp=0" ]

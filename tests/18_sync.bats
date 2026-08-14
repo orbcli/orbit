@@ -335,7 +335,7 @@ _push_update_to() {
   [ "$status" -eq 0 ]
   assert_contains "$output" "myrepo: already up to date"
   # no false fast-forward claim when HEAD did not move
-  [[ "$output" != *"fast-forwarded"* ]]
+  refute_contains "$output" "fast-forwarded"
 }
 
 @test "sync: batch mode distinguishes fast-forwarded vs up-to-date and tallies" {
@@ -721,8 +721,8 @@ _push_update_to() {
   run bash -c "cd '$proj/dev' && PATH='$stubs':\$PATH ORBIT_ROOT='$proj' bash '$ORBIT_CMD' sync myrepo --force 2>&1"
   [ "$status" -ne 0 ]
   assert_contains "$output" "sync --force must be run from the project root"
-  [[ "$output" != *"&&"* ]]
-  [[ "$output" != *"cd $proj"* ]]
+  refute_contains "$output" "&&"
+  refute_contains "$output" "cd $proj"
 }
 
 @test "sync --force: replays the intended command when the session is clean" {

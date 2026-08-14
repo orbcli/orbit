@@ -243,5 +243,5 @@ teardown() {
   # the index entry is untouched
   run git config --file "$proj/.repos/.orbit" --get repos.myrepo.url
   [ "$status" -eq 0 ]
-  [[ "$output" != "http://evil" ]]
+  [ "$output" != "http://evil" ]
 }

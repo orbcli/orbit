@@ -53,7 +53,7 @@ teardown() {
   local brief
   brief=$(git config --file "$proj/.repos/.orbit" --get repos.myrepo.brief)
   [ "${#brief}" -le 120 ]
-  [[ "$brief" != *" "* ]] || [[ "$brief" =~ [a-z]$ ]]
+  refute_contains "$brief" " " || assert_matches "$brief" '[a-z]$'
 }
 
 @test "brief: skips HTML block elements and their plain-text contents" {
