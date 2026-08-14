@@ -107,7 +107,7 @@ git clone https://github.com/orbcli/orbit.git && cd orbit
 
 `install.sh` installs the runtime to `~/.local/bin` and puts it on your PATH. To uninstall: `./install.sh --uninstall --all` (or pick targets — `./install.sh --help`).
 
-- **[Reinstall or switch the plugin source](USAGE.md#2-prerequisites)** — `--force` refreshes from the configured source; `--replace-marketplace` re-points it.
+- **[Reinstall or switch the plugin source](USAGE.md#2-prerequisites)** — every install refreshes content; `--force` resets plugin and marketplace (also how you switch sources).
 - **[Flaky or blocked network](USAGE.md#network-resilient-installs)** — retries, source-chain rotation, no silent failures, no hangs.
 - **[Codex notes](USAGE.md#12-codex-sandbox-escalation)** — plugin hooks need a one-time trust review (`/hooks` in the CLI); Orbit writes to `.repos/` outside the workspace root, which Codex's sandbox may block.
 - **OpenCode via npm** (alternative) — add `"opencode-orbit"` to the `plugin` array in `opencode.json`; the plugin self-registers its skill, no manual setup needed.

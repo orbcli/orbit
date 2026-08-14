@@ -195,7 +195,7 @@ EOF
   [ "$status" -eq 1 ]
   assert_contains "$output" "unable to connect to github.com (fake)"   # the real add error
   assert_contains "$output" "marketplace add/update failed"            # the causal warning…
-  assert_contains "$output" "cause is the add error"                   # …naming the root cause
+  assert_contains "$output" "cause is the marketplace step"            # …naming the root cause
   assert_contains "$output" "not found in marketplace"                 # the install error
 }
 
@@ -204,9 +204,210 @@ EOF
   run_install_mocked ORBIT_SOURCE="${BATS_TEST_DIRNAME}/.." \
     ORBIT_RETRY=2 ORBIT_RETRY_DELAY_SECONDS=0 CLAUDE_INSTALL_OK=1 bash "$INSTALL" --claude
   [ "$status" -eq 0 ]
-  assert_contains "$output" "cause is the add error"
+  assert_contains "$output" "cause is the marketplace step"
   assert_contains "$output" "Installed Orbit plugin into Claude Code"
   [ -e "$MOCK_STATE/plugin-installed" ]
+}
+
+# --- refresh semantics (the add-then-always-update model) -------------------
+
+@test "marketplace: an existing marketplace is always refreshed (claude)" {
+  cat > "$MOCK_BIN/claude" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2 $3" in
+  "plugin marketplace add") echo "mp-add" >> "$MOCK_STATE/calls"; exit 0 ;;  # already exists: exit 0, no refresh
+  "plugin marketplace update") echo "mp-update" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugin install"*) exit 0 ;;
+  "plugin uninstall"*) exit 0 ;;
+esac
+exit 0
+EOF
+  chmod +x "$MOCK_BIN/claude"
+  run_install_mocked ORBIT_SOURCE="${BATS_TEST_DIRNAME}/.." \
+    ORBIT_RETRY=1 bash "$INSTALL" --claude
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'mp-update' "$MOCK_STATE/calls")" -eq 1 ]
+  assert_contains "$output" "Installed Orbit plugin into Claude Code"
+}
+
+@test "marketplace: an existing marketplace is always refreshed (qoder)" {
+  cat > "$MOCK_BIN/qodercli" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2 $3" in
+  "plugins marketplace add") echo "mp-add" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugins marketplace update") echo "mp-update" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugins install"*) exit 0 ;;
+  "plugins uninstall"*) exit 0 ;;
+esac
+exit 0
+EOF
+  chmod +x "$MOCK_BIN/qodercli"
+  run_install_mocked ORBIT_SOURCE="${BATS_TEST_DIRNAME}/.." \
+    ORBIT_RETRY=1 bash "$INSTALL" --qoder
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'mp-update' "$MOCK_STATE/calls")" -eq 1 ]   # qoder's path cache only refreshes via update
+  assert_contains "$output" "Installed Orbit plugin via qodercli"
+}
+
+@test "marketplace: codex skips upgrade for a path source (upgrade is git-only)" {
+  cat > "$MOCK_BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2 $3" in
+  "plugin marketplace add") echo "mp-add" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugin marketplace upgrade") echo "mp-upgrade" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugin add"*) echo "plugin-add" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugin remove"*) exit 0 ;;
+esac
+exit 0
+EOF
+  chmod +x "$MOCK_BIN/codex"
+  run_install_mocked ORBIT_SOURCE="${BATS_TEST_DIRNAME}/.." \
+    ORBIT_RETRY=1 bash "$INSTALL" --codex
+  [ "$status" -eq 0 ]
+  grep -q 'mp-add' "$MOCK_STATE/calls"
+  ! grep -q 'mp-upgrade' "$MOCK_STATE/calls"   # path-backed marketplaces read live
+  grep -q 'plugin-add' "$MOCK_STATE/calls"
+}
+
+@test "marketplace: codex surfaces a refused path-source add (git->path switch needs --force)" {
+  cat > "$MOCK_BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2 $3" in
+  "plugin marketplace add")
+    echo "mp-add" >> "$MOCK_STATE/calls"
+    echo "Error: marketplace 'orbcli' is already added from a different source; remove it before adding this source (fake)" >&2
+    exit 1 ;;
+  "plugin marketplace upgrade") echo "mp-upgrade" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugin add"*) exit 0 ;;
+esac
+exit 0
+EOF
+  chmod +x "$MOCK_BIN/codex"
+  run_install_mocked ORBIT_SOURCE="${BATS_TEST_DIRNAME}/.." \
+    ORBIT_RETRY=2 ORBIT_RETRY_DELAY_SECONDS=0 bash "$INSTALL" --codex
+  [ "$status" -eq 0 ]   # warn-and-continue: the plugin add proceeds from the old source
+  assert_contains "$output" "already added from a different source"   # the CLI's own message survives
+  assert_contains "$output" "marketplace add/upgrade failed"          # codex's own op pair in the warning
+  assert_contains "$output" "--force"                                 # the warning names the reset path
+  ! grep -q 'mp-upgrade' "$MOCK_STATE/calls"                          # gate held: no upgrade for a path source
+}
+
+@test "--force: claude resets plugin and marketplace before re-adding (path source, no probe)" {
+  cat > "$MOCK_BIN/claude" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2 $3" in
+  "plugin uninstall"*) echo "plugin-uninstall" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugin marketplace remove") echo "mp-remove" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugin marketplace add") echo "mp-add" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugin marketplace update") echo "mp-update" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugin install"*) echo "plugin-install" >> "$MOCK_STATE/calls"; exit 0 ;;
+esac
+exit 0
+EOF
+  chmod +x "$MOCK_BIN/claude"
+  run_install_mocked ORBIT_SOURCE="${BATS_TEST_DIRNAME}/.." \
+    ORBIT_RETRY=1 bash "$INSTALL" --claude --force
+  [ "$status" -eq 0 ]
+  # reset precedes the re-add, and the refresh still runs:
+  [ "$(sed -n '1p' "$MOCK_STATE/calls")" = "plugin-uninstall" ]
+  [ "$(sed -n '2p' "$MOCK_STATE/calls")" = "mp-remove" ]
+  grep -q 'mp-add' "$MOCK_STATE/calls"
+  grep -q 'mp-update' "$MOCK_STATE/calls"
+  grep -q 'plugin-install' "$MOCK_STATE/calls"
+}
+
+@test "--force: codex resets plugin and marketplace before re-adding (path source)" {
+  cat > "$MOCK_BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2 $3" in
+  "plugin remove"*) echo "plugin-remove" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugin marketplace remove") echo "mp-remove" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugin marketplace add") echo "mp-add" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugin marketplace upgrade") echo "mp-upgrade" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugin add"*) echo "plugin-add" >> "$MOCK_STATE/calls"; exit 0 ;;
+esac
+exit 0
+EOF
+  chmod +x "$MOCK_BIN/codex"
+  run_install_mocked ORBIT_SOURCE="${BATS_TEST_DIRNAME}/.." \
+    ORBIT_RETRY=1 bash "$INSTALL" --codex --force
+  [ "$status" -eq 0 ]
+  [ "$(sed -n '1p' "$MOCK_STATE/calls")" = "plugin-remove" ]
+  [ "$(sed -n '2p' "$MOCK_STATE/calls")" = "mp-remove" ]
+  grep -q 'mp-add' "$MOCK_STATE/calls"
+  ! grep -q 'mp-upgrade' "$MOCK_STATE/calls"   # gate held: path source skips upgrade
+  grep -q 'plugin-add' "$MOCK_STATE/calls"
+}
+
+@test "--force: skips the reset when the source is unreachable (offline)" {
+  # git fails ls-remote (offline); claude behaves like a missing/stale setup
+  cat > "$MOCK_BIN/git" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = "ls-remote" ]; then echo "fatal: unable to connect (fake)" >&2; exit 128; fi
+exec /usr/bin/git "$@"
+EOF
+  chmod +x "$MOCK_BIN/git"
+  write_fake_claude
+  write_fake_curl
+  touch "$MOCK_STATE/calls"   # the no-removal assertions below must not be vacuous
+  run_install_mocked ORBIT_SOURCE=orbcli/orbit ORBIT_RETRY=2 ORBIT_RETRY_DELAY_SECONDS=0 \
+    CLAUDE_INSTALL_OK=1 bash "$INSTALL" --claude --force
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "--force reset skipped (source unreachable)"
+  ! grep -q 'plugin-uninstall' "$MOCK_STATE/calls"
+  ! grep -q 'mp-remove' "$MOCK_STATE/calls"
+  assert_contains "$output" "Installed Orbit plugin into Claude Code"   # offline install from the existing snapshot
+}
+
+@test "--force: probes reachability and resets when the source answers (git source)" {
+  cat > "$MOCK_BIN/git" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = "ls-remote" ]; then echo "ls-remote" >> "$MOCK_STATE/calls"; exit 0; fi
+exec /usr/bin/git "$@"
+EOF
+  chmod +x "$MOCK_BIN/git"
+  cat > "$MOCK_BIN/claude" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2 $3" in
+  "plugin uninstall"*) echo "plugin-uninstall" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugin marketplace remove") echo "mp-remove" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugin marketplace add") echo "mp-add" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugin marketplace update") echo "mp-update" >> "$MOCK_STATE/calls"; exit 0 ;;
+  "plugin install"*) echo "plugin-install" >> "$MOCK_STATE/calls"; exit 0 ;;
+esac
+exit 0
+EOF
+  chmod +x "$MOCK_BIN/claude"
+  write_fake_curl
+  run_install_mocked ORBIT_SOURCE=orbcli/orbit ORBIT_RETRY=1 bash "$INSTALL" --claude --force
+  [ "$status" -eq 0 ]
+  [ "$(sed -n '1p' "$MOCK_STATE/calls")" = "ls-remote" ]
+  [ "$(sed -n '2p' "$MOCK_STATE/calls")" = "plugin-uninstall" ]
+  [ "$(sed -n '3p' "$MOCK_STATE/calls")" = "mp-remove" ]
+  grep -q 'mp-add' "$MOCK_STATE/calls"
+  grep -q 'plugin-install' "$MOCK_STATE/calls"
+}
+
+@test "opencode: plain install always refreshes (no skip when files exist)" {
+  mkdir -p "$FAKE_HOME/.config/opencode/plugins" "$FAKE_HOME/.config/opencode/skills/orbit"
+  printf 'stale-plugin\n' > "$FAKE_HOME/.config/opencode/plugins/orbit.ts"
+  printf 'stale-skill\n' > "$FAKE_HOME/.config/opencode/skills/orbit/SKILL.md"
+  run_install_mocked ORBIT_SOURCE="${BATS_TEST_DIRNAME}/.." \
+    ORBIT_RETRY=1 bash "$INSTALL" --opencode
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "skipping"
+  ! grep -q 'stale-plugin' "$FAKE_HOME/.config/opencode/plugins/orbit.ts"
+  ! grep -q 'stale-skill' "$FAKE_HOME/.config/opencode/skills/orbit/SKILL.md"
+}
+
+@test "opencode: --force wipes files dropped from older payloads (dir-level reset)" {
+  mkdir -p "$FAKE_HOME/.config/opencode/skills/orbit/references"
+  printf 'orphan\n' > "$FAKE_HOME/.config/opencode/skills/orbit/references/old.md"
+  run_install_mocked ORBIT_SOURCE="${BATS_TEST_DIRNAME}/.." \
+    ORBIT_RETRY=1 bash "$INSTALL" --opencode --force
+  [ "$status" -eq 0 ]
+  [ ! -e "$FAKE_HOME/.config/opencode/skills/orbit/references/old.md" ]
+  [ -f "$FAKE_HOME/.config/opencode/skills/orbit/SKILL.md" ]
 }
 
 # --- source chain (ORBIT_SOURCES; single source never rotates) -------------
@@ -317,8 +518,13 @@ case "$1 $2 $3" in
     n=$(( $(cat "$MOCK_STATE/add-count" 2>/dev/null || echo 0) + 1 ))
     echo "$n" > "$MOCK_STATE/add-count"
     if [ "$n" -eq 1 ]; then echo "fatal: unable to connect (fake)" >&2; exit 128; fi
+    touch "$MOCK_STATE/add-ok"   # marketplace now exists
     exit 0 ;;
-  "plugin marketplace update") exit 1 ;;
+  "plugin marketplace update")
+    # state-aware: update can only refresh a marketplace that exists — i.e.
+    # after a successful add (this is what forces a retry when add fails).
+    if [ -f "$MOCK_STATE/add-ok" ]; then echo "mp-update" >> "$MOCK_STATE/calls"; exit 0; fi
+    echo "error: no such marketplace (fake)" >&2; exit 1 ;;
   "plugin install"*) exit 0 ;;
   "plugin uninstall"*) exit 0 ;;
 esac
@@ -332,6 +538,8 @@ EOF
   [ "$(grep -c 'mp-add' "$MOCK_STATE/calls")" -eq 2 ]
   [ "$(grep 'mp-add' "$MOCK_STATE/calls" | sed -n '1p')" = "mp-add orbcli/orbit" ]
   [ "$(grep 'mp-add' "$MOCK_STATE/calls" | sed -n '2p')" = "mp-add https://github.com/orbcli/orbit.git" ]
+  # update runs exactly once — after the add that succeeded:
+  [ "$(grep -c 'mp-update' "$MOCK_STATE/calls")" -eq 1 ]
 }
 
 @test "default: no ORBIT_SOURCES means a single source and no rotation" {

@@ -453,7 +453,7 @@ if [ "$AGENT" = claude ]; then
 elif [ "$AGENT" = codex ]; then
   PLUGIN_UNINSTALL="    codex plugin remove orbit@orbcli                  # Orbit plugin (lives in Codex)"
 elif [ "$AGENT" = opencode ]; then
-  PLUGIN_UNINSTALL="    rm ~/.config/opencode/plugins/orbit.ts ~/.config/opencode/skills/orbit/SKILL.md   # Orbit plugin (lives in OpenCode)"
+  PLUGIN_UNINSTALL="    rm -rf ~/.config/opencode/skills/orbit && rm -f ~/.config/opencode/plugins/orbit.ts   # Orbit plugin (lives in OpenCode)"
 elif [ "$AGENT" = qodercli ]; then
   PLUGIN_UNINSTALL="    qodercli plugins uninstall orbit@orbcli -s user   # Orbit plugin (lives in Qoder)"
 else

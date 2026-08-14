@@ -62,7 +62,6 @@ ORBIT_TIMEOUT_SECONDS="${ORBIT_TIMEOUT_SECONDS:-60}"
 export GIT_TERMINAL_PROMPT=0
 
 FORCE=0
-REPLACE_MP=0
 UNINSTALL=0
 UNINSTALL_CLI=0
 UNINSTALL_ALL=0
@@ -89,7 +88,7 @@ hint_https_source() {
     # The typical victim here piped install.sh from the network and has no
     # local checkout — print the curl form (same precedent as completion_hint).
     printf '%s\n' "  ORBIT_SOURCE=https://github.com/$SOURCE.git \\" >&2
-    printf '%s\n' "    /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/$SOURCE/$ORBIT_REF/install.sh)\" _ $flag --replace-marketplace" >&2
+    printf '%s\n' "    /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/$SOURCE/$ORBIT_REF/install.sh)\" _ $flag --force" >&2
   fi
 }
 
@@ -221,7 +220,6 @@ chain_advance() {
 usage() {
   cat <<'EOF'
 usage: ./install.sh [--claude] [--codex] [--opencode] [--qoder|--qodercli] [--zsh] [--bash] [--force]
-                    [--replace-marketplace]
                     [--uninstall [--cli] [--all] [--claude] [--codex] [--opencode] [--qoder] [--zsh] [--bash]]
 
 Always installs the global `orbit` command to ~/.local/bin and ensures it is on
@@ -235,18 +233,12 @@ options:
   --qodercli  alias of --qoder
   --zsh       install zsh tab-completion
   --bash      install bash tab-completion
-  --force     refresh an already-installed plugin: update it in place where the
-              agent supports it, otherwise remove and reinstall. Without --force,
-              install only adds/refreshes the marketplace and installs — it never
-              removes an existing plugin.
-  --replace-marketplace
-              re-point the orbit marketplace at the current source before installing.
-              Removes the plugin and the existing 'orbcli' marketplace, then re-adds
-              the marketplace from $SOURCE (honoring $ORBIT_REF) and reinstalls the
-              plugin. Use this to switch an install from a local path to a git repo
-              (or vice versa) — plain --force only refreshes content within the
-              already-configured source and does not change where it points.
-              Implies the remove-then-reinstall behavior of --force.
+  --force     reset an already-installed plugin and its marketplace: remove both,
+              then re-add and reinstall from the current source. Use it to repair
+              a broken plugin state or to switch the marketplace source (e.g.
+              from a git repo to a local path, which some CLIs refuse via a plain
+              add). Without --force, install always adds/refreshes the marketplace
+              and (re)installs the plugin — it never removes anything.
   --help      show this message
 
 uninstall:
@@ -272,7 +264,7 @@ environment:
 examples:
   ./install.sh
   ./install.sh --claude --zsh
-  ORBIT_SOURCE=orbcli/orbit ./install.sh --codex --replace-marketplace
+  ORBIT_SOURCE=orbcli/orbit ./install.sh --codex --force
   ./install.sh --uninstall --claude --codex
   ./install.sh --uninstall --all
   /bin/bash -c "$(curl -fsSL REMOTE/install.sh)"
@@ -295,7 +287,6 @@ while [ "$#" -gt 0 ]; do
     --zsh)      INSTALL_ZSH=1; shift ;;
     --bash)     INSTALL_BASH=1; shift ;;
     --force)    FORCE=1; shift ;;
-    --replace-marketplace) REPLACE_MP=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     --cli)      UNINSTALL_CLI=1; shift ;;
     --all)      UNINSTALL_ALL=1; shift ;;
@@ -398,58 +389,80 @@ install_cli() {
   printf '%s\n' "Installed orbit command to: $TARGET_HELPER"
 }
 
-# Point the marketplace at $SOURCE (fresh add) or refresh an existing snapshot.
+# Point the marketplace at $SOURCE (fresh add) and refresh the snapshot.
+# `add` exits 0 without refreshing when the marketplace already exists — a
+# successful add says nothing about freshness — so `update` runs
+# unconditionally; it is the step that actually pulls new content.
 claude_marketplace_ensure() {
-  claude plugin marketplace add "$SOURCE" && return 0
+  claude plugin marketplace add "$SOURCE" || true
   claude plugin marketplace update orbcli
 }
 
-# After marketplace add/update fails through every retry: warn and let the
+# After the marketplace step fails through every retry: warn and let the
 # plugin install be the decider. We deliberately do NOT parse `marketplace
 # list` output (three CLIs, three unstable formats — not worth the
 # maintenance): an existing local snapshot installs fine offline, and if
 # 'orbcli' was never installed the plugin install below fails on its own with
-# a clear error — the root cause is the add failure, not the install.
+# a clear error — the root cause is the marketplace step, not the install.
+# $1 names the operation pair ("add/update" or "add/upgrade") per CLI.
 marketplace_warn() {
-  printf '%s\n' "warning: marketplace add/update failed (see the error above). If 'orbcli' was never" >&2
+  local op="${1:-add/update}"
+  printf '%s\n' "warning: marketplace $op failed (see the error above). If 'orbcli' was never" >&2
   printf '%s\n' "  installed on this machine, the plugin install below will fail too — the root" >&2
-  printf '%s\n' "  cause is the add error, not the install." >&2
+  printf '%s\n' "  cause is the marketplace step, not the install. To reset both plugin and" >&2
+  printf '%s\n' "  marketplace, re-run with --force." >&2
+}
+
+# --force removes state before re-adding, so for a network source prove the
+# source is reachable FIRST — with the same git transport the CLIs' adds use,
+# through net_run's retry/rotation and output surfacing. On failure the
+# teardown is skipped and the existing plugin/marketplace are preserved
+# (offline --force must not destroy the last working snapshot). Path sources
+# are local and need no probe.
+force_source_reachable() {
+  [ "$SOURCE_TYPE" = "path" ] && return 0
+  local url="$SOURCE"
+  [ "$SOURCE_TYPE" = "repo" ] && url="https://github.com/$SOURCE.git"
+  net_run "probe: git ls-remote $url" git ls-remote "$url" HEAD
 }
 
 install_claude_plugin() {
   command -v claude >/dev/null 2>&1 || fail "claude CLI not found; install Claude Code first"
   [ "$SOURCE_TYPE" != "path" ] || [ -f "$SOURCE/.claude-plugin/marketplace.json" ] \
     || fail "marketplace manifest not found: $SOURCE/.claude-plugin/marketplace.json"
-  # --replace-marketplace: tear down plugin + existing marketplace, then re-point
-  # 'orbcli' at $SOURCE. This is the only way to switch the source (e.g. local
-  # path -> git repo): a plain `marketplace add` collides with the existing name
-  # and falls back to `update`, which refreshes the OLD source, never re-points it.
-  if [ "$REPLACE_MP" -eq 1 ]; then
-    claude plugin uninstall claude-orbit -y >/dev/null 2>&1 || true
-    claude plugin marketplace remove orbcli >/dev/null 2>&1 || true
+  # --force: full reset — remove plugin and marketplace, then the normal flow
+  # re-adds fresh. The teardown runs only after the source proves reachable
+  # (see force_source_reachable): an offline --force skips it and keeps the
+  # existing install intact. Removal output stays visible on purpose — only
+  # the exit code is tolerated (a missing target is expected on first reset).
+  # No -y on the uninstall: that flag only skips the --prune confirmation
+  # prompt, which a bare uninstall never triggers (and some CLIs reject it).
+  if [ "$FORCE" -eq 1 ]; then
+    if force_source_reachable; then
+      claude plugin uninstall claude-orbit </dev/null || true
+      claude plugin marketplace remove orbcli </dev/null || true
+    else
+      printf '%s\n' "warning: --force reset skipped (source unreachable) — existing plugin and marketplace preserved" >&2
+    fi
   fi
-  # `add` fails on a name collision (expected when the marketplace is already
-  # present) — the `update` fallback covers that. If BOTH fail through every
-  # retry it's a real error (network, bad source) and net_run has printed the
-  # CLI's own message; warn and let the install decide.
+  # If add/update both fail through every retry it's a real error (network,
+  # bad source) and net_run has printed the CLI's own message; warn and let
+  # the install decide.
   if ! net_run "claude plugin marketplace add/update (source: $SOURCE)" claude_marketplace_ensure; then
     marketplace_warn
   fi
-  # Claude has no `plugin update`, so --force is a remove-then-install; a refreshed
-  # marketplace snapshot (above) is what actually carries new content. Plain install
-  # never removes — it just (re)installs, which is a no-op if already present.
-  # --replace-marketplace implies the same remove-then-install (source changed).
-  if [ "$FORCE" -eq 1 ] || [ "$REPLACE_MP" -eq 1 ]; then
-    claude plugin uninstall claude-orbit -y >/dev/null 2>&1 || true
-  fi
+  # A plugin (re)install re-copies content from the current marketplace
+  # snapshot, so a plain install already refreshes content — no remove
+  # needed outside --force.
   net_run "claude plugin install claude-orbit@orbcli" claude plugin install "claude-orbit@orbcli" \
     || { hint_https_source --claude; hint_local_source --claude; fail "claude plugin install failed"; }
   printf '%s\n' "Installed Orbit plugin into Claude Code"
 }
 
-# Point the marketplace at $SOURCE (fresh add) or refresh an existing snapshot.
+# Point the marketplace at $SOURCE (fresh add) and refresh the snapshot —
+# same add-then-always-update flow as claude_marketplace_ensure.
 qoder_marketplace_ensure() {
-  qodercli plugins marketplace add "$SOURCE" && return 0
+  qodercli plugins marketplace add "$SOURCE" || true
   qodercli plugins marketplace update orbcli
 }
 
@@ -457,47 +470,52 @@ install_qoder_plugin() {
   command -v qodercli >/dev/null 2>&1 || fail "qodercli not found; install the Qoder CLI first"
   [ "$SOURCE_TYPE" != "path" ] || [ -f "$SOURCE/.qoder-plugin/plugin.json" ] \
     || fail "plugin manifest not found: $SOURCE/.qoder-plugin/plugin.json"
-  # --replace-marketplace: tear down plugin + existing marketplace before re-adding
-  # from $SOURCE (see install_claude_plugin for why plain add can't switch source).
-  if [ "$REPLACE_MP" -eq 1 ]; then
-    qodercli plugins uninstall "qoder-orbit@orbcli" -s user >/dev/null 2>&1 || true
-    qodercli plugins marketplace remove orbcli >/dev/null 2>&1 || true
+  # --force: full reset — remove plugin and marketplace, then re-add fresh.
+  # Teardown is gated on source reachability (see force_source_reachable).
+  if [ "$FORCE" -eq 1 ]; then
+    if force_source_reachable; then
+      qodercli plugins uninstall "qoder-orbit@orbcli" -s user </dev/null || true
+      qodercli plugins marketplace remove orbcli </dev/null || true
+    else
+      printf '%s\n' "warning: --force reset skipped (source unreachable) — existing plugin and marketplace preserved" >&2
+    fi
   fi
   # Same add/update flow as install_claude_plugin: on total failure print the
   # causal warning and let the plugin install be the decider.
   if ! net_run "qodercli plugins marketplace add/update (source: $SOURCE)" qoder_marketplace_ensure; then
     marketplace_warn
   fi
-  if [ "$FORCE" -eq 1 ] || [ "$REPLACE_MP" -eq 1 ]; then
-    # qodercli has a real `plugins update`, so --force updates in place first;
-    # only fall back to remove-then-install if the update path does not apply
-    # (e.g. the plugin is not installed yet). For --replace-marketplace we skip
-    # the in-place update (the source changed) and force a clean reinstall.
-    if [ "$REPLACE_MP" -eq 0 ] && qodercli plugins update "qoder-orbit@orbcli" -s user >/dev/null 2>&1; then
-      printf '%s\n' "Updated Orbit plugin via qodercli"
-      return 0
-    fi
-    qodercli plugins uninstall "qoder-orbit@orbcli" -s user >/dev/null 2>&1 || true
-  fi
-  # Plain install never removes; it just installs (no-op if already present).
+  # A plugin (re)install re-copies from the marketplace cache, so plain
+  # install already refreshes content — no separate update step needed.
   net_run "qodercli plugins install qoder-orbit@orbcli" qodercli plugins install "qoder-orbit@orbcli" -s user \
     || { hint_https_source --qoder; hint_local_source --qoder; fail "qodercli plugin install failed"; }
   printf '%s\n' "Installed Orbit plugin via qodercli"
 }
 
-# Point the marketplace at $SOURCE (fresh add) or refresh an existing snapshot.
-codex_marketplace_ensure() {
-  codex plugin marketplace add "$SOURCE" && return 0
-  codex plugin marketplace upgrade orbcli
-}
-
-# Re-add after a --replace-marketplace teardown; honors $ORBIT_REF for
-# git/repo sources via --ref (verified codex flag).
-codex_marketplace_readd() {
+# Add the marketplace, honoring $ORBIT_REF for git/repo sources via --ref
+# (path sources take no ref).
+codex_marketplace_add() {
   if [ "$SOURCE_TYPE" = "path" ]; then
     codex plugin marketplace add "$SOURCE"
   else
     codex plugin marketplace add "$SOURCE" --ref "$ORBIT_REF"
+  fi
+}
+
+# Point the marketplace at $SOURCE and refresh the snapshot. `add` exits 0
+# without refreshing when the marketplace already exists, while `upgrade`
+# errors on path-backed marketplaces ("not configured as a Git marketplace")
+# — those read live and need no refresh. So gate upgrade on our own
+# SOURCE_TYPE: after a successful add the marketplace's type always matches
+# it (a colliding add no-ops on the same source or re-points). Propagate
+# add's failure when skipping upgrade, so a refused add (e.g. a git->path
+# switch, which needs --force) stays visible.
+codex_marketplace_ensure() {
+  add_failed=0; codex_marketplace_add || add_failed=1
+  if [ "$SOURCE_TYPE" != "path" ]; then
+    codex plugin marketplace upgrade orbcli
+  else
+    [ "$add_failed" -eq 0 ]
   fi
 }
 
@@ -510,31 +528,27 @@ install_codex_plugin() {
   # collide.
   [ "$SOURCE_TYPE" != "path" ] || [ -f "$SOURCE/.agents/plugins/marketplace.json" ] \
     || fail "marketplace manifest not found: $SOURCE/.agents/plugins/marketplace.json"
-  # --replace-marketplace: tear down plugin + existing marketplace, then re-add
-  # 'orbcli' from $SOURCE. Needed to switch source (e.g. local path -> git repo):
-  # a plain `marketplace add` collides on the existing name and falls back to
-  # `upgrade`, which refreshes the OLD source rather than re-pointing it.
-  if [ "$REPLACE_MP" -eq 1 ]; then
-    codex plugin remove "codex-orbit@orbcli" >/dev/null 2>&1 || true
-    codex plugin marketplace remove orbcli >/dev/null 2>&1 || true
-    # The marketplace was just removed, so a re-add that fails through every
-    # retry is certainly fatal — fail now with the real error already printed.
-    net_run "codex plugin marketplace add (source: $SOURCE)" codex_marketplace_readd \
-      || { hint_https_source --codex; hint_local_source --codex; fail "codex plugin marketplace add failed (source: $SOURCE)"; }
-  else
-    # Same add/upgrade flow as install_claude_plugin: on total failure print
-    # the causal warning and let the plugin add be the decider.
-    if ! net_run "codex plugin marketplace add/upgrade (source: $SOURCE)" codex_marketplace_ensure; then
-      marketplace_warn
+  # --force: full reset — remove plugin and marketplace, then re-add fresh.
+  # This is also the way to switch sources (e.g. git repo -> local path):
+  # codex refuses a colliding add from a different source in that direction.
+  # Teardown is gated on source reachability (see force_source_reachable).
+  if [ "$FORCE" -eq 1 ]; then
+    if force_source_reachable; then
+      codex plugin remove "codex-orbit@orbcli" </dev/null || true
+      codex plugin marketplace remove orbcli </dev/null || true
+    else
+      printf '%s\n' "warning: --force reset skipped (source unreachable) — existing plugin and marketplace preserved" >&2
     fi
   fi
-  # Codex has no `plugin update`, so --force is a remove-then-install; the refreshed
-  # marketplace snapshot (above) is what carries new content. Plain install never
-  # removes — `plugin add` is a no-op if already present.
-  # --replace-marketplace implies the same clean reinstall (source changed).
-  if [ "$FORCE" -eq 1 ] || [ "$REPLACE_MP" -eq 1 ]; then
-    codex plugin remove "codex-orbit@orbcli" >/dev/null 2>&1 || true
+  # Same add/upgrade flow as install_claude_plugin, except `upgrade` only
+  # applies to git sources (see codex_marketplace_ensure). On total failure
+  # print the causal warning and let the plugin add be the decider.
+  if ! net_run "codex plugin marketplace add/upgrade (source: $SOURCE)" codex_marketplace_ensure; then
+    marketplace_warn "add/upgrade"
   fi
+  # `plugin add` re-materializes from the current snapshot and `marketplace
+  # upgrade` already cascades to installed plugins — no remove needed
+  # outside --force.
   net_run "codex plugin add codex-orbit@orbcli" codex plugin add "codex-orbit@orbcli" \
     || { hint_https_source --codex; hint_local_source --codex; fail "codex plugin add failed"; }
   printf '%s\n' "Installed Orbit plugin into Codex"
@@ -586,24 +600,27 @@ install_opencode_plugin() {
   local plugin_dir="$HOME/.config/opencode/plugins"
   local skill_dir="$HOME/.config/opencode/skills/orbit"
 
+  # OpenCode has no marketplace/CLI — the plugin is a copied file, so a plain
+  # install always refreshes (overwrite in place). --force additionally wipes
+  # the skill directory first, so files dropped from older payloads can't
+  # linger. The skill dir is ours alone (plugins/ is shared with other
+  # plugins). The case guard is a fail-closed invariant: it only ever matches
+  # the literal assignment above — its job is to turn a future bad edit of
+  # that assignment into a refusal instead of a stray rm -rf (literal path,
+  # no trailing slash: a symlink is unlinked, never followed).
+  if [ "$FORCE" -eq 1 ]; then
+    rm -f "$plugin_dir/orbit.ts"
+    case "$skill_dir" in
+      "$HOME"/.config/opencode/skills/orbit) rm -rf "$skill_dir" ;;
+      *) fail "refusing to remove unexpected skill dir: $skill_dir" ;;
+    esac
+  fi
   mkdir -p "$plugin_dir" "$skill_dir"
 
-  # OpenCode has no marketplace/CLI — the plugin is a copied file. Mirror the
-  # install vs --force policy of the CLI agents:
-  #   plain install : skip if already present (never delete), else copy in.
-  #   --force        : remove the old file, then copy the current one (reinstall).
-  # OpenCode has no marketplace, so --replace-marketplace has nothing to re-point;
-  # treat it like --force (reinstall the copied file) rather than erroring out.
-  if [ -f "$plugin_dir/orbit.ts" ] && [ "$FORCE" -eq 0 ] && [ "$REPLACE_MP" -eq 0 ]; then
-    printf '%s\n' "OpenCode plugin already installed at $plugin_dir/orbit.ts — skipping (use --force to reinstall)"
-    return 0
-  fi
-  if [ "$FORCE" -eq 1 ] || [ "$REPLACE_MP" -eq 1 ]; then
-    rm -f "$plugin_dir/orbit.ts"
-  fi
-
-  cp "$plugin_src" "$plugin_dir/orbit.ts"
-  cp "$skill_src" "$skill_dir/SKILL.md"
+  # Copy atomically: a plain cp is truncate-then-write, so a mid-copy failure
+  # would leave a broken plugin/skill behind on the next host start.
+  cp "$plugin_src" "$plugin_dir/orbit.ts.tmp" && mv "$plugin_dir/orbit.ts.tmp" "$plugin_dir/orbit.ts"
+  cp "$skill_src" "$skill_dir/SKILL.md.tmp" && mv "$skill_dir/SKILL.md.tmp" "$skill_dir/SKILL.md"
 
   printf '%s\n' "Installed Orbit plugin into OpenCode ($plugin_dir/orbit.ts)"
   printf '%s\n' "Installed Orbit skill into OpenCode ($skill_dir/SKILL.md)"
@@ -701,28 +718,28 @@ uninstall_cli() {
 
 uninstall_claude_plugin() {
   command -v claude >/dev/null 2>&1 || { printf '%s\n' "claude CLI not found — skipping"; return 0; }
-  claude plugin uninstall claude-orbit -y >/dev/null 2>&1 || true
-  claude plugin marketplace remove orbcli >/dev/null 2>&1 || true
+  claude plugin uninstall claude-orbit </dev/null || true
+  claude plugin marketplace remove orbcli </dev/null || true
   printf '%s\n' "Removed Orbit plugin from Claude Code"
 }
 
 uninstall_codex_plugin() {
   command -v codex >/dev/null 2>&1 || { printf '%s\n' "codex CLI not found — skipping"; return 0; }
-  codex plugin remove "codex-orbit@orbcli" >/dev/null 2>&1 || true
-  codex plugin marketplace remove orbcli >/dev/null 2>&1 || true
+  codex plugin remove "codex-orbit@orbcli" </dev/null || true
+  codex plugin marketplace remove orbcli </dev/null || true
   printf '%s\n' "Removed Orbit plugin from Codex"
 }
 
 uninstall_qoder_plugin() {
   command -v qodercli >/dev/null 2>&1 || { printf '%s\n' "qodercli not found — skipping"; return 0; }
-  qodercli plugins uninstall "qoder-orbit@orbcli" -s user >/dev/null 2>&1 || true
-  qodercli plugins marketplace remove orbcli >/dev/null 2>&1 || true
+  qodercli plugins uninstall "qoder-orbit@orbcli" -s user </dev/null || true
+  qodercli plugins marketplace remove orbcli </dev/null || true
   printf '%s\n' "Removed Orbit plugin from Qoder"
 }
 
 uninstall_opencode_plugin() {
   rm -f "$HOME/.config/opencode/plugins/orbit.ts"
-  rm -f "$HOME/.config/opencode/skills/orbit/SKILL.md"
+  rm -rf "$HOME/.config/opencode/skills/orbit"
   printf '%s\n' "Removed Orbit plugin from OpenCode"
 }
 
@@ -749,14 +766,6 @@ uninstall_completion_bash() {
 }
 
 # --- Run ---
-# --replace-marketplace only makes sense while installing an agent plugin.
-if [ "$REPLACE_MP" -eq 1 ]; then
-  [ "$UNINSTALL" -eq 0 ] || fail "--replace-marketplace cannot be combined with --uninstall"
-  if [ "$INSTALL_CLAUDE" -eq 0 ] && [ "$INSTALL_CODEX" -eq 0 ] \
-    && [ "$INSTALL_OPENCODE" -eq 0 ] && [ "$INSTALL_QODER" -eq 0 ]; then
-    fail "--replace-marketplace requires an agent target: --claude, --codex, --opencode, or --qoder"
-  fi
-fi
 if [ "$UNINSTALL" -eq 1 ]; then
   # --all expands to every target
   if [ "$UNINSTALL_ALL" -eq 1 ]; then

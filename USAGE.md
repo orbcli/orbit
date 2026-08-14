@@ -39,7 +39,7 @@ The following assumes `orbit` as the command name. For global installation:
 ./install.sh --zsh
 ```
 
-If you use bash, change to `--bash`. To overwrite an existing installation, add `--force`. To switch where a plugin's marketplace points (for example from a local checkout to the public git repo), add `--replace-marketplace` — e.g. `ORBIT_SOURCE=orbcli/orbit ./install.sh --codex --replace-marketplace`. Plain `--force` only refreshes content from the already-configured source; it does not change where the source points. To uninstall: `./install.sh --uninstall --all`, or pick individual targets (`--cli`, `--claude`, `--codex`, …) — `./install.sh --help` lists them.
+If you use bash, change to `--bash`. Every install refreshes plugin content — the marketplace snapshot is updated and the plugin reinstalled from it, so re-running the installer is how you pull the latest. To repair a broken plugin state or switch where a plugin's marketplace points (for example from a local checkout to the public git repo), add `--force`: it removes the plugin and marketplace first, then re-adds from the current source — e.g. `ORBIT_SOURCE=orbcli/orbit ./install.sh --codex --force`. (If the source is unreachable, `--force` skips the reset and keeps the existing install instead.) The marketplace snapshot and plugin caches are per-user global state and the agent CLIs take no locks on them — avoid running install.sh in parallel (e.g. CI plus a local run). To uninstall: `./install.sh --uninstall --all`, or pick individual targets (`--cli`, `--claude`, `--codex`, …) — `./install.sh --help` lists them.
 
 ### Network-resilient installs
 
