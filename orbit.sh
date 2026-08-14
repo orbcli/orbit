@@ -2895,9 +2895,8 @@ $repo_group"
 #   - orphan branch.<name>.* config sections whose branch no longer exists
 #     (existence ≠ having a ref: an UNBORN branch — e.g. an empty repo's
 #     orphan worktree — is alive while checked out in a NON-pool worktree,
-#     ref or no ref; the pool's own checkout does NOT protect — its
-#     clone-written branch.<default>.* stays reapable, mirroring the
-#     registration side's pool exemption)
+#     ref or no ref; and the pool HEAD's target branch is always alive,
+#     possibly unborn — its config is first-push routing, not residue)
 # Neither touches an object or a file with content, so no --force. Prints one
 # summary line when it repaired anything. --dry-run evaluates and stays
 # silent (the line's exact counts add no plan value over the dry-run's other
@@ -2913,7 +2912,15 @@ orbit_prune_repo_maintenance() {
   display=$(basename "$repo")
   repo=$(cd "$repo" 2>/dev/null && pwd -P) || return 1
   if [ "$dry_run" = "0" ]; then
-    local porcelain checked_out=" " pool_wt=0
+    local porcelain checked_out=" " pool_wt=0 head_br
+    # The pool HEAD's target branch is always protected below, ref or no ref:
+    # its branch.<name>.* section is live first-push routing (e.g. an empty
+    # repo's clone-written default), never residue. In non-empty repos this is
+    # invisible — the ref check already keeps it. Premise: the pool's HEAD is
+    # a symref. No orbit command ever detaches it (sync only fetches;
+    # add/switch only touch worktrees) — if a future command detaches the pool
+    # HEAD, this exemption silently no-ops (head_br comes out empty).
+    head_br=$(git -C "$repo" symbolic-ref --short -q HEAD 2>/dev/null || true)
     porcelain=$(git -C "$repo" worktree list --porcelain 2>/dev/null || true)
     while IFS= read -r line; do
       case "$line" in
@@ -2946,6 +2953,9 @@ EOF
       # A branch checked out in a worktree is alive even without a ref (unborn)
       # — its upstream config is push routing in use, not an orphan.
       case "$checked_out" in *" $br "*) continue ;; esac
+      # The pool HEAD's target branch (possibly unborn) — live first-push
+      # routing, protected whether or not the repo is empty.
+      [ -n "$head_br" ] && [ "$br" = "$head_br" ] && continue
       if git -C "$repo" config --remove-section "branch.$br" 2>/dev/null; then
         n_cfg=$((n_cfg + 1))
       fi
