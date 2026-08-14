@@ -58,6 +58,19 @@
   merge; "behind" = sync; "over budget" = curate).
 - **Fail-safe.** Every hook is a silent no-op when orbit is missing or CWD is
   not in a workspace (`orbit context` fails fast in both cases).
+- **Host-CWD anchoring.** Hook CWD is not a cross-host contract: a host may
+  run hooks from a directory other than the project (Claude Code only
+  promises "the current directory"; codex sets it to the session cwd). The
+  shared scripts therefore anchor to the host-injected project dir before
+  detection — `CLAUDE_PROJECT_DIR` (Claude Code's documented contract, also
+  injected by Qoder), then `QODER_PROJECT_DIR` (Qoder's documented
+  fallback) — guarded by `[ -n ]`/`[ -d ]` so empty/unset/invalid values
+  and env-less hosts (codex) pass through as a no-op. The OpenCode plugin
+  anchors its shell to the SDK-provided `PluginInput.directory` via
+  `.cwd(...)` instead of inheriting the opencode process cwd —
+  `directory` is per-instance (opencode materializes plugin state per
+  project directory, serve mode included), so the anchor names the
+  session's project in every run mode.
 
 ## Event routing
 

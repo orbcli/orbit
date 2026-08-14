@@ -147,3 +147,27 @@ test("allowsOrbitCommand: sync --branch prompts (pool-wide state, root-only)", (
   // Lookalike must not trip it.
   assert.equal(allowsOrbitCommand("orbit sync --branches"), true)
 })
+
+test("rawContext anchors the shell to PluginInput.directory", async () => {
+  // Bun's `$` inherits the opencode process cwd, which equals the project
+  // only when opencode was launched from it — the plugin must anchor to the
+  // SDK-provided directory itself (serve/desktop modes differ).
+  const cwdCalls: string[] = []
+  const fake$ = ((_strings: TemplateStringsArray) => {
+    const chain = {
+      cwd(d: string) { cwdCalls.push(d); return chain },
+      nothrow() { return chain },
+      quiet() { return chain },
+      // thenable: rawContext awaits the chain
+      then(onFulfilled: (v: { exitCode: number; text: () => string }) => unknown) {
+        return Promise.resolve({ exitCode: 0, text: () => "CTX" }).then(onFulfilled)
+      },
+    }
+    return chain
+  })
+  const hooks = await orbitPlugin({ client: {}, $: fake$, directory: "/proj/dir" } as never)
+  const output = { system: [] as string[] }
+  await hooks["experimental.chat.system.transform"]!({ sessionID: "t1" } as never, output as never)
+  assert.deepEqual(cwdCalls, ["/proj/dir"])
+  assert.match(output.system[0] ?? "", /CTX/)
+})
