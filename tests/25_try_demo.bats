@@ -75,45 +75,45 @@ run_try() {
   # One curl fetch, one install run. try.sh supplies the demo chain via
   # ORBIT_SOURCES but never invents a pinned ORBIT_SOURCE.
   [ "$(grep -c 'curl call' "$MOCK_STATE/calls")" -eq 1 ]
-  [[ "$(grep 'ORBIT_SOURCE=' "$MOCK_STATE/calls")" == *"<unset>"* ]]
+  assert_contains "$(grep 'ORBIT_SOURCE=' "$MOCK_STATE/calls")" "<unset>"
   [ "$(grep 'ORBIT_SOURCES=' "$MOCK_STATE/calls")" = \
     "ORBIT_SOURCES=orbcli/orbit https://github.com/orbcli/orbit.git git@github.com:orbcli/orbit.git" ]
-  [[ "$output" == *"plugin installed."* ]]
-  [[ "$output" == *"✓ Ready."* ]]
+  assert_contains "$output" "plugin installed."
+  assert_contains "$output" "✓ Ready."
 }
 
 @test "try.sh: a user-set ORBIT_SOURCE passes through untouched (no chain added)" {
   run_try CURL_FAILS=0 INSTALL_FAILS=0 ORBIT_SOURCE="https://pinned.example/orbit.git"
   [ "$status" -eq 0 ]
   [ "$(grep 'ORBIT_SOURCE=' "$MOCK_STATE/calls")" = "ORBIT_SOURCE=https://pinned.example/orbit.git" ]
-  [[ "$(grep 'ORBIT_SOURCES=' "$MOCK_STATE/calls")" == *"<unset>"* ]]
-  [[ "$output" == *"plugin installed."* ]]
+  assert_contains "$(grep 'ORBIT_SOURCES=' "$MOCK_STATE/calls")" "<unset>"
+  assert_contains "$output" "plugin installed."
 }
 
 @test "try.sh: a user-set ORBIT_SOURCES passes through untouched" {
   run_try CURL_FAILS=0 INSTALL_FAILS=0 ORBIT_SOURCES="custom/chain only-one"
   [ "$status" -eq 0 ]
   [ "$(grep 'ORBIT_SOURCES=' "$MOCK_STATE/calls")" = "ORBIT_SOURCES=custom/chain only-one" ]
-  [[ "$output" == *"plugin installed."* ]]
+  assert_contains "$output" "plugin installed."
 }
 
 @test "try.sh: the install.sh fetch retries through a transient failure" {
   run_try CURL_FAILS=1 INSTALL_FAILS=0
   [ "$status" -eq 0 ]
   [ "$(grep -c 'curl call' "$MOCK_STATE/calls")" -eq 2 ]   # one retry, still one fetch
-  [[ "$output" == *"plugin installed."* ]]
+  assert_contains "$output" "plugin installed."
 }
 
 @test "try.sh: a failing install shows its real error, never fails silently" {
   run_try CURL_FAILS=0 INSTALL_FAILS=1
   [ "$status" -eq 0 ]   # plugin step degrades to manual launch instructions
-  [[ "$output" == *"simulated install failure (fake)"* ]]
-  [[ "$output" == *"falling back to manual launch instructions"* ]]
+  assert_contains "$output" "simulated install failure (fake)"
+  assert_contains "$output" "falling back to manual launch instructions"
 }
 
 @test "try.sh: a non-numeric ORBIT_RETRY is rejected before any network use" {
   run_try ORBIT_RETRY=abc
   [ "$status" -eq 1 ]
-  [[ "$output" == *"ORBIT_RETRY must be a positive integer"* ]]
+  assert_contains "$output" "ORBIT_RETRY must be a positive integer"
   [ ! -e "$TRY_DIR/upstream" ]   # died in preflight, before any seeding/fetch
 }

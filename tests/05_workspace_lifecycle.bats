@@ -45,7 +45,7 @@ teardown() {
   cd "$proj" && orbit new "first task" >/dev/null 2>&1
   local created
   created=$(git config --file "$proj/task-01/.orbit" --get workspace.created)
-  [[ "$created" =~ ^[0-9]+$ ]]
+  assert_matches "$created" '^[0-9]+$'
 }
 
 @test "new: --name creates custom-named workspace directory" {
@@ -126,7 +126,7 @@ teardown() {
   cd "$proj/dev" && orbit done >/dev/null 2>&1
   local done_at
   done_at=$(git config --file "$proj/dev/.orbit" --get workspace.done-at)
-  [[ "$done_at" =~ ^[0-9]+$ ]]
+  assert_matches "$done_at" '^[0-9]+$'
 }
 
 @test "done: writes done-date in ISO format" {
@@ -139,7 +139,7 @@ teardown() {
   cd "$proj/dev" && orbit done >/dev/null 2>&1
   local done_date
   done_date=$(git config --file "$proj/dev/.orbit" --get workspace.done-date)
-  [[ "$done_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
+  assert_matches "$done_date" '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
 }
 
 @test "done: --pr writes PR URL to [pr] section" {

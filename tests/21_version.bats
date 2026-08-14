@@ -14,7 +14,7 @@ teardown() {
 @test "version: prints a semver on stdout and exits 0" {
   run bash -c "bash '$ORBIT_CMD' version"
   [ "$status" -eq 0 ]
-  [[ "$output" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+  assert_matches "$output" '^[0-9]+\.[0-9]+\.[0-9]+$'
 }
 
 @test "version: --version and -v are aliases" {

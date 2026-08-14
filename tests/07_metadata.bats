@@ -33,5 +33,5 @@ teardown() {
   cd "$proj/manual-ws" && orbit goal "set from nothing" >/dev/null 2>&1
   local created
   created=$(git config --file "$proj/manual-ws/.orbit" --get workspace.created)
-  [[ "$created" =~ ^[0-9]+$ ]]
+  assert_matches "$created" '^[0-9]+$'
 }

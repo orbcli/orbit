@@ -699,8 +699,8 @@ setup_project_with_done_workspace() {
   run bash -c "cd '$proj/dev' && PATH='$stubs':\$PATH ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run 2>&1"
   [ "$status" -ne 0 ]
   assert_contains "$output" "prune must be run from the project root"
-  [[ "$output" != *"&&"* ]]
-  [[ "$output" != *"cd $proj"* ]]
+  refute_contains "$output" "&&"
+  refute_contains "$output" "cd $proj"
   assert_dir_exists "$proj/dev"
 }
 
@@ -1235,9 +1235,9 @@ setup_project_with_done_workspace() {
   assert_contains "$output" "  myrepo:"
   assert_contains "$output" "    raw-orphan (unmerged)"
   assert_contains "$output" 'git -C ".repos/myrepo" branch -D raw-orphan'
-  [[ "$output" != *"raw-pushed"* ]]
-  [[ "$output" != *"raw-active"* ]]
-  [[ "$output" != *"release-1.2"* ]]
+  refute_contains "$output" "raw-pushed"
+  refute_contains "$output" "raw-active"
+  refute_contains "$output" "release-1.2"
 }
 
 @test "prune: report does not leak git's native branch-deletion output" {
@@ -1251,7 +1251,7 @@ setup_project_with_done_workspace() {
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
   [ "$status" -eq 0 ]
   assert_contains "$output" "deleted branch (merged): ws/dev/main"
-  [[ "$output" != *"Deleted branch"* ]]
+  refute_contains "$output" "Deleted branch"
 }
 
 @test "prune --dry-run: ghost residue reported with would-forms, nothing deleted" {
@@ -1300,7 +1300,7 @@ setup_project_with_done_workspace() {
   assert_contains "$output" "untraceable branches (raw, no remote, no workspace)"
   assert_contains "$output" "    ws/lonely (merged)"
   # raw arm of the three-condition: residue present ⇒ NOT "nothing to prune"
-  [[ "$output" != *"nothing to prune"* ]]
+  refute_contains "$output" "nothing to prune"
   run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/heads/ws/lonely
   [ "$status" -eq 0 ]
 
@@ -1331,7 +1331,7 @@ setup_project_with_done_workspace() {
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
   [ "$status" -eq 0 ]
   assert_contains "$output" 'git -C ".repos/myrepo" branch -D evil\;name'
-  [[ "$output" != *'branch -D evil;name'* ]]
+  refute_contains "$output" 'branch -D evil;name'
 }
 
 @test "prune: raw current branch never enters the branch pipeline — raw report only" {
@@ -1463,7 +1463,7 @@ setup_project_with_done_workspace() {
   run cat "$SANDBOX/e.txt"
   assert_contains "$output" "untraceable branches (raw, no remote, no workspace)"
   run cat "$SANDBOX/o.txt"
-  [[ "$output" != *"untraceable branches"* ]]
+  refute_contains "$output" "untraceable branches"
 
   # dry-run: everything is report → stdout
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune --dry-run >'$SANDBOX/o2.txt' 2>'$SANDBOX/e2.txt'"
@@ -1471,7 +1471,7 @@ setup_project_with_done_workspace() {
   run cat "$SANDBOX/o2.txt"
   assert_contains "$output" "untraceable branches (raw, no remote, no workspace)"
   run cat "$SANDBOX/e2.txt"
-  [[ "$output" != *"untraceable branches"* ]]
+  refute_contains "$output" "untraceable branches"
 }
 
 @test "prune: closing block — single caveat, scoped suggestions before raw commands" {
@@ -1578,7 +1578,7 @@ setup_project_with_done_workspace() {
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
   [ "$status" -eq 0 ]
   assert_contains "$output" "    raw-orphan (unknown)"
-  [[ "$output" != *"raw-orphan (unknown) — review"* ]]
+  refute_contains "$output" "raw-orphan (unknown) — review"
 }
 
 @test "prune: branch checked out in another workspace is NOT deleted — failure surfaces, no false 'deleted'" {
@@ -1689,7 +1689,7 @@ setup_project_with_done_workspace() {
   [ "$status" -eq 0 ]
   assert_contains "$output" "pruned: dev (0 worktrees removed, 1 branch deleted)"
   # deletion lines carry the recovery handle
-  [[ "$output" =~ deleted\ branch\ \(merged\):\ ws/dev/main\ \(was\ [0-9a-f]+\) ]]
+  assert_matches "$output" 'deleted\ branch\ \(merged\):\ ws/dev/main\ \(was\ [0-9a-f]+\)'
   [ ! -d "$proj/dev" ]
   run git -C "$proj/.repos/myrepo" rev-parse --verify --quiet refs/heads/ws/dev/main
   [ "$status" -ne 0 ]

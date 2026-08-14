@@ -44,7 +44,7 @@ teardown() {
   run bash -c "cd '$proj/ws1' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' context"
   [ "$status" -eq 0 ]
   assert_contains "$output" "state: active"
-  [[ "$output" != *"This is the memo for context test."* ]]
+  refute_contains "$output" "This is the memo for context test."
 }
 
 @test "context --json: bare form mirrors the cruise block (no memos)" {
@@ -199,10 +199,10 @@ teardown() {
   # authoritative identity hint
   assert_contains "$output" "A mock repository for testing. ("
   assert_contains "$output" "no memo (write the card via orbit memo <repo>"
-  [[ "$output" != *"has no memo, using README instead"* ]]
+  refute_contains "$output" "has no memo, using README instead"
   # no stale header from the old format
-  [[ "$output" != *"=== PRIME"* ]]
-  [[ "$output" != *"primed"* ]]
+  refute_contains "$output" "=== PRIME"
+  refute_contains "$output" "primed"
 }
 
 @test "context --startup: reignite shows memos + per-repo status when populated" {
@@ -218,7 +218,7 @@ teardown() {
   assert_contains "$output" "status: 1 jots | memo thin"
   assert_contains "$output" "residual finding"
   # roster is prime-only
-  [[ "$output" != *"available in pool"* ]]
+  refute_contains "$output" "available in pool"
 }
 
 @test "context: --startup and --prime are mutually exclusive" {

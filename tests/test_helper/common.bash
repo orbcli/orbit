@@ -53,6 +53,13 @@ orbit() {
 }
 
 # --- Assertion helpers ---
+#
+# IMPORTANT: always use these helpers (or plain `[ ]`) for assertions — never
+# a bare `[[ … ]]` statement. On bash 3.2 (stock macOS /bin/bash, which the
+# bats shebang resolves to), a failing `[[ ]]`/`(( ))` does NOT trip errexit
+# (they only became subject to `set -e` in bash 4.1), so a mid-test bare
+# `[[ ]]` assertion passes silently no matter what it checks. These helpers
+# fail through an external command (grep), which trips errexit on every bash.
 
 assert_contains() {
   local haystack="$1" needle="$2"
@@ -92,6 +99,18 @@ assert_dir_exists() {
     return 0
   else
     echo "assert_dir_exists failed: not a directory: $path"
+    return 1
+  fi
+}
+
+assert_matches() {
+  local haystack="$1" regex="$2"
+  if printf '%s' "$haystack" | grep -qE -e "$regex"; then
+    return 0
+  else
+    echo "assert_matches failed"
+    echo "  expected to match: $regex"
+    echo "  actual: $haystack"
     return 1
   fi
 }

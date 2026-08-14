@@ -397,7 +397,7 @@ teardown() {
   # scoped branch prints without the ws/<ws>/ prefix; clean repo folds to 'clean'
   assert_contains "$output" "myrepo"
   assert_contains "$output" "clean"
-  [[ "$output" != *"ws/dev/main"* ]]
+  refute_contains "$output" "ws/dev/main"
 }
 
 @test "status: raw mode branch gets the conversion steering line (parity with context/done)" {
