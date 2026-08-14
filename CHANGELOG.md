@@ -63,6 +63,7 @@ Hardens the destructive surface: `prune` and `sync --force`/`--branch` become ma
 - Workspace/repo inference compares physical paths — commands work through symlinked cwds.
 - Session guard warns when process ancestry is unreadable, instead of failing silently open.
 - `orbit info` and the `orbit context --startup` reignite block no longer fetch — read paths are purely local again (zero network): #29's touchpoint fetch made every `info` and every session start with worktrees pay N serial remote round-trips (the default branch plus each tracked branch, one fetch each), multiplying with pool residue. Ruling: without an async daemon, auto-fetch on a main path taxes a synchronous caller for advisory freshness, and low friction outranks it — auto-fetch may return only off the main path. Layer-1 staleness (`remoteAhead`) now reads last-fetched refs, refreshed by the remaining fetching touchpoints (`orbit sync` / `orbit prune`) or the user's own fetch/pull; fetch-config maintenance (a local write) stays.
+- Bare `orbit prune` no longer reaps an empty repo's default-branch config: pool maintenance's orphan-config sweep treats the pool HEAD's target branch as always alive (possibly unborn) — its `branch.<name>.*` section is first-push routing, not residue. The protection tracks HEAD and self-releases once the branch gains a ref or the pool switches defaults; non-empty repos are unchanged (the ref check already keeps such sections). ([#36](https://github.com/orbcli/orbit/pull/36))
 
 #### Removal
 

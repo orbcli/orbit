@@ -2073,20 +2073,19 @@ EOF
   cd "$proj/dev" && orbit add emptyrepo >/dev/null 2>&1
   cd "$SANDBOX"
 
-  # The worktree's branch is UNBORN (no ref) but checked out — its upstream
-  # config is push routing in use, never an orphan. Only the clone-written
-  # branch.main section (pool's own checkout — NOT protected) is reaped.
+  # Both unborn sections are alive: the worktree's scoped branch (checked out)
+  # and the pool HEAD's target (clone-written default — first-push routing).
   run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
   [ "$status" -eq 0 ]
-  assert_contains "$output" "1 orphan branch config section(s)"
+  refute_contains "$output" "orphan branch config section(s)"
   local merge
   merge=$(git -C "$proj/.repos/emptyrepo" config --get branch.ws/dev/main.merge)
   [ "$merge" = "refs/heads/main" ]
-  run git -C "$proj/.repos/emptyrepo" config --get branch.main.merge
-  [ -z "$output" ]
+  merge=$(git -C "$proj/.repos/emptyrepo" config --get branch.main.merge)
+  [ "$merge" = "refs/heads/main" ]
 }
 
-@test "prune: done empty-repo workspace reclaims cleanly — unborn config unprotected after D1" {
+@test "prune: done empty-repo workspace reclaims cleanly — worktree unborn config reaped, pool default survives" {
   local proj="$SANDBOX/prune-empty-done"
   local remote="$SANDBOX/empty_remote_prune-empty-done.git"
   create_empty_bare_repo "$remote"
@@ -2102,10 +2101,35 @@ EOF
   [ "$status" -eq 0 ]
   assert_contains "$output" "pruned: dev (1 worktree removed, 0 branches deleted)"
   [ ! -d "$proj/dev" ]
-  # D1 removed the worktree first, so by maintenance time the unborn branch
-  # was checked out nowhere — guard self-limits, both sections reaped.
-  run git -C "$proj/.repos/emptyrepo" config --get-regexp '^branch\.'
+  # D1 removed the worktree first, so the scoped branch's unborn config is
+  # reaped — but the pool HEAD's target (the empty repo's clone-written
+  # default) stays protected: it is first-push routing for the pool's next
+  # worktree.
+  run git -C "$proj/.repos/emptyrepo" config --get branch.ws/dev/main.merge
   [ -z "$output" ]
+  local merge
+  merge=$(git -C "$proj/.repos/emptyrepo" config --get branch.main.merge)
+  [ "$merge" = "refs/heads/main" ]
+}
+
+@test "prune: empty-repo default-branch config is protected whatever its name (dev)" {
+  local proj="$SANDBOX/prune-empty-dev-default"
+  local remote="$SANDBOX/empty_remote_prune-empty-dev-default.git"
+  git init --bare "$remote" >/dev/null 2>&1
+  git -C "$remote" symbolic-ref HEAD refs/heads/dev
+  TEST_PROJECT="$proj"
+  mkdir -p "$proj"
+  cd "$proj" && orbit clone "$remote" --name emptyrepo >/dev/null 2>&1
+  cd "$proj" && orbit new "empty dev default" --name ws1 >/dev/null 2>&1
+  cd "$proj/ws1" && orbit add emptyrepo >/dev/null 2>&1
+  cd "$SANDBOX"
+
+  run bash -c "cd '$proj' && ORBIT_ROOT='$proj' bash '$ORBIT_CMD' prune 2>&1"
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "orphan branch config section(s)"
+  local merge
+  merge=$(git -C "$proj/.repos/emptyrepo" config --get branch.dev.merge)
+  [ "$merge" = "refs/heads/dev" ]
 }
 
 @test "prune: a pool that cannot scan branches blocks the live workspace — both modes" {
