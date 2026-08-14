@@ -121,7 +121,7 @@ const allowsOrbitCommand = (cmd: string): boolean => {
   return true
 }
 
-const orbitPlugin = (async ({ client, $ }) => {
+const orbitPlugin = (async ({ client, $, directory }) => {
   // Per-session cache for injected system context. Refreshed when a bash
   // tool that invokes the orbit CLI executes (workspace state may have
   // changed). compactedSessions marks sessions that have been compacted —
@@ -134,12 +134,18 @@ const orbitPlugin = (async ({ client, $ }) => {
 
   // Run an orbit context command and return its raw markdown. Returns "" on
   // any failure (orbit missing / not in a workspace — the command fails
-  // fast in both cases).
+  // fast in both cases). The shell is anchored to the SDK-provided project
+  // directory: Bun's `$` otherwise inherits the opencode process cwd, which
+  // equals the project only when opencode was launched from it. Verified
+  // against opencode source (2026-08-14): PluginInput.directory is
+  // per-instance — plugin state is cached per directory (InstanceState
+  // scoped cache) and events route by directory — so the anchor holds in
+  // serve mode (multi-project server) as well.
   const rawContext = async (startup: boolean): Promise<string> => {
     try {
       const res = startup
-        ? await $`orbit context --startup`.nothrow().quiet()
-        : await $`orbit context`.nothrow().quiet()
+        ? await $`orbit context --startup`.cwd(directory).nothrow().quiet()
+        : await $`orbit context`.cwd(directory).nothrow().quiet()
       if (res.exitCode !== 0) return ""
       return res.text().trim()
     } catch {

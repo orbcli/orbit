@@ -27,6 +27,19 @@ EOF
   exit 0
 fi
 
+# Hook CWD is not a cross-host contract — a host may run hooks from outside
+# the project directory — while orbit's workspace detection is CWD-based.
+# Anchor to the host-injected project dir first: CLAUDE_PROJECT_DIR (Claude
+# Code's documented contract, also injected by Qoder), then
+# QODER_PROJECT_DIR (Qoder's documented fallback). Empty/unset/invalid
+# values and hosts with a correct hook CWD (codex injects neither) pass
+# through as a silent no-op.
+_orbit_anchor="${CLAUDE_PROJECT_DIR:-${QODER_PROJECT_DIR:-}}"
+if [ -n "$_orbit_anchor" ] && [ -d "$_orbit_anchor" ]; then
+  cd "$_orbit_anchor" >/dev/null 2>&1 || true
+fi
+unset _orbit_anchor
+
 HINT='<!-- orbit workspace: invoke the orbit skill before your first reply -->'
 
 if out=$(orbit context --startup 2>/dev/null) && [ -n "$out" ]; then

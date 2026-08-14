@@ -15,6 +15,16 @@
 
 command -v orbit >/dev/null 2>&1 || exit 0
 
+# Same CWD anchoring as session-start.sh: hook CWD is not a cross-host
+# contract, so anchor to the host-injected project dir
+# (CLAUDE_PROJECT_DIR → QODER_PROJECT_DIR) before the CWD-based workspace
+# detection. Guarded — empty/unset/invalid values are a silent no-op.
+_orbit_anchor="${CLAUDE_PROJECT_DIR:-${QODER_PROJECT_DIR:-}}"
+if [ -n "$_orbit_anchor" ] && [ -d "$_orbit_anchor" ]; then
+  cd "$_orbit_anchor" >/dev/null 2>&1 || true
+fi
+unset _orbit_anchor
+
 HINT='<!-- orbit workspace: invoke the orbit skill (skip only if you can fully recall its "Safety rules" section, count included, from the loaded skill text — not from a summary; on any doubt, invoke) -->'
 
 if out=$(orbit context 2>/dev/null) && [ -n "$out" ]; then
