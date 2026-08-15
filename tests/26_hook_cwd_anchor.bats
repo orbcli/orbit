@@ -3,10 +3,14 @@
 #
 # Hook CWD is not a cross-host contract — a host may run hooks from outside
 # the project directory. The shared scripts anchor to the host-injected
-# project dir (CLAUDE_PROJECT_DIR → QODER_PROJECT_DIR) before calling
-# `orbit context`, whose workspace detection is CWD-based. These tests pin
-# the anchor chain: fallback order, the guards (empty / unset / nonexistent /
-# not-a-dir), and the no-op fallthrough for env-less hosts (codex).
+# project dir before calling `orbit context`, whose workspace detection is
+# CWD-based. They read exactly one anchor name: CLAUDE_PROJECT_DIR (claude's
+# documented contract, also injected by Qoder IDE as a compat alias).
+# Host-native variants are a wrapper concern — the qoder wrapper maps
+# QODER_PROJECT_DIR onto CLAUDE_PROJECT_DIR (covered in
+# 28_qoder_hook_wrapper.bats). These tests pin the shared-script side: the
+# single anchor name, the guards (empty / unset / nonexistent / not-a-dir),
+# and the no-op fallthrough for env-less hosts (codex).
 
 setup() {
   load test_helper/common
@@ -54,16 +58,12 @@ assert_hooks_cwd() {
   assert_hooks_cwd "$PROJ_P" "CLAUDE_PROJECT_DIR=$PROJ"
 }
 
-@test "anchor: QODER_PROJECT_DIR is the fallback" {
-  assert_hooks_cwd "$PROJ_P" "QODER_PROJECT_DIR=$PROJ"
+@test "anchor: QODER_PROJECT_DIR is not read by the shared script (wrapper maps it)" {
+  assert_hooks_cwd "$LAUNCH_P" "QODER_PROJECT_DIR=$PROJ"
 }
 
-@test "anchor: CLAUDE_PROJECT_DIR precedes QODER_PROJECT_DIR" {
-  assert_hooks_cwd "$PROJ_P" "CLAUDE_PROJECT_DIR=$PROJ" "QODER_PROJECT_DIR=$OTHER"
-}
-
-@test "anchor: empty CLAUDE_PROJECT_DIR falls through to QODER_PROJECT_DIR" {
-  assert_hooks_cwd "$PROJ_P" "CLAUDE_PROJECT_DIR=" "QODER_PROJECT_DIR=$PROJ"
+@test "anchor: empty CLAUDE_PROJECT_DIR keeps the launch cwd" {
+  assert_hooks_cwd "$LAUNCH_P" "CLAUDE_PROJECT_DIR=" "QODER_PROJECT_DIR=$PROJ"
 }
 
 @test "anchor: unset env keeps the launch cwd (env-less hosts unaffected)" {

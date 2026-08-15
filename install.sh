@@ -379,13 +379,19 @@ ensure_path_export() {
 
 install_cli() {
   mkdir -p "$TARGET_BIN_DIR"
-  if [ -f "$TARGET_HELPER" ] && [ "$FORCE" -eq 0 ]; then
-    printf '%s\n' "orbit runtime already installed at $TARGET_HELPER — skipping (use --force to reinstall)"
-    return 0
+  # The runtime is a local file copy: a plain install always refreshes it
+  # (install-is-latest, same as the plugin channels). Atomic via mktemp + mv
+  # (same directory, so the rename is atomic): a mid-copy failure never
+  # leaves a truncated `orbit` behind, and the unique tmp name neither
+  # collides with nor orphans a fixed-name file.
+  local tmp
+  tmp=$(mktemp "$TARGET_HELPER.XXXXXX") || return 1
+  if ! cp -L "$SRC_ORBIT" "$tmp"; then
+    rm -f "$tmp"
+    return 1
   fi
-  rm -f "$TARGET_HELPER"
-  cp -L "$SRC_ORBIT" "$TARGET_HELPER"
-  chmod +x "$TARGET_HELPER"
+  chmod +x "$tmp"
+  mv "$tmp" "$TARGET_HELPER"
   printf '%s\n' "Installed orbit command to: $TARGET_HELPER"
 }
 

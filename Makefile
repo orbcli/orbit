@@ -16,7 +16,7 @@ test-serial: ## Run tests serially (for debugging)
 	bats tests/
 
 lint: ## Run shellcheck on scripts
-	shellcheck orbit.sh install.sh try.sh hooks/*.sh
+	shellcheck orbit.sh install.sh try.sh hooks/*.sh hooks/codex/*.sh hooks/qoder/*.sh
 
 install: ## Install orbit (e.g. make install --claude --zsh --force)
 	@./install.sh $(filter-out $@,$(MAKECMDGOALS))

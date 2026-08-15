@@ -58,14 +58,27 @@
   merge; "behind" = sync; "over budget" = curate).
 - **Fail-safe.** Every hook is a silent no-op when orbit is missing or CWD is
   not in a workspace (`orbit context` fails fast in both cases).
+- **Stdout format follows the host's injection contract.** Claude Code and
+  codex inject a SessionStart hook's bare stdout into the model's context
+  directly, so `hooks/session-*.sh` print plain markdown. Qoder is split:
+  the CLI falls back to injecting plain-text stdout, but the IDE parses
+  stdout strictly as JSON and silently drops bare text — so the qoder
+  registration points at `hooks/qoder/session-*.sh`, thin wrappers that run
+  the shared script and re-encode its stdout as
+  `hookSpecificOutput.additionalContext` JSON (`hookEventName` included —
+  qoder rejects the whole output without it). Empty shared output emits no
+  JSON, preserving the silent no-op.
 - **Host-CWD anchoring.** Hook CWD is not a cross-host contract: a host may
   run hooks from a directory other than the project (Claude Code only
   promises "the current directory"; codex sets it to the session cwd). The
   shared scripts therefore anchor to the host-injected project dir before
-  detection — `CLAUDE_PROJECT_DIR` (Claude Code's documented contract, also
-  injected by Qoder), then `QODER_PROJECT_DIR` (Qoder's documented
-  fallback) — guarded by `[ -n ]`/`[ -d ]` so empty/unset/invalid values
-  and env-less hosts (codex) pass through as a no-op. The OpenCode plugin
+  detection, reading exactly one name: `CLAUDE_PROJECT_DIR` (Claude Code's
+  documented contract, also injected by Qoder IDE as a compat alias).
+  Host-native variants are a wrapper concern — the qoder wrapper maps
+  `QODER_PROJECT_DIR` (qoder's own documented env) onto it — so the shared
+  scripts carry no host-specific env knowledge. Guards (`[ -n ]`/`[ -d ]`)
+  pass empty/unset/invalid values and env-less hosts (codex) through as a
+  no-op. The OpenCode plugin
   anchors its shell to the SDK-provided `PluginInput.directory` via
   `.cwd(...)` instead of inheriting the opencode process cwd —
   `directory` is per-instance (opencode materializes plugin state per
@@ -83,11 +96,12 @@ fallback (the agent runs bare `orbit context` itself).
 |------|--------------|-------------|
 | Claude | `SessionStart:startup` → `hooks/session-start.sh` | `SessionStart:resume` / `SessionStart:compact` → `hooks/session-resume.sh` |
 | Codex | `SessionStart:startup` → `hooks/codex/session-start.sh` | `SessionStart:resume\|clear\|compact` → `hooks/codex/session-resume.sh` |
-| Qoder | `SessionStart:startup` → `hooks/session-start.sh` | `SessionStart:resume` / `SessionStart:compact` → `hooks/session-resume.sh` |
+| Qoder | `SessionStart:startup` → `hooks/qoder/session-start.sh` | `SessionStart:resume` / `SessionStart:compact` → `hooks/qoder/session-resume.sh` |
 | OpenCode | `experimental.chat.system.transform` (first of session) → `--startup` | `experimental.session.compacting` → summary-pass guard (below); `session.compacted` event → cruise + pins the session to cruise tier; ctxCache refreshes after orbit CLI commands rebuild the current tier (startup pre-compact, cruise post-compact); resume ❌ (see TODO) |
 
-- Claude/Qoder use the shared scripts under `hooks/` directly; Codex goes
-  through its wrappers under `hooks/codex/`. `hooks.json` in each agent dir
+- Claude uses the shared scripts under `hooks/` directly; Codex and Qoder go
+  through thin wrappers (`hooks/codex/` delegates, `hooks/qoder/` re-encodes
+  stdout as JSON — the IDE drops bare text). `hooks.json` in each agent dir
   wires the matchers. Codex SessionStart sources verified against the Codex
   manual: `startup | resume | clear | compact` — `clear` is Codex-only today.
 - **OpenCode** (`.opencode-plugin/plugin.ts`, TypeScript): the first
@@ -134,6 +148,8 @@ fallback (the agent runs bare `orbit context` itself).
 | `hooks/codex/session-start.sh` | Codex wrapper — delegates to `hooks/session-start.sh` |
 | `hooks/codex/session-resume.sh` | Codex wrapper — delegates to `hooks/session-resume.sh` |
 | `hooks/codex/auto-approve.sh` | Codex wrapper — wraps `hooks/auto-approve.sh`; exit 0 = allow |
+| `hooks/qoder/session-start.sh` | Qoder wrapper — runs `hooks/session-start.sh`, re-encodes stdout as JSON (IDE drops bare text) |
+| `hooks/qoder/session-resume.sh` | Qoder wrapper — same for `hooks/session-resume.sh` |
 | `hooks/{claude,qoder,codex}/hooks.json` | Per-agent event wiring |
 | `.opencode-plugin/plugin.ts` | OpenCode integration (context injection + auto-approve) |
 
