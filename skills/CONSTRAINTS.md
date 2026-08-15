@@ -11,8 +11,8 @@ Orbit ships one shared runtime plus a per-agent skill and hook. Repo layout → 
 | `orbit.sh` | The runtime (all commands) | `install.sh` / curl bootstrap installs it to PATH |
 | `skills/orbit/SKILL.md` | Shared skill | All three plugins point at it explicitly: `.claude-plugin/plugin.json` → `"skills": ["./skills/orbit"]`; `.codex-plugin/plugin.json` and `.qoder-plugin/plugin.json` → `"skills": "./skills/orbit"` |
 | `skills/CONSTRAINTS.md` | This doc — shared constraints, not shipped as a skill | — |
-| `hooks/session-start.sh` | Shared `SessionStart` startup script (thin wrapper over `orbit context --startup`) | Referenced by Claude/Qoder `hooks.json` and `hooks/codex/session-start.sh` wrapper |
-| `hooks/session-resume.sh` | Shared `SessionStart` resume/compact script (thin wrapper over bare `orbit context`) | Referenced by Claude/Qoder `hooks.json` and `hooks/codex/session-resume.sh` wrapper |
+| `hooks/session-start.sh` | Shared `SessionStart` startup script (thin wrapper over `orbit context --startup`) | Referenced by Claude `hooks.json` and the `hooks/codex/` / `hooks/qoder/` wrappers |
+| `hooks/session-resume.sh` | Shared `SessionStart` resume/compact script (thin wrapper over bare `orbit context`) | Referenced by Claude `hooks.json` and the `hooks/codex/` / `hooks/qoder/` wrappers |
 | `hooks/auto-approve.sh` | Shared `PreToolUse` script (auto-approve safe orbit commands) | Referenced by Claude/Qoder `hooks.json` and `hooks/codex/auto-approve.sh` wrapper |
 | `.claude-plugin/` | Claude plugin + marketplace manifest | Claude marketplace |
 | `hooks/claude/hooks.json` | Claude hook wiring (SessionStart, PreToolUse) | `.claude-plugin/plugin.json` → `"hooks"` |
@@ -24,6 +24,8 @@ Orbit ships one shared runtime plus a per-agent skill and hook. Repo layout → 
 | `.opencode-plugin/plugin.ts` | OpenCode plugin (context injection, auto-approve) | Installed to `~/.config/opencode/plugins/` |
 | `.qoder-plugin/` | Qoder plugin manifest | Qoder marketplace |
 | `hooks/qoder/hooks.json` | Qoder hook wiring | `.qoder-plugin/plugin.json` → `"hooks"` |
+| `hooks/qoder/session-start.sh` | Qoder SessionStart startup wrapper | Runs `hooks/session-start.sh`, re-encodes stdout as `hookSpecificOutput.additionalContext` JSON (the IDE drops bare text), maps `QODER_PROJECT_DIR` onto `CLAUDE_PROJECT_DIR` |
+| `hooks/qoder/session-resume.sh` | Qoder SessionStart resume/compact wrapper | Same re-encoding for `hooks/session-resume.sh` |
 
 There is one `SKILL.md` (`skills/orbit/SKILL.md`), shared by Claude, Qoder, and Codex. All three point at it explicitly — Claude via `"skills": ["./skills/orbit"]`, Codex and Qoder via `"skills": "./skills/orbit"` — so the loose `CONSTRAINTS.md` at the top of `skills/` is never mistaken for a skill dir.
 

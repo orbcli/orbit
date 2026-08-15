@@ -4,19 +4,19 @@
       {
         "matcher": "startup",
         "hooks": [
-          { "type": "command", "command": "bash \"${QODER_PLUGIN_ROOT}/hooks/session-start.sh\"" }
+          { "type": "command", "command": "bash \"${QODER_PLUGIN_ROOT}/hooks/qoder/session-start.sh\"" }
         ]
       },
       {
         "matcher": "resume",
         "hooks": [
-          { "type": "command", "command": "bash \"${QODER_PLUGIN_ROOT}/hooks/session-resume.sh\"" }
+          { "type": "command", "command": "bash \"${QODER_PLUGIN_ROOT}/hooks/qoder/session-resume.sh\"" }
         ]
       },
       {
         "matcher": "compact",
         "hooks": [
-          { "type": "command", "command": "bash \"${QODER_PLUGIN_ROOT}/hooks/session-resume.sh\"" }
+          { "type": "command", "command": "bash \"${QODER_PLUGIN_ROOT}/hooks/qoder/session-resume.sh\"" }
         ]
       }
     ],

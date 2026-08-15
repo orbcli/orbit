@@ -388,6 +388,17 @@ EOF
   grep -q 'plugin-install' "$MOCK_STATE/calls"
 }
 
+@test "runtime: plain install always refreshes ~/.local/bin/orbit (no skip)" {
+  mkdir -p "$FAKE_HOME/.local/bin"
+  printf 'stale-runtime\n' > "$FAKE_HOME/.local/bin/orbit"
+  run_install_mocked ORBIT_SOURCE="${BATS_TEST_DIRNAME}/.." \
+    ORBIT_RETRY=1 bash "$INSTALL"
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "skipping"
+  ! grep -q 'stale-runtime' "$FAKE_HOME/.local/bin/orbit"
+  [ -x "$FAKE_HOME/.local/bin/orbit" ]
+}
+
 @test "opencode: plain install always refreshes (no skip when files exist)" {
   mkdir -p "$FAKE_HOME/.config/opencode/plugins" "$FAKE_HOME/.config/opencode/skills/orbit"
   printf 'stale-plugin\n' > "$FAKE_HOME/.config/opencode/plugins/orbit.ts"
