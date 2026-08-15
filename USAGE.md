@@ -67,6 +67,47 @@ Every network operation install.sh performs (the orbit.sh download, a URL-source
 
 **Escape hatch.** When all retries fail, the remaining issue is network reachability: get the repo onto the machine yourself (proxy / mirror / another network) and run `./install.sh` from the checkout — a local path source needs no network.
 
+### Config-management tools
+
+External config-management tools (provider switchers, dotfile syncers) commonly **snapshot the whole config file and restore it later** — anything written after the snapshot was taken is silently rolled back. Orbit's plugin registration lives in these same files, so a restore unregisters the plugin; the on-disk content (marketplace snapshot, plugin cache) is never touched.
+
+**Recovery.** Re-run the installer — every install re-registers and refreshes in one pass.
+
+**Prevention.** Add Orbit's registration entries to your tool's stored config, so restores bring them back. Snapshots are usually kept per profile/provider — update each one. (Adding them only to the live config file is not enough: the next restore drops them again.) What each host needs:
+
+Codex — `~/.codex/config.toml` must contain:
+
+```toml
+[marketplaces.orbcli]
+source_type = "git"
+source = "https://github.com/orbcli/orbit.git"
+
+[plugins."codex-orbit@orbcli"]
+enabled = true
+```
+
+(Codex maintains the `last_updated` and `last_revision` bookkeeping itself.)
+
+Claude — `~/.claude/settings.json` must contain:
+
+```json
+"enabledPlugins": {
+  "claude-orbit@orbcli": true
+}
+```
+
+(Claude's marketplace registration lives in a separate file, `~/.claude/plugins/` — only this entry can be rolled back.)
+
+OpenCode (npm install only) — the `plugin` array in `opencode.json` must contain:
+
+```json
+"plugin": [
+  "opencode-orbit"
+]
+```
+
+(The install.sh path drops the plugin file into `~/.config/opencode/plugins/` — no config entry, nothing to roll back.)
+
 ## 3. Adding Repos to the Pool
 
 No separate `init` command is needed — the first `clone` or `new` automatically initializes the project root.
