@@ -54,8 +54,18 @@ done
 cp "$FAKE_INSTALL" "$out"
 EOF
 
-  # Fake orbit runtime: clone/new/done all no-op.
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCK_BIN/orbit"
+  # Fake orbit runtime: new/done are no-ops; clone materializes a real repo,
+  # because try.sh writes a repo-local demo identity into each pool clone's
+  # config (zero-config git support) right after cloning.
+  cat > "$MOCK_BIN/orbit" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = "clone" ]; then
+  name="$(basename "${2%.git}")"
+  mkdir -p "$ORBIT_TRY_DIR/.repos"
+  git init -q "$ORBIT_TRY_DIR/.repos/$name"
+fi
+exit 0
+EOF
   chmod +x "$MOCK_BIN/curl" "$MOCK_BIN/orbit" "$FAKE_INSTALL"
 }
 
