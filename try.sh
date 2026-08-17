@@ -354,7 +354,7 @@ build_bare() {
   git init -q "$work"
   git -C "$work" -c core.hooksPath=/dev/null add .
   git -C "$work" -c core.hooksPath=/dev/null \
-      -c user.email=pilot@orbit.dev -c user.name=Pilot commit -qm "$msg"
+      -c user.email=pilot@localhost -c user.name=Pilot commit -qm "$msg"
   git clone -q --bare "$work" "$UPSTREAM/$name.git"
   rm -rf "$work"
 }
@@ -371,6 +371,16 @@ cd "$TRY_DIR"
 say "⚙  Adding both repos to the Orbit pool ..."
 orbit clone "$UPSTREAM/navigator.git"       >/dev/null
 orbit clone "$UPSTREAM/mission-control.git" >/dev/null
+
+# Repo-local identity for the demo pool clones: the agent commits from inside
+# the workspace worktrees, and worktrees read the repo's common config — so a
+# zero-config git (fresh VM/container: no global user.name/user.email) would
+# otherwise fail every demo commit with "Author identity unknown" (exit 128).
+# Everything lives under $TRY_DIR, so this never touches the user's real repos.
+for r in "$TRY_DIR/.repos/navigator" "$TRY_DIR/.repos/mission-control"; do
+  git -C "$r" config user.name "Pilot"
+  git -C "$r" config user.email "pilot@localhost"
+done
 
 GOAL="Downlink a fuel-reserve field in the telemetry frame so mission-control can watch the tank burn — keep the encoder (navigator) and decoder (mission-control) in lockstep"
 say "⚙  Creating a workspace for the mission ..."
