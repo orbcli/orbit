@@ -605,7 +605,7 @@ orbit completion bash > /path/to/bash-completion/completions/orbit
 
 An orbit session runs read-only and idempotent subcommands (`context` / `repos` / `info` / `status`, plus workspace-writes like `add` / `memo` / `jot`) constantly, so per-command confirmation prompts add up. Those framework-verified tiers can run without a prompt; destructive or externally-visible commands (`prune` `clone` `config`) always keep prompting. Workflow-timing commands (`done` `new`) are deliberately outside the framework's list — orbit takes no position on when they should run; allowlist them in your own agent settings if you want them prompt-less.
 
-**Plugin users — nothing to do:** all four plugins ship an auto-approve hook that approves exactly the framework-verified subcommands and fails safe. **Skill-only / other agents:** add a static allowlist to your agent settings.
+**Plugin users — nothing to do:** all four plugins ship an auto-approve hook that approves exactly the framework-verified subcommands and fails safe. The hook needs `jq` on PATH; without it the hook stays inert and you keep the native prompts. The dependency goes away in a future release. **Skill-only / other agents:** add a static allowlist to your agent settings.
 
 The exact command tiers, the ready-to-paste allowlist snippet, and the rationale for each tier all live in [`skills/CONSTRAINTS.md`](skills/CONSTRAINTS.md#permission-and-auto-execution-policy).
 

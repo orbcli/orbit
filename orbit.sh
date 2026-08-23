@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ORBIT_VERSION="0.1.0"
+ORBIT_VERSION="0.2.0"
 ORBIT_ROOT="${ORBIT_ROOT:-}"
 ORBIT_DEFAULT_BRANCH_PREFIX="ws"
 ORBIT_CMD="${0##*/}"

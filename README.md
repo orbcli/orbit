@@ -183,7 +183,7 @@ Resuming a workspace with repos already present skips priming — the same `--st
 
 ## Auto-approving safe commands
 
-Plugin users: nothing to configure — all four plugins (Claude, Codex, OpenCode, Qoder) auto-approve safe orbit subcommands. Skill-only users can allowlist by hand. See [`skills/CONSTRAINTS.md`](skills/CONSTRAINTS.md#permission-and-auto-execution-policy) for command tiers and the allowlist snippet.
+Plugin users: nothing to configure — all four plugins (Claude Code, Codex, OpenCode, Qoder) auto-approve safe orbit subcommands. The hook needs `jq` on PATH; without it the hook stays inert and you keep the native prompts. The dependency goes away in a future release. Skill-only users can allowlist by hand. See [`skills/CONSTRAINTS.md`](skills/CONSTRAINTS.md#permission-and-auto-execution-policy) for command tiers and the allowlist snippet.
 
 ## Command Reference
 

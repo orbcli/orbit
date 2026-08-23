@@ -1,7 +1,7 @@
 {
   "name": "codex-orbit",
-  "version": "0.1.0",
-  "description": "Multi-repo Git workspaces for any AI coding agent — one agent across many repos.",
+  "version": "0.2.0",
+  "description": "One agent across many repos — real git worktrees, no index",
   "author": {
     "name": "orbcli contributors"
   },
@@ -19,7 +19,7 @@
   "hooks": "./hooks/codex/hooks.json",
   "interface": {
     "displayName": "Orbit",
-    "shortDescription": "Multi-repo Git workspaces for AI coding agents",
+    "shortDescription": "One agent across many repos — real git worktrees, no index",
     "longDescription": "Orbit is a Git-native multi-repo workspace manager that lets AI coding agents work across many repositories in a single session. It provides workspace management, repo discovery, memo cards for guiding repo pull decisions, and jot-based knowledge capture for incremental discovery.",
     "developerName": "orbcli contributors",
     "category": "Developer Tools",

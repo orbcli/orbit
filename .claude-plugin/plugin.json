@@ -1,7 +1,7 @@
 {
   "name": "claude-orbit",
-  "version": "0.1.0",
-  "description": "Multi-repo Git workspaces for any AI coding agent — one agent across many repos.",
+  "version": "0.2.0",
+  "description": "One agent across many repos — real git worktrees, no index",
   "author": {
     "name": "orbcli contributors"
   },

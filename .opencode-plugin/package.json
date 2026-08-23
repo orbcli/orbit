@@ -1,7 +1,7 @@
 {
   "name": "opencode-orbit",
-  "version": "0.1.0",
-  "description": "Multi-repo Git workspaces for OpenCode — one agent across many repos",
+  "version": "0.2.0",
+  "description": "One agent across many repos — real git worktrees, no index",
   "type": "module",
   "main": "index.ts",
   "files": [

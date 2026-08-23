@@ -1,4 +1,36 @@
+# 🚀 Orbit v0.2.0 — MaxQ
+
+*Released 2026-08-23*
+
+**Multi-repo Git workspaces for any coding agent — real worktrees, no index, no server.**
+
+MaxQ is the ascent phase where aerodynamic stress peaks and the airframe either holds or doesn't — seven weeks of daily dogfooding put this release under exactly that, and the structure held: 26 PRs of hardening, contract pinning, and repair.
+
+## Highlights
+
+- **The destructive surface is now machine-enforced.** `prune` and `sync --force`/`--branch` run from the project root only, verified by process ancestry — not by convention. Prune was rebuilt around all-or-nothing validation, per-branch verdicts, and a `.prune-trash` recovery window.
+- **The context system was redesigned.** Session start injects a purpose-built startup block (goal, repo memos, staleness); resume/compact get a cheap cruise block. Hooks anchor to the host-injected project dir, so injection works across Claude Code, Codex, OpenCode, and Qoder — IDE included.
+- **Install means latest.** Every install run now refreshes the marketplace snapshot and reinstalls the plugin from it; `--force` is a full reset (with a reachability probe so an offline reset can't destroy your last working install). The runtime itself refreshes the same way.
+
+## ⚠️ Breaking changes (upgrading from 0.1.0)
+
+- `prune` and `sync --force`/`--branch` run from the project root only — the CLI checks the calling shell's process ancestry, so `cd`-ing out first does not bypass it, and no flag does either. `prune` also left the agent skill's action surface: agents report the need, humans run it.
+- `prune --force` now overrides the data guards too, not just branch protection — it announces what it discards first.
+- `prune --verify` removed (merged-PR evidence now applies automatically from recorded PR URLs when `gh` is available); `ORBIT_BRANCH_PREFIX` is no longer read (use `orbit config branch.prefix`).
+- `install.sh` refreshes on every run; `--force` is now a full plugin+marketplace reset (it probes source reachability first).
+- Pool fetch and push config is Orbit-maintained (wildcard refspec + `fetch.prune` + `push.default=upstream`; opt out per key via `orbit config`) — a bare `git fetch`/`git pull` in any worktree now fetches every branch.
+- Output contracts changed: the old fetch-refspec reconciliation lines are gone and prune's report shape changed — update anything that greps orbit's output.
+- OpenCode plugin/skill removal is directory-level — anything inside `~/.config/opencode/skills/orbit/` is deleted.
+
+Also in: network-resilient installs (source chain + retries), SSH-less plugin install, demo runs on zero-config machines, guidance for config-management tools that silently roll back plugin registration ([USAGE](USAGE.md#config-management-tools) — recovery and prevention, per host), and a set of removals (stop hooks, the refspec registry, `--replace-marketplace`, and more — the full list is in the changelog); the mission drops spent weight to stay on course. Covered by 396 bats tests.
+
+Full details in the [changelog](CHANGELOG.md).
+
+---
+
 # 🚀 Orbit v0.1.0 — Liftoff
+
+*Released 2026-07-06 · superseded by v0.2.0 (see above)*
 
 **Source code as agent knowledge — multi-repo Git workspaces where agents read, code, and ship.**
 

@@ -322,7 +322,7 @@ Environment health check; does not require being inside an orbit project.
 
 ## orbit version
 
-Prints the orbit runtime version (e.g. `0.1.0`) to stdout and exits 0. Does not require being inside an orbit project. `--version` and `-v` are aliases. This is the runtime version, distinct from the plugin manifest version — the runtime is installable on its own (`install.sh` / curl bootstrap), so it carries its own version.
+Prints the orbit runtime version (e.g. `0.2.0`) to stdout and exits 0. Does not require being inside an orbit project. `--version` and `-v` are aliases. This is the runtime version, distinct from the plugin manifest version — the runtime is installable on its own (`install.sh` / curl bootstrap), so it carries its own version.
 
 ## Edge Case Handling
 

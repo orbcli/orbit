@@ -7,7 +7,7 @@
     {
       "name": "claude-orbit",
       "source": "./",
-      "description": "Multi-repo Git workspaces for any AI coding agent — one agent across many repos."
+      "description": "One agent across many repos — real git worktrees, no index"
     }
   ]
 }
