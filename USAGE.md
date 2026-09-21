@@ -250,6 +250,34 @@ Notes:
 - The created local branch is `ws/<workspace>/<default-branch>` (e.g., `ws/task-01/main`)
 - This is the local starting point; the agent branches off from here
 
+### Removing a repo from a workspace
+
+The inverse of `orbit add`: drop a repo's worktree from the current workspace
+and (by default) clean up the scoped local branch `add` created. The pool
+repo (`.repos/<repo>/`) is never touched — `remove` is a per-workspace
+operation, not a clone removal.
+
+```bash
+cd task-01/
+orbit remove backend
+# → removed backend from task-01 (worktree gone)
+# → deleted branch: ws/task-01/main
+```
+
+Safety defaults mirror `prune` — refuses to silently lose anything:
+
+- **Uncommitted / untracked changes** → refuses; pass `--force` to discard.
+- **Unmerged local branch** (no PR, not in origin) → branch is kept and a
+  review hint is printed; pass `--force` to delete anyway.
+- **Foreign repo** (a `.git/` directory, not file — its history lives only
+  in the worktree) → refuses; pass `--force` to destroy.
+
+Options:
+
+- `--force` — discard uncommitted changes and force-delete the local branch.
+- `--json` — machine-readable output (`workspace`, `repo`, `worktreeRemoved`,
+  `branch`, `branchAction`).
+
 ## 6. Branch Operations
 
 ### Scoped Mode (default)
@@ -624,6 +652,7 @@ orbit sync [repo...] [--force] [--branch <branch>]   # --force / --branch: proje
 # Workspace lifecycle
 orbit new "<goal>" [--name <name>] [--no-goal] [--exec "<cmd>"]
 orbit add <repo> [--ref <tag/branch>] [-s|--silent]
+orbit remove <repo> [--force] [--json]
 orbit switch [repo] <name>
 orbit switch -c [repo] <name>
 orbit jot [<repo>] ["<text>"]

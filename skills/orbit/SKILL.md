@@ -1,6 +1,6 @@
 ---
 name: orbit
-description: "Operate Orbit - the user's Git-native multi-repo workspace manager. If an <orbit-context> hook block is present, invoke BEFORE your first reply - even when the opening request seems unrelated to orbit. Also invoke on 'orbit start', or when asked to start working with no block injected (run `orbit context --startup`). Also use for clone, workspace create/manage, add repo, branch switch, status, goal, jot, memo aggregation, or done - or on mentions of workspaces, .repos/, or cross-repo tasks."
+description: "Operate Orbit - the user's Git-native multi-repo workspace manager. If an <orbit-context> hook block is present, invoke BEFORE your first reply - even when the opening request seems unrelated to orbit. Also invoke on 'orbit start', or when asked to start working with no block injected (run `orbit context --startup`). Also use for clone, workspace create/manage, add/remove repo, branch switch, status, goal, jot, memo aggregation, or done - or on mentions of workspaces, .repos/, or cross-repo tasks."
 ---
 
 Use this skill to operate the user's Git-native multi-repo workspace manager (Orbit).
@@ -86,6 +86,7 @@ These steps describe the work itself, independent of who performs it. Run them y
    - **Jot triggers (event-driven — don't wait for wrap-up).** Jot the moment you realize (a) this repo also serves a role the card doesn't list, or (b) the real entry point for a task differs from — or is absent in — what the card names. If the discovery isn't a role or an entry point the card needs, it isn't a jot.
    - **Resume/compact sessions still jot.** A cruise block (durables + per-repo status) does not suppress discovery capture, and a compact can wipe your mental "to-jot" note — so jot findings as they surface, even mid-refactor after a compact.
    - **Need another repo?** (e.g., tracing a cross-repo dependency) → go back to steps 2–7: `orbit repos` to screen → `orbit info` to assess → decide whether to add → sync if needed → add → memo check. This cross-repo branch is a natural thing to delegate — a worker runs the same screen → assess → add loop autonomously via its briefing (see "Delegating to sub-agents").
+   - **Drop a repo mid-work.** If a repo you added no longer belongs to this workspace (scope shrunk, or step 4's call was wrong), `orbit remove <repo>` from inside the workspace — destructive but workspace-scoped; refuses on dirty/unmerged work without `--force` (see Safe to run freely). If a worker reaches the same conclusion, report the need rather than running it.
 10. **Wrap-up.** Before finishing, aggregate jot entries and assess PR impact. This step is **incremental aggregation only** — it folds discoveries onto the understanding built in step 7; it is never where first-time exploration you skipped earlier gets done:
    - **Reflect first**: before popping, review what you learned this session about repos you added or worked in. If any structural insight never made it into a jot, jot it now, then continue. Keep scope to repos you added or worked in; do not sweep repos you only read via `orbit info`.
    - **Jot aggregation**: for each repo with jot entries, run `orbit jot <repo> --pop` to consume entries, then `orbit info <repo>` to read current card, merge entries in — staying within the card budget orbit reports (curate, don't append) and following merge-first rules — write back via `cat <<'EOF' | orbit memo <repo>`. Before `orbit done`, run bare `orbit context` and confirm no repo you developed is left with `memo thin` and no capture — `orbit done` warns per repo as the final backstop.
@@ -132,7 +133,7 @@ Recording knowledge (the moment you find it, before it's lost):
   scope), NOT feature-branch changes, NOT debug notes.
 - If you cannot run orbit, put the same items under a "## Discoveries" heading in your report.
 
-Do NOT run: orbit memo / sync / done / new / goal / clone / config — report those needs to me.
+Do NOT run: orbit memo / sync / done / new / goal / clone / config / remove — report those needs to me.
 
 Report back: findings, any repos you added, and your Discoveries list.
 ```
@@ -150,6 +151,7 @@ orbit sync [repo...] [--force] [--branch <branch>]  # updates the POOL repo only
 # Workspace lifecycle (from inside a workspace)
 orbit new ["<goal>"] [--name <name>] [--exec "<cmd>"] [--no-goal]
 orbit add <repo> [--ref <tag/branch>] [-s|--silent]
+orbit remove <repo> [--force] [--json]   # drop a repo's worktree from this workspace; pool repo untouched
 orbit switch [-c] [repo] <name>
 orbit jot [<repo>] ["<text>"]     # push a discovery to the jot queue
 orbit jot [<repo>] --pop [--json]  # pop all entries (consume + delete)
@@ -233,7 +235,7 @@ These orbit subcommands are read-only or idempotent workspace-writes — run the
 - **Destructive read:** `jot --pop` — it *consumes* the queue (read + delete, no undo). Safe to run without asking, but only as the first half of pop→merge: never pop until you're ready to write the memo in the same turn.
 - **Idempotent workspace-write:** `add` `switch` `sync` (bare or with a repo name) `memo` `jot` `goal`
 
-`done` and `new` are workflow-timing commands — non-destructive and reversible; when to run them is governed by the workflow (step 11; Safety rule 3), and whether they prompt is the user's own permission setup — orbit takes no position at the permission layer. `clone` and `config` change project-level / shared state — confirm before running these. `sync --force` and `sync --branch` are not yours either: both destroy or re-point shared pool state and run only from the project root, so report the need rather than trying them (the bare `sync` being safe does not extend to these flags). `prune` is not on your list at all — see Safety rules.
+`done` and `new` are workflow-timing commands — non-destructive and reversible; when to run them is governed by the workflow (step 11; Safety rule 3), and whether they prompt is the user's own permission setup — orbit takes no position at the permission layer. `clone` and `config` change project-level / shared state — confirm before running these. `sync --force` and `sync --branch` are not yours either: both destroy or re-point shared pool state and run only from the project root, so report the need rather than trying them (the bare `sync` being safe does not extend to these flags). `remove` is destructive but workspace-scoped — same call pattern as `prune` for one repo in your own workspace, and it refuses on dirty/unmerged work without `--force`. Run it when you've decided that repo no longer belongs to the workspace (a wrong call loses the local scoped branch unless you've pushed); when in doubt, confirm first. `prune` is not on your list at all — see Safety rules.
 
 ## Communication
 

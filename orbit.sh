@@ -91,6 +91,7 @@ Usage:
   $ORBIT_CMD memo [<repo>] [--refresh|--scaffold]
   $ORBIT_CMD new "<goal>" [--name <name>] [--no-goal] [--exec "<cmd>"]
   $ORBIT_CMD add <repo> [--ref <tag/branch>] [-s|--silent]
+  $ORBIT_CMD remove <repo> [--force] [--json]
   $ORBIT_CMD switch [-c] [repo] <name>
   $ORBIT_CMD sync [repo...] [--force] [--branch <branch>]
   $ORBIT_CMD done [--pr <url>...] [--json]
@@ -1384,6 +1385,131 @@ orbit_add() {
     else
       printf 'orbit: no memo for %s: explore %s and write a pull-decision card (roles + how to use), then write it with memo %s before done (pass -s to suppress)\n' "$repo_name" "$explore_paths" "$repo_name" >&2
     fi
+  fi
+}
+
+orbit_remove() {
+  local repo_name="" force=0 json_mode=0
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --force) force=1; shift ;;
+      --json) json_mode=1; shift ;;
+      -*) orbit_fail "usage: orbit remove <repo> [--force] [--json]" ;;
+      *)
+        [ -z "$repo_name" ] || orbit_fail "usage: orbit remove <repo> [--force] [--json]"
+        repo_name="$1"; shift ;;
+    esac
+  done
+  [ -n "$repo_name" ] || orbit_fail "usage: orbit remove <repo> [--force] [--json]"
+  orbit_require_repo_name "$repo_name"
+
+  local root
+  root=$(orbit_require_root) || return 1
+
+  local ws
+  ws=$(orbit_infer_workspace "$root") || return 1
+
+  local repo_dir="$root/.repos/$repo_name"
+  [ -d "$repo_dir" ] || orbit_fail "repo not in pool: $repo_name"
+
+  local ws_dir="$root/$ws"
+  local wt="$ws_dir/$repo_name"
+  [ -d "$wt" ] || orbit_fail "repo not in workspace: $ws/$repo_name (use 'orbit add' first)"
+
+  # Foreign-repo guard: a .git directory (not file) means the repo's history
+  # lives only in the worktree itself — removing the dir destroys history that
+  # exists nowhere else. Refuse without --force.
+  if [ -d "$wt/.git" ] && [ ! -f "$wt/.git" ]; then
+    if [ "$force" -eq 0 ]; then
+      orbit_fail "$repo_name is a foreign repo (history lives only in its own .git/); refusing to remove without --force"
+    fi
+    printf 'orbit: %s: foreign repo — --force discards local history\n' "$repo_name" >&2
+  fi
+
+  # Dirty check: refuse to discard uncommitted/untracked changes without --force.
+  if [ "$force" -eq 0 ]; then
+    local dirty
+    dirty=$(git -C "$wt" status --porcelain 2>/dev/null || true)
+    if [ -n "$dirty" ]; then
+      printf 'orbit: %s: worktree has uncommitted changes (refusing to discard; commit/stash first, or pass --force):\n' "$repo_name" >&2
+      printf '%s\n' "$dirty" | sed 's/^/  /' | head -10 >&2
+      return 1
+    fi
+  fi
+
+  # Resolve the scoped branch add created: ws/<ws>/<default>. Empty-pool repos
+  # have no default branch; in that case branch deletion is skipped.
+  local default_branch local_branch=""
+  default_branch=$(orbit_default_branch "$repo_dir" 2>/dev/null || true)
+  if [ -n "$default_branch" ]; then
+    local_branch=$(orbit_tracking_branch "$ws" "$default_branch") || local_branch=""
+  fi
+
+  # Branch verdict: re-use the same PR-merged / upstream-merged / content-
+  # upstream layers prune uses, so an unmerged branch is kept with a hint
+  # instead of silently vanishing. --force flips the verdict to delete.
+  # Computed BEFORE worktree removal — git refuses to delete a branch while
+  # a worktree has it checked out, so the deletion must follow the worktree.
+  local verdict="delete" v_flag="-d"
+  if [ -n "$local_branch" ]; then
+    orbit_branch_verdict "$repo_dir" "$local_branch" "$force"
+    if [ "$ORBIT_VERDICT" = "delete" ]; then
+      verdict="delete"
+      v_flag="$ORBIT_V_FLAG"
+    else
+      verdict="keep"
+    fi
+  fi
+
+  # Worktree removal runs first: a "keep" verdict still needs the checkout
+  # detached, and the branch deletion below only succeeds once the worktree
+  # is gone. --force is passed because the dirty guard ran (or --force was
+  # given); worktree remove --force on a clean tree is a no-op.
+  if ! git -C "$repo_dir" worktree remove --force "$wt" >/dev/null 2>&1; then
+    # Stale registration: dir gone already, or admin entry is corrupt.
+    git -C "$repo_dir" worktree repair "$wt" >/dev/null 2>&1 || true
+    if ! git -C "$repo_dir" worktree remove --force "$wt" >/dev/null 2>&1; then
+      rm -rf "$wt" || orbit_fail "$repo_name: failed to remove worktree directory"
+      git -C "$repo_dir" worktree prune >/dev/null 2>&1 || true
+      printf 'orbit: %s: worktree registration was stale; directory removed directly\n' "$repo_name" >&2
+    fi
+  fi
+
+  # Branch deletion: now safe (no worktree is checking out the branch).
+  local branch_action="skipped"
+  if [ -n "$local_branch" ]; then
+    if [ "$verdict" = "delete" ]; then
+      if LC_ALL=C git -C "$repo_dir" branch "$v_flag" "$local_branch" >/dev/null 2>&1; then
+        branch_action="deleted"
+      else
+        branch_action="kept"
+        printf 'orbit: %s: branch deletion refused by git — kept\n' "$repo_name" >&2
+      fi
+    else
+      branch_action="kept"
+    fi
+  fi
+
+  if [ "$json_mode" -eq 1 ]; then
+    local out="{"
+    out+="$(orbit_json_kv workspace "$ws"),"
+    out+="$(orbit_json_kv repo "$repo_name"),"
+    out+='"worktreeRemoved":true,'
+    out+="$(orbit_json_kv branch "${local_branch:-}"),"
+    out+="$(orbit_json_kv branchAction "$branch_action")"
+    out+='}'
+    printf '%s\n' "$out"
+    return 0
+  fi
+
+  printf 'removed %s from %s (worktree gone)\n' "$repo_name" "$ws"
+  if [ -n "$local_branch" ]; then
+    case "$branch_action" in
+      deleted)        printf '  deleted branch: %s\n' "$local_branch" ;;
+      kept)           printf '  kept branch (unmerged): %s — review: git -C .repos/%s log origin/%s..%s\n' \
+                         "$local_branch" "$repo_name" "$default_branch" "$local_branch" >&2 ;;
+    esac
   fi
 }
 
@@ -4489,6 +4615,13 @@ _orbit_completions() {
         COMPREPLY=($(compgen -W "$(_orbit_repo_names)" -- "$cur"))
       fi
       ;;
+    remove)
+      if [[ "$cur" == -* ]]; then
+        COMPREPLY=($(compgen -W "--force --json" -- "$cur"))
+      else
+        COMPREPLY=($(compgen -W "$(_orbit_repo_names)" -- "$cur"))
+      fi
+      ;;
     switch)
       if [[ "$cur" == -* ]]; then
         COMPREPLY=($(compgen -W "-c" -- "$cur"))
@@ -4596,6 +4729,7 @@ orbit() {
     clone)      orbit_clone "$@" ;;
     new)        orbit_new "$@" ;;
     add)        orbit_add "$@" ;;
+    remove)     orbit_remove "$@" ;;
     switch)     orbit_switch "$@" ;;
     sync)       orbit_sync "$@" ;;
     status)     orbit_status "$@" ;;
